@@ -13,6 +13,12 @@ __pycache__/
 # C extensions
 *.so
 
+results/
+.Ds_Store
+train*.sh
+aaa_server_data/
+aaa_test/
+
 # Distribution / packaging
 .Python
 build/

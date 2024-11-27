@@ -116,6 +116,94 @@ def _get_and_init_model(
     log_psi_apply = models.construct.slog_psi_to_log_psi_apply(slog_psi.apply)
     return log_psi_apply, params, key
 
+def _get_gaoqiao_model(wfn_type,nelec,ndet,wfn_depth,h1,h2,key,apply_pmap,xp
+):
+    import vmcnet.gaoqiao.build as gaoqiaobuild
+    import vmcnet.gaoqiao.param_blocks as param_blocks
+    from vmcnet.gaoqiao.sr import block_ravel_pytree
+    key, subkey = jax.random.split(key)
+    charges=jnp.asarray([7.,7.])
+    if wfn_type == "gaoqiao":
+        attn_params = None
+        trimul_params = None
+        gemi_params = None
+        feat_params = None
+        params, network_wfn, orbitals = gaoqiaobuild.build_network(
+            n=nelec,
+            charges=charges,
+            key=key, 
+            nk=16, 
+            ndet=ndet, 
+            depth=wfn_depth, 
+            h1=h1, 
+            h2=h2, 
+            nh=2,
+            feature_scale=False,
+            ef=False, 
+            attn=attn_params, 
+            trimul=trimul_params,
+            feat_params=feat_params,
+            det_mode="det", 
+            gemi_params=gemi_params,
+        )
+        block_fn=param_blocks.block_fn
+
+    elif wfn_type == "gq_ferminet":
+        from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
+        from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
+        import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
+        envelope = fermi_envelopes.make_isotropic_envelope()
+        feature_layer = fermi_networks.make_ferminet_features(
+            natoms=2,
+            nspins=(7,7),
+            ndim=3,
+            rescale_inputs=False,#If true, rescale the inputs so they grow as log(|r|)
+        )
+        network = fermi_networks.make_fermi_net(
+            nspins=(7,7),
+            charges=charges,
+            ndim=3,
+            determinants=ndet,
+            states=0,
+            envelope=envelope,
+            feature_layer=feature_layer,
+            jastrow='default',
+            bias_orbitals=False,
+            full_det=True,
+            rescale_inputs=False,
+            complex_output=True,
+            hidden_dims=tuple([(h1,h2) for _ in range(wfn_depth)])
+        )
+        key, subkey = jax.random.split(key)
+        params = network.init(subkey)
+        spins_psi=None
+        network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
+        block_fn=param_blocks.block_fn
+    else:
+        raise ValueError(f"Unknown electron wavefunction type: {wfn_type}")
+
+    print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
+    print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
+    raveled_params, _ = jax.flatten_util.ravel_pytree(params)
+    print("#parameters in the wavefunction model: %d" % raveled_params.size)
+
+    if apply_pmap:
+            params = utils.distribute.replicate_all_local_devices(params)
+    
+    def log_psi_apply_novmap(params,xe):
+        phase, logabsdet = network_wfn(params,xe,xp)
+        return logabsdet
+
+    def log_psi_apply(params,xe):
+        if len(xe.shape)==3:
+            return jax.vmap(log_psi_apply_novmap,(None,0),0)(params,xe)
+        elif len(xe.shape)==2:
+            return log_psi_apply_novmap(params,xe)
+        else:
+            raise ValueError("wrong len(xe.shape)")
+        
+    return log_psi_apply, params, key
+
 
 # TODO: figure out how to merge this and other distributing logic with the current
 # vmcnet/utils/distribute.py as well as vmcnet/mcmc
@@ -383,16 +471,31 @@ def _setup_vmc(
     )
 
     # Make the model
-    log_psi_apply, params, key = _get_and_init_model(
-        config.model,
-        ion_pos,
-        ion_charges,
-        nelec,
-        init_pos,
-        key,
-        dtype=dtype,
+    if config.gq_wfn_type in ["gaoqiao","gq_ferminet"]:
+        log_psi_apply, params, key =  _get_gaoqiao_model(
+        wfn_type=config.gq_wfn_type,
+        nelec=nelec_total,
+        ndet=config.gq_ndet,
+        wfn_depth=config.gq_wfn_depth,
+        h1=config.gq_h1,
+        h2=config.gq_h2,
+        key=key,
         apply_pmap=apply_pmap,
-    )
+        xp=ion_pos,
+        )
+    elif config.gq_wfn_type =="ll" :
+        log_psi_apply, params, key = _get_and_init_model(
+            config.model,
+            ion_pos,
+            ion_charges,
+            nelec,
+            init_pos,
+            key,
+            dtype=dtype,
+            apply_pmap=apply_pmap,
+        )
+    else:
+        raise ValueError("unknown gq_wfn_type: %s "%(config.gq_wfn_type))
 
     # Make initial data
     data = _make_initial_data(

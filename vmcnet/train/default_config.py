@@ -87,6 +87,11 @@ def get_default_config() -> ConfigDict:
                 "distribute": False,
                 "debug_nans": False,  # If true, OVERRIDES config.distribute to be False
                 "initial_seed": 0,
+                "gq_wfn_type":"gaoqiao",
+                "gq_ndet":16,
+                "gq_wfn_depth":4,
+                "gq_h1":64,
+                "gq_h2":16,
             }
         )
     )
