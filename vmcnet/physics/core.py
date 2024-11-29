@@ -213,6 +213,15 @@ def get_statistics_from_local_energy(
     )  # adjust by n / (n - 1) to get an unbiased estimator
     return energy, variance
 
+def get_statistics_from_other_energy(
+    energies: Array, nan_safe: bool = True
+) -> Tuple[Array, Array]:
+    if nan_safe:
+        allreduce_mean = utils.distribute.nanmean_all_local_devices
+    else:
+        allreduce_mean = utils.distribute.mean_all_local_devices
+    energy = allreduce_mean(energies)
+    return energy
 
 def get_clipped_energies_and_aux_data(
     local_energies_noclip: Array,
@@ -257,7 +266,8 @@ def get_clipped_energies_and_aux_data(
 
 def create_value_and_grad_energy_fn(
     log_psi_apply: ModelApply[P],
-    local_energy_fn: LocalEnergyApply[P],
+    # local_energy_fn: LocalEnergyApply[P],
+    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
     nchains: int,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
@@ -343,14 +353,24 @@ def create_value_and_grad_energy_fn(
     def standard_energy_val_and_grad(params, key, positions):
         del key
 
-        local_energies_noclip = jax.vmap(
-            local_energy_fn, in_axes=(None, 0, None), out_axes=0
-        )(params, positions, None)
+        # local_energies_noclip = jax.vmap(
+        #     local_energy_fn, in_axes=(None, 0, None), out_axes=0
+        # )(params, positions, None)
+        kinetic=jax.vmap(kinetic_fn, in_axes=(None, 0), out_axes=0)(params, positions)
+        ei_potential=jax.vmap(ei_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
+        ee_potential=jax.vmap(ee_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
+        ii_potential=jax.vmap(ii_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
+        local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential
+
+        kinetic = get_statistics_from_other_energy(kinetic, nan_safe=nan_safe)
+        ei_potential = get_statistics_from_other_energy(ei_potential, nan_safe=nan_safe)
+        ee_potential = get_statistics_from_other_energy(ee_potential, nan_safe=nan_safe)
+        ii_potential = get_statistics_from_other_energy(ii_potential, nan_safe=nan_safe)
 
         aux_data, energy, grad_E = get_standard_contribution(
             local_energies_noclip, params, positions
         )
-
+        aux_data.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential})
         return (energy, aux_data), grad_E
 
     def random_particle_energy_val_and_grad(params, key, positions):

@@ -14,7 +14,7 @@
 
 """Tools for downloading and processing pseudopotentials."""
 
-from fermi_ferminet import fermi_elements
+from vmcnet.gaoqiao.fermi_ferminet import fermi_elements
 import jax
 import jax.numpy as jnp
 import numpy as np

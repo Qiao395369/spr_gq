@@ -16,8 +16,8 @@
 
 from typing import Sequence
 import attr
-from fermi_ferminet import fermi_elements
-from fermi_ferminet import fermi_units as unit_conversion
+from vmcnet.gaoqiao.fermi_ferminet import fermi_elements
+from vmcnet.gaoqiao.fermi_ferminet import fermi_units as unit_conversion
 import ml_collections
 import numpy as np
 import pyscf

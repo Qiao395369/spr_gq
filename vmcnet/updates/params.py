@@ -117,7 +117,12 @@ def create_grad_energy_update_param_fn(
         )
         data = update_data_fn(data, params)
 
-        metrics = {"energy": energy, "variance": aux_energy_data["variance"]}
+        metrics = {"energy": energy, 
+                   "variance": aux_energy_data["variance"],
+                   "kinetic":aux_energy_data["kinetic"],
+                   "ei_potential":aux_energy_data["ei_potential"],
+                   "ee_potential":aux_energy_data["ee_potential"],
+                   "ii_potential":aux_energy_data["ii_potential"],}
         metrics = _update_metrics_with_noclip(
             aux_energy_data["energy_noclip"],
             aux_energy_data["variance_noclip"],

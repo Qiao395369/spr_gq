@@ -578,7 +578,7 @@ def save_metrics_and_regular_checkpoint(
         new_params (pytree-like): model parameters, from after the update function.
         optimizer_state (pytree-like): running state of the optimizer other than the
             trainable parameters. Needs to be serialiable via `np.savez`
-        data (pytree-like): current mcmc data (e.g. position and amplitude data). Needs
+        data (pytree-like): current mcmc data (e.g. position and amplitude data). Needs 
             to be serializable via `np.savez`
         metrics (dict): dictionary of metrics. If this is not None, then it must include
             "energy" and "variance". Metrics are currently flattened and written to a
@@ -628,10 +628,14 @@ def save_metrics_and_regular_checkpoint(
 def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str) -> None:
     """Log current energy, variance, and accept ratio, w/ optional unclipped values."""
     epoch_str = "Epoch %(epoch)5d"
-    energy_str = "Energy: %(energy).5e"
-    variance_str = "Variance: %(variance).5e"
-    accept_ratio_str = "Accept ratio: %(accept_ratio).5f"
+    energy_str = "E: %(energy).5e"
+    variance_str = "Var: %(variance).5e"
+    # accept_ratio_str = "Accept ratio: %(accept_ratio).5f"
     amplitude_str = ""
+    kinetic="kinetic:%(kinetic).5e"
+    ei_potential="ei:%(ei_potential).5e"
+    ee_potential="ee:%(ee_potential).5e"
+    ii_potential="ii:%(ii_potential).5e"
 
     if "energy_noclip" in metrics:
         energy_str = energy_str + " (%(energy_noclip).5e)"
@@ -643,7 +647,16 @@ def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str) -> None:
         amplitude_str = "Min/max amplitude: %(amplitude_min).2f/%(amplitude_max).2f"
 
     info_out = ", ".join(
-        [epoch_str, energy_str, variance_str, accept_ratio_str, amplitude_str]
+        [epoch_str, 
+         energy_str, 
+         variance_str, 
+        #  accept_ratio_str, 
+         amplitude_str,
+         kinetic,
+         ei_potential,
+         ee_potential,
+         ii_potential,
+         ]
     )
     info_out = info_out + checkpoint_str
 

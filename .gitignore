@@ -18,6 +18,8 @@ results/
 train*.sh
 aaa_server_data/
 aaa_test/
+aaa_results/
+eval.sh
 
 # Distribution / packaging
 .Python

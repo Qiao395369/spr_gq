@@ -18,7 +18,7 @@ import enum
 from typing import Any, Mapping, Sequence, Union
 
 import attr
-from fermi_ferminet import curvature_tags_and_blocks
+from vmcnet.gaoqiao.fermi_ferminet import curvature_tags_and_blocks
 import jax
 import jax.numpy as jnp
 from typing_extensions import Protocol

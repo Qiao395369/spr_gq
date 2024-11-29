@@ -103,7 +103,7 @@ def get_config(
 
 
 def build_network(
-		n,charges,key,nk,ndet,depth,h1,h2,nh,
+		n,charges,nspins,key,nk,ndet,depth,h1,h2,nh,
 		feature_scale:bool=False,
 		ef: bool = False,
 		attn: Optional[dict] = None,
@@ -115,10 +115,12 @@ def build_network(
 ):
 	"""charges:array that contains the charge of each atom."""
 	ndim=3
-	nspins=(n//2,n//2)
+	# nspins=(n//2,n//2)
 	#ef=False
 	#print(ef)
 	# charges=jnp.ones(natom)
+	# print("charge.shape[0]:",charges.shape[0])
+	# print("sum(nspins):",sum(nspins))
 	mes=dp.ManyElectronSystem(charges,nspins)
 
 	cfg=get_config(nk,ndet,depth,h1,h2,nh,

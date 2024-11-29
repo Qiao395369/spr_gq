@@ -93,7 +93,8 @@ def _get_electron_ion_config_as_arrays(
     ion_pos = jnp.array(config.problem.ion_pos, dtype=dtype)
     ion_charges = jnp.array(config.problem.ion_charges, dtype=dtype)
     nelec = jnp.array(config.problem.nelec)
-    return ion_pos, ion_charges, nelec
+    nspins=config.problem.nelec
+    return ion_pos, ion_charges, nelec ,nspins
 
 
 def _get_and_init_model(
@@ -116,13 +117,13 @@ def _get_and_init_model(
     log_psi_apply = models.construct.slog_psi_to_log_psi_apply(slog_psi.apply)
     return log_psi_apply, params, key
 
-def _get_gaoqiao_model(wfn_type,nelec,ndet,wfn_depth,h1,h2,key,apply_pmap,xp
+def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,key,apply_pmap,xp
 ):
     import vmcnet.gaoqiao.build as gaoqiaobuild
     import vmcnet.gaoqiao.param_blocks as param_blocks
     from vmcnet.gaoqiao.sr import block_ravel_pytree
     key, subkey = jax.random.split(key)
-    charges=jnp.asarray([7.,7.])
+    # charges=jnp.asarray([7.,7.])
     if wfn_type == "gaoqiao":
         attn_params = None
         trimul_params = None
@@ -131,6 +132,7 @@ def _get_gaoqiao_model(wfn_type,nelec,ndet,wfn_depth,h1,h2,key,apply_pmap,xp
         params, network_wfn, orbitals = gaoqiaobuild.build_network(
             n=nelec,
             charges=charges,
+            nspins=nspins,
             key=key, 
             nk=16, 
             ndet=ndet, 
@@ -154,13 +156,13 @@ def _get_gaoqiao_model(wfn_type,nelec,ndet,wfn_depth,h1,h2,key,apply_pmap,xp
         import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
         envelope = fermi_envelopes.make_isotropic_envelope()
         feature_layer = fermi_networks.make_ferminet_features(
-            natoms=2,
-            nspins=(7,7),
+            natoms=charges.shape[0],
+            nspins=nspins,
             ndim=3,
             rescale_inputs=False,#If true, rescale the inputs so they grow as log(|r|)
         )
         network = fermi_networks.make_fermi_net(
-            nspins=(7,7),
+            nspins=nspins,
             charges=charges,
             ndim=3,
             determinants=ndet,
@@ -328,10 +330,12 @@ def _assemble_mol_local_energy_fn(
         ii_potential_fn = physics.potential.create_ion_ion_coulomb_potential(
             ion_pos, ion_charges
         )
-        local_energy_fn: LocalEnergyApply[P] = physics.core.combine_local_energy_terms(
-            [kinetic_fn, ei_potential_fn, ee_potential_fn, ii_potential_fn]
-        )
-        return local_energy_fn
+        # local_energy_fn: LocalEnergyApply[P] = physics.core.combine_local_energy_terms(
+        #     [kinetic_fn, ei_potential_fn, ee_potential_fn, ii_potential_fn]
+        # )
+        # return local_energy_fn
+        return kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn
+    
     if local_energy_type == "ibp":
         ibp_parts = local_energy_config.ibp.ibp_parts
         local_energy_fn = physics.ibp.create_ibp_local_energy(
@@ -420,7 +424,8 @@ def _get_energy_val_and_grad_fn(
     ei_softening = problem_config.ei_softening
     ee_softening = problem_config.ee_softening
 
-    local_energy_fn = _assemble_mol_local_energy_fn(
+    # local_energy_fn = _assemble_mol_local_energy_fn(
+    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn=_assemble_mol_local_energy_fn(
         vmc_config.local_energy_type,
         vmc_config.local_energy,
         ion_pos,
@@ -434,7 +439,8 @@ def _get_energy_val_and_grad_fn(
 
     energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
         log_psi_apply,
-        local_energy_fn,
+        # local_energy_fn,
+        kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
         vmc_config.nchains,
         clipping_fn,
         nan_safe=vmc_config.nan_safe,
@@ -451,6 +457,7 @@ def _setup_vmc(
     ion_pos: Array,
     ion_charges: Array,
     nelec: Array,
+    nspins,
     key: PRNGKey,
     dtype=jnp.float32,
     apply_pmap: bool = True,
@@ -475,6 +482,8 @@ def _setup_vmc(
         log_psi_apply, params, key =  _get_gaoqiao_model(
         wfn_type=config.gq_wfn_type,
         nelec=nelec_total,
+        charges=ion_charges,
+        nspins=nspins,
         ndet=config.gq_ndet,
         wfn_depth=config.gq_wfn_depth,
         h1=config.gq_h1,
@@ -719,7 +728,7 @@ def run_molecule() -> None:
 
     dtype_to_use = _get_dtype(config)
 
-    ion_pos, ion_charges, nelec = _get_electron_ion_config_as_arrays(
+    ion_pos, ion_charges, nelec ,nspins= _get_electron_ion_config_as_arrays(
         config, dtype=dtype_to_use
     )
 
@@ -740,6 +749,7 @@ def run_molecule() -> None:
         ion_pos,
         ion_charges,
         nelec,
+        nspins,
         key,
         dtype=dtype_to_use,
         apply_pmap=config.distribute,

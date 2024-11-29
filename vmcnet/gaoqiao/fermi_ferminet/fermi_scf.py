@@ -32,9 +32,9 @@
 from typing import Mapping, Optional, Sequence, Tuple, Union
 
 from absl import logging
-from src.gaoqiao.fermi_ferminet import fermi_elements as elements
-from src.gaoqiao.fermi_ferminet import fermi_gto as gto
-from src.gaoqiao.fermi_ferminet import fermi_system as system
+from vmcnet.gaoqiao.fermi_ferminet import fermi_elements as elements
+from vmcnet.gaoqiao.fermi_ferminet import fermi_gto as gto
+from vmcnet.gaoqiao.fermi_ferminet import fermi_system as system
 import jax.numpy as jnp
 import jax.tree_util
 import numpy as np

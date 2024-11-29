@@ -18,9 +18,9 @@ from typing import Any, Iterable, Mapping, MutableMapping, Optional, Sequence, T
 
 import attr
 import chex
-from fermi_ferminet import fermi_envelopes
-from fermi_ferminet import fermi_jastrows
-from fermi_ferminet import fermi_network_blocks
+from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
+from vmcnet.gaoqiao.fermi_ferminet import fermi_jastrows
+from vmcnet.gaoqiao.fermi_ferminet import fermi_network_blocks
 import jax
 import jax.numpy as jnp
 from typing_extensions import Protocol
