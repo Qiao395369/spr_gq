@@ -92,6 +92,8 @@ def get_default_config() -> ConfigDict:
                 "gq_wfn_depth":4,
                 "gq_h1":64,
                 "gq_h2":16,
+                "gq_nh":8,
+                "gq_feature_scale":False,
             }
         )
     )

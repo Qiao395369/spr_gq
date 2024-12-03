@@ -60,16 +60,19 @@ def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict) -
 
 
 def _save_git_hash(logdir):
-    if logdir is None:
-        return
+    # if logdir is None:
+    #     return
 
-    git_hash = (
-        subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
-    )
-    git_file = os.path.join(logdir, "git_hash.txt")
-    writer = open(git_file, "wt")
-    writer.write(git_hash)
-    writer.close()
+    # git_hash = (
+    #     subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
+    # )
+    # git_file = os.path.join(logdir, "git_hash.txt")
+    # writer = open(git_file, "wt")
+    # writer.write(git_hash)
+    # writer.close()
+    return 
+
+
 
 
 def _get_dtype(config: ConfigDict):
@@ -117,7 +120,7 @@ def _get_and_init_model(
     log_psi_apply = models.construct.slog_psi_to_log_psi_apply(slog_psi.apply)
     return log_psi_apply, params, key
 
-def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,key,apply_pmap,xp
+def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,feature_scale,key,apply_pmap,xp
 ):
     import vmcnet.gaoqiao.build as gaoqiaobuild
     import vmcnet.gaoqiao.param_blocks as param_blocks
@@ -134,12 +137,12 @@ def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,key,ap
             charges=charges,
             nspins=nspins,
             key=key, 
-            nk=16, 
+            nk=None, 
             ndet=ndet, 
             depth=wfn_depth, 
             h1=h1, 
             h2=h2, 
-            nh=2,
+            nh=nh,
             do_complex=False,
             feature_scale=False,
             ef=False, 
@@ -489,6 +492,8 @@ def _setup_vmc(
         wfn_depth=config.gq_wfn_depth,
         h1=config.gq_h1,
         h2=config.gq_h2,
+        nh=config.gq_nh,
+        feature_scale=config.gq_feature_scale,
         key=key,
         apply_pmap=apply_pmap,
         xp=ion_pos,
