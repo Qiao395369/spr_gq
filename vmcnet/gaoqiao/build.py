@@ -22,7 +22,7 @@ import ml_collections
 #cfg=get_config(nk,ndet,depth,h1,h2,nh, ef=ef,feat_params=feat_params,attn=attn,trimul=trimul,h1_attn=h1_attn,
 # det_mode=det_mode,gemi_params=gemi_params,)
 def get_config(
-		nk,ndet,depth,h1,h2,nh,
+		nk,ndet,depth,h1,h2,nh,do_complex,
 		ef: bool = False,
 		attn: Optional[dict] = None,
 		trimul: Optional[dict] = None,
@@ -94,7 +94,7 @@ def get_config(
 	cfg.network.detnet.determinants=ndet
 	cfg.network.detnet.hidden_dims=tuple([(h1,h2) for _ in range(depth)])
 
-	cfg.network.detnet.do_complex=True
+	cfg.network.detnet.do_complex=do_complex
 	cfg.network.detnet.do_twist=False
 	cfg.network.detnet.numb_k=0
 	cfg.network.detnet.do_aa=True
@@ -103,7 +103,7 @@ def get_config(
 
 
 def build_network(
-		n,charges,nspins,key,nk,ndet,depth,h1,h2,nh,
+		n,charges,nspins,key,nk,ndet,depth,h1,h2,nh,do_complex,
 		feature_scale:bool=False,
 		ef: bool = False,
 		attn: Optional[dict] = None,
@@ -123,7 +123,7 @@ def build_network(
 	# print("sum(nspins):",sum(nspins))
 	mes=dp.ManyElectronSystem(charges,nspins)
 
-	cfg=get_config(nk,ndet,depth,h1,h2,nh,
+	cfg=get_config(nk,ndet,depth,h1,h2,nh,do_complex,
 	               ef=ef,feat_params=feat_params,
 	               attn=attn,trimul=trimul,h1_attn=h1_attn,
 	               det_mode=det_mode,gemi_params=gemi_params,

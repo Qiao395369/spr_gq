@@ -2,7 +2,8 @@
 from typing import Callable
 
 import jax
-
+# import fwdlap
+# import jax.numpy as jnp
 import vmcnet.physics as physics
 from vmcnet.utils.typing import Array, P, ModelApply
 
@@ -30,3 +31,56 @@ def create_laplacian_kinetic_energy(
         return -0.5 * physics.core.laplacian_psi_over_psi(grad_log_psi_apply, params, x)
 
     return kinetic_energy_fn
+
+# def create_laplacian_kinetic_energy_gq(
+#     log_psi_apply: Callable[[P, Array], Array],
+# ):
+#     kw = {"inner_size": 2}
+#     grad_log_psi_apply = jax.grad(log_psi_apply, argnums=1)
+#     logpsi_laplacian = make_laplacian_real(log_psi_apply,argnums=1, method="fwdlap", **kw)
+
+#     def kinetic_energy_fn(params: P, x: Array) -> Array:
+#         grad = grad_log_psi_apply(params, x)
+#         laplacian = logpsi_laplacian(params, x)
+#         kinetic = -0.5 * (laplacian + (grad**2).sum(axis=(-2, -1))) # (W, B)
+#         return kinetic
+
+#     return kinetic_energy_fn
+
+
+# def make_laplacian_real(f, argnums=0, **kwargs):
+#     """
+#     Given a REAL-VALUED scalar function `f`, return the laplacian w.r.t.
+#     a positional argument specified by the integer `argnums`.
+#     """
+#     if not isinstance(argnums, int):
+#         raise ValueError("argnums should be an integer.")
+
+#     def f_laplacian(*args):
+#         x = args[argnums]
+#         shape, size = x.shape, x.size
+#         x_flatten = x.reshape(-1)
+#         eye = jnp.eye(size, dtype=x.dtype)
+
+#         inner_size = kwargs.get("inner_size", None)
+#         f_argx = lambda x_flat: f(*[
+#             x_flat.reshape(shape) if i == argnums else arg
+#             for i, arg in enumerate(args)
+#         ])
+#         zero = fwdlap.Zero.from_value(x_flatten)
+        
+#         if inner_size is None:
+#             _, _, laplacian = fwdlap.lap(f_argx, (x_flatten,), (eye,), (zero,))
+#         else:
+#             eye = eye.reshape(size // inner_size, inner_size, size)
+#             _, f_lap_pe = fwdlap.lap_partial(f_argx, (x_flatten,), (eye[0],), (zero,))
+            
+#             def loop_fn(i, val):
+#                 jac, lap = f_lap_pe((eye[i],), (zero,))
+#                 return val + lap
+            
+#             laplacian = jax.lax.fori_loop(0, size // inner_size, loop_fn, 0.0)
+
+#         return laplacian
+
+#     return f_laplacian

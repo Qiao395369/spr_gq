@@ -140,6 +140,7 @@ def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,key,ap
             h1=h1, 
             h2=h2, 
             nh=2,
+            do_complex=False,
             feature_scale=False,
             ef=False, 
             attn=attn_params, 
