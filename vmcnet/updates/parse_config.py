@@ -63,6 +63,7 @@ def get_update_fn_and_init_optimizer(
     log_psi_apply: ModelApply[P],
     vmc_config: ConfigDict,
     params: P,
+    ion_pos,
     data: D,
     get_position_fn: GetPositionFromData[D],
     update_data_fn: UpdateDataFn[D, P],
@@ -174,6 +175,7 @@ def get_update_fn_and_init_optimizer(
             optimizer_state,
         ) = get_spring_update_fn_and_state(
             log_psi_apply,
+            ion_pos,
             params,
             get_position_fn,
             update_data_fn,
@@ -544,6 +546,7 @@ def get_sr_update_fn_and_state(
 
 def get_spring_update_fn_and_state(
     log_psi_apply: ModelApply[P],
+    ion_pos,
     params: P,
     get_position_fn: GetPositionFromData[D],
     update_data_fn: UpdateDataFn[D, P],
@@ -584,6 +587,7 @@ def get_spring_update_fn_and_state(
     """
     spring_update_fn = get_spring_update_fn(
         log_psi_apply,
+        ion_pos,
         optimizer_config.damping,
         optimizer_config.mu,
         optimizer_config.momentum,

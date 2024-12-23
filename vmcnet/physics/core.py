@@ -51,21 +51,25 @@ def initialize_molecular_pos(
     if nelec_total <= nion:
         replace = False
 
-    assignments = []
-    for _ in range(nchains):
-        key, subkey = jax.random.split(key)
-        choices = jax.random.choice(
-            subkey,
-            nion,
-            shape=(nelec_total,),
-            replace=replace,
-            p=ion_charges / jnp.sum(ion_charges),
-        )
-        assignments.append(ion_pos[choices])
-    elecs_at_ions = jnp.stack(assignments, axis=0)
+    elecs_at_ions=[]
+    for i in range(ion_pos.shape[0]):
+        assignments = []
+        for _ in range(nchains):
+            key, subkey = jax.random.split(key)
+            choices = jax.random.choice(
+                subkey,
+                nion,
+                shape=(nelec_total,),
+                replace=replace,
+                p=ion_charges / jnp.sum(ion_charges),
+            )
+            assignments.append(ion_pos[i][choices])
+        elecs_at_ions.append(jnp.stack(assignments, axis=0)) #[(nchains, nelec_total, 3),...]
+    elecs=jnp.stack(elecs_at_ions,axis=0) #(walker,nchain,ne,dim)
+    print(f"xe.shape:{elecs.shape}")
     key, subkey = jax.random.split(key)
-    return key, elecs_at_ions + init_width * jax.random.normal(
-        subkey, elecs_at_ions.shape, dtype=dtype
+    return key, elecs + init_width * jax.random.normal(
+        subkey, elecs.shape, dtype=dtype
     )
 
 
@@ -97,6 +101,7 @@ def combine_local_energy_terms(
 def laplacian_psi_over_psi(
     grad_log_psi_apply: ModelApply,
     params: P,
+    ion_pos: Array,
     x: Array,
     nparticles: Optional[int] = None,
     particle_perm: Optional[Array] = None,
@@ -148,7 +153,7 @@ def laplacian_psi_over_psi(
 
     def flattened_grad_log_psi_of_flat_x(flat_x_in):
         """Flattened input to flattened output version of grad_log_psi."""
-        grad_log_psi_out = grad_log_psi_apply(params, jnp.reshape(flat_x_in, x_shape))
+        grad_log_psi_out = grad_log_psi_apply(params,ion_pos, jnp.reshape(flat_x_in, x_shape))
         return jnp.reshape(grad_log_psi_out, (-1,))
 
     length = n
@@ -207,10 +212,9 @@ def get_statistics_from_local_energy(
         allreduce_mean = utils.distribute.nanmean_all_local_devices
     else:
         allreduce_mean = utils.distribute.mean_all_local_devices
-    energy = allreduce_mean(local_energies)
-    variance = (
-        allreduce_mean(jnp.square(local_energies - energy)) * nchains / (nchains - 1)
-    )  # adjust by n / (n - 1) to get an unbiased estimator
+    #TODO use the last axis instead of 1.
+    energy = allreduce_mean(local_energies,axis=(0,1))
+    variance = (allreduce_mean(jnp.square(local_energies - energy),axis=(0,1)) * nchains / (nchains - 1))  # adjust by n / (n - 1) to get an unbiased estimator
     return energy, variance
 
 def get_statistics_from_other_energy(
@@ -220,7 +224,7 @@ def get_statistics_from_other_energy(
         allreduce_mean = utils.distribute.nanmean_all_local_devices
     else:
         allreduce_mean = utils.distribute.mean_all_local_devices
-    energy = allreduce_mean(energies)
+    energy = allreduce_mean(energies,axis=(0,1))
     return energy
 
 def get_clipped_energies_and_aux_data(
@@ -229,19 +233,22 @@ def get_clipped_energies_and_aux_data(
     clipping_fn: Optional[ClippingFn],
     nan_safe: bool,
 ) -> Tuple[Array, Array, EnergyAuxData]:
-    """Clip local energies if requested and return auxiliary data."""
+    """Clip local energies if requested and return auxiliary data.
+    local_energies_noclip:(W,B)
+    
+    """
     if clipping_fn is not None:
         # For the unclipped metrics, which are not used in the gradient, don't
         # do these in a nan-safe way. This makes nans more visible and makes sure
         # nans checkpointing will work properly.
         energy_noclip, variance_noclip = get_statistics_from_local_energy(
             local_energies_noclip, nchains, nan_safe=False
-        )
+        )  #energy_noclip:(W,)  variance_noclip:(W,)
 
-        local_energies = clipping_fn(local_energies_noclip, energy_noclip)
+        local_energies = clipping_fn(local_energies_noclip, energy_noclip) #local_energies:(W,B)
         energy, variance = get_statistics_from_local_energy(
             local_energies, nchains, nan_safe=nan_safe
-        )
+        )  #energy:(W,)  variance:(W,)
     else:
         local_energies = local_energies_noclip
         energy, variance = get_statistics_from_local_energy(
@@ -255,11 +262,11 @@ def get_clipped_energies_and_aux_data(
             local_energies_noclip, nchains, nan_safe=False
         )
     aux_data = dict(
-        variance=variance,
-        local_energies_noclip=local_energies_noclip,
-        energy_noclip=energy_noclip,
-        variance_noclip=variance_noclip,
-        centered_local_energies=local_energies - energy,
+        variance=variance,  #(W,)
+        local_energies_noclip=local_energies_noclip,  #(W,B)
+        energy_noclip=energy_noclip,  #(W,)
+        variance_noclip=variance_noclip,  #(W,)
+        centered_local_energies=local_energies - energy,  #(W,B)
     )
     return energy, local_energies, aux_data
 
@@ -269,6 +276,7 @@ def create_value_and_grad_energy_fn(
     # local_energy_fn: LocalEnergyApply[P],
     kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
     nchains: int,
+    atoms_positions:Array,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
     local_energy_type: str = "standard",
@@ -321,14 +329,20 @@ def create_value_and_grad_energy_fn(
         where auxiliary_energy_data is the tuple
         (expected_variance, local_energies, unclipped_energy, unclipped_variance)
     """
-    mean_grad_fn = utils.distribute.get_mean_over_first_axis_fn(nan_safe=nan_safe)
+    # mean_grad_fn = utils.distribute.get_mean_over_first_axis_fn(nan_safe=nan_safe)
+    mean_grad_fn = utils.distribute.get_mean_over_first_and_second_axis_fn(nan_safe=nan_safe)
 
     def standard_estimator_forward(
         params: P,
         positions: Array,
         centered_local_energies: Array,
     ) -> ArrayLike:
-        log_psi = log_psi_apply(params, positions)
+        '''
+        atoms_position:(W,natom,dim)
+        positions(W,B,nele,dim)
+        centerd_local_energies:(W,B)
+        '''
+        log_psi = log_psi_apply(params, atoms_positions, positions)  # log_psi:(W,B)
         kfac_jax.register_normal_predictive_distribution(log_psi[:, None])
         # NOTE: for the generic gradient estimator case it may be important to include
         # the (nchains / nchains -1) factor here to make sure the standard and generic
@@ -337,90 +351,103 @@ def create_value_and_grad_energy_fn(
             2.0
             * nchains
             / (nchains - 1)
-            * mean_grad_fn(centered_local_energies * log_psi)
-        )
+            * mean_grad_fn(centered_local_energies * log_psi)  
+        )  # shape:()
 
     def get_standard_contribution(local_energies_noclip, params, positions):
+        '''
+        local_energies_noclip:(W,B)
+        atoms_position:(W,natom,dim)
+        positions(W,B,nele,dim)
+        '''
         energy, local_energies, aux_data = get_clipped_energies_and_aux_data(
             local_energies_noclip, nchains, clipping_fn, nan_safe
-        )
-        centered_local_energies = local_energies - energy
+        )  # energy:(W,) local_energies:(W,B)
+        centered_local_energies = local_energies - energy  # centered_local_energies:(W,B)
         grad_E = jax.grad(standard_estimator_forward, argnums=0)(
             params, positions, centered_local_energies
-        )
+        )  # grad_E has the same shape as params.
         return aux_data, energy, grad_E
 
     def standard_energy_val_and_grad(params, key, positions):
+        '''
+        atoms_positions:(W,natom,dim)
+        positions:(W,B,nele,dim)
+        '''
         del key
+        print(f"positions.shape:{positions.shape}")
+        # local_energies_noclip = jax.vmap(local_energy_fn, in_axes=(None, 0, None))(params, positions, None)
+        # def batched_f(f):
+        #     return lambda p,xa,xe: jax.vmap(lambda xa_, xe_: jax.vmap(lambda xe__: f(p,xa_, xe__),in_axes=0)(xe_),in_axes=(0, 0))(xa, xe)
 
-        # local_energies_noclip = jax.vmap(
-        #     local_energy_fn, in_axes=(None, 0, None), out_axes=0
-        # )(params, positions, None)
-        kinetic=jax.vmap(kinetic_fn, in_axes=(None, 0), out_axes=0)(params, positions)
-        ei_potential=jax.vmap(ei_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
-        ee_potential=jax.vmap(ee_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
-        ii_potential=jax.vmap(ii_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
-        local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential
+        kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
+        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,0)),in_axes=(0,0))(atoms_positions, positions)  #(W,B)
+        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=0),in_axes=0)(positions)#(W,B)
+        ii_potential=jax.vmap(ii_potential_fn, in_axes=0)(atoms_positions)[:,None]  #(W,1)
+        # kinetic=jax.vmap(kinetic_fn, in_axes=(None, 0), out_axes=0))(params, positions)
+        # ei_potential=jax.vmap(ei_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
+        # ee_potential=jax.vmap(ee_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
+        # ii_potential=jax.vmap(ii_potential_fn, in_axes=(None, 0), out_axes=0)(params, positions)
+        print(kinetic.shape,ei_potential.shape,ee_potential.shape,ii_potential.shape)
+        local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
 
-        kinetic = get_statistics_from_other_energy(kinetic, nan_safe=nan_safe)
-        ei_potential = get_statistics_from_other_energy(ei_potential, nan_safe=nan_safe)
-        ee_potential = get_statistics_from_other_energy(ee_potential, nan_safe=nan_safe)
-        ii_potential = get_statistics_from_other_energy(ii_potential, nan_safe=nan_safe)
+        kinetic = get_statistics_from_other_energy(kinetic, nan_safe=nan_safe) #(W,)
+        ei_potential = get_statistics_from_other_energy(ei_potential, nan_safe=nan_safe) #(W,)
+        ee_potential = get_statistics_from_other_energy(ee_potential, nan_safe=nan_safe) #(W,)
+        ii_potential = get_statistics_from_other_energy(ii_potential, nan_safe=nan_safe) #(W,)
 
-        aux_data, energy, grad_E = get_standard_contribution(
-            local_energies_noclip, params, positions
-        )
+        aux_data, energy, grad_E = get_standard_contribution(local_energies_noclip, params, positions) 
         aux_data.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential})
         return (energy, aux_data), grad_E
 
-    def random_particle_energy_val_and_grad(params, key, positions):
-        nbatch = positions.shape[0]
-        key = jax.random.split(key, nbatch)
+    # def random_particle_energy_val_and_grad(params, key, positions):
+    #     nbatch = positions.shape[0]
+    #     key = jax.random.split(key, nbatch)
 
-        local_energies_noclip = jax.vmap(
-            local_energy_fn, in_axes=(None, 0, 0), out_axes=0
-        )(params, positions, key)
+    #     local_energies_noclip = jax.vmap(
+    #         local_energy_fn, in_axes=(None, 0, 0), out_axes=0
+    #     )(params, positions, key)
 
-        aux_data, energy, grad_E = get_standard_contribution(
-            local_energies_noclip, params, positions
-        )
-        return (energy, aux_data), grad_E
+    #     aux_data, energy, grad_E = get_standard_contribution(
+    #         local_energies_noclip, params, positions
+    #     )
+    #     return (energy, aux_data), grad_E
 
-    def generic_energy_val_and_grad(params, key, positions):
-        del key
+    # def generic_energy_val_and_grad(params, key, positions):
+    #     del key
 
-        val_and_grad_local_energy = jax.value_and_grad(local_energy_fn, argnums=0)
-        val_and_grad_local_energy_vmapped = jax.vmap(
-            val_and_grad_local_energy, in_axes=(None, 0, None), out_axes=0
-        )
-        local_energies_noclip, local_energy_grads = val_and_grad_local_energy_vmapped(
-            params, positions, None
-        )
-        generic_contribution = jax.tree_map(mean_grad_fn, local_energy_grads)
+    #     val_and_grad_local_energy = jax.value_and_grad(local_energy_fn, argnums=0)
+    #     val_and_grad_local_energy_vmapped = jax.vmap(
+    #         val_and_grad_local_energy, in_axes=(None, 0, None), out_axes=0
+    #     )
+    #     local_energies_noclip, local_energy_grads = val_and_grad_local_energy_vmapped(
+    #         params, positions, None
+    #     )
+    #     generic_contribution = jax.tree_map(mean_grad_fn, local_energy_grads)
 
-        # Gradient clipping seems to make the optimization fail miserably when using
-        # the generic gradient estimator, so setting clipping_fn=None here.
-        # TODO (ggoldsh): investigate this phenomenon further.
-        energy, local_energies, aux_data = get_clipped_energies_and_aux_data(
-            local_energies_noclip, nchains, clipping_fn=None, nan_safe=nan_safe
-        )
+    #     # Gradient clipping seems to make the optimization fail miserably when using
+    #     # the generic gradient estimator, so setting clipping_fn=None here.
+    #     # TODO (ggoldsh): investigate this phenomenon further.
+    #     energy, local_energies, aux_data = get_clipped_energies_and_aux_data(
+    #         local_energies_noclip, nchains, clipping_fn=None, nan_safe=nan_safe
+    #     )
 
-        centered_local_energies = local_energies - energy
+    #     centered_local_energies = local_energies - energy
 
-        standard_contribution = jax.grad(standard_estimator_forward, argnums=0)(
-            params, positions, centered_local_energies
-        )
+    #     standard_contribution = jax.grad(standard_estimator_forward, argnums=0)(
+    #         params, positions, centered_local_energies
+    #     )
 
-        grad_E = tree_sum(standard_contribution, generic_contribution)
+    #     grad_E = tree_sum(standard_contribution, generic_contribution)
 
-        return (energy, aux_data), grad_E
+    #     return (energy, aux_data), grad_E
 
     if local_energy_type == "standard":
         return standard_energy_val_and_grad
-    elif local_energy_type == "ibp":
-        return generic_energy_val_and_grad
-    elif local_energy_type == "random_particle":
-        return random_particle_energy_val_and_grad
+    # elif local_energy_type == "ibp":
+    #     return generic_energy_val_and_grad
+    # elif local_energy_type == "random_particle":
+    #     return random_particle_energy_val_and_grad
     else:
         raise ValueError(
             f"Requested local energy type {local_energy_type} is not supported"

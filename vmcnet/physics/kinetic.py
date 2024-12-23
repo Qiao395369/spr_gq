@@ -25,10 +25,10 @@ def create_laplacian_kinetic_energy(
         Evaluates on only a single configuration so must be externally vmapped
         to be applied to a batch of walkers.
     """
-    grad_log_psi_apply = jax.grad(log_psi_apply, argnums=1)
+    grad_log_psi_apply = jax.grad(log_psi_apply, argnums=2)
 
-    def kinetic_energy_fn(params: P, x: Array) -> Array:
-        return -0.5 * physics.core.laplacian_psi_over_psi(grad_log_psi_apply, params, x)
+    def kinetic_energy_fn(params: P, ion_pos:Array, x: Array) -> Array:
+        return -0.5 * physics.core.laplacian_psi_over_psi(grad_log_psi_apply, params, ion_pos,x)
 
     return kinetic_energy_fn
 

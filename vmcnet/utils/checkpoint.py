@@ -522,11 +522,12 @@ def track_and_save_best_checkpoint(
         energy, variance = running_energy_and_variance
 
         energy.move_history_window(metrics["energy"])
+        # print(f"metrics['energy']:{metrics['energy'].shape}")
         variance.move_history_window(metrics["variance"])
         error_adjusted_running_avg = get_checkpoint_metric(
             energy.avg, variance.avg, nchains * len(energy.history), variance_scale
         )
-
+        # print(f"error_adjusted_running_avg:{error_adjusted_running_avg.shape}")
         if error_adjusted_running_avg < checkpoint_metric:
             best_checkpoint_data = (
                 epoch,

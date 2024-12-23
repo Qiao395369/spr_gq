@@ -196,17 +196,17 @@ def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,fea
     if apply_pmap:
             params = utils.distribute.replicate_all_local_devices(params)
     
-    def log_psi_apply_novmap(params,xe):
-        phase, logabsdet = network_wfn(params,xe,xp)
+    def log_psi_apply_novmap(params,xp,xe):
+        phase, logabsdet = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
         return logabsdet
 
-    def log_psi_apply(params,xe):
-        if len(xe.shape)==3:
-            return jax.vmap(log_psi_apply_novmap,(None,0),0)(params,xe)
+    def log_psi_apply(params,xp,xe):
+        if len(xe.shape)==4:
+            return jax.vmap(jax.vmap(log_psi_apply_novmap,in_axes=(None,None,0)),in_axes=(None,0,0))(params,xp,xe)
         elif len(xe.shape)==2:
-            return log_psi_apply_novmap(params,xe)
+            return log_psi_apply_novmap(params,xp,xe)
         else:
-            raise ValueError("wrong len(xe.shape)")
+            raise ValueError(f"wrong len(xe.shape): {len(xe.shape)} ")
         
     return log_psi_apply, params, key
 
@@ -257,11 +257,12 @@ def _make_initial_distributed_data(
 def _make_initial_single_device_data(
     log_psi_apply: ModelApply[P],
     run_config: ConfigDict,
+    ion_pos: Array,
     init_pos: Array,
     params: P,
     dtype=jnp.float32,
 ) -> dwpa.DWPAData:
-    amplitudes = log_psi_apply(params, init_pos)
+    amplitudes = log_psi_apply(params, ion_pos, init_pos)
     return dwpa.make_dynamic_width_position_amplitude_data(
         init_pos,
         amplitudes,
@@ -274,6 +275,7 @@ def _make_initial_single_device_data(
 def _make_initial_data(
     log_psi_apply: ModelApply[P],
     run_config: ConfigDict,
+    ion_pos: Array,
     init_pos: Array,
     params: P,
     dtype=jnp.float32,
@@ -285,7 +287,7 @@ def _make_initial_data(
         )
     else:
         return _make_initial_single_device_data(
-            log_psi_apply, run_config, init_pos, params, dtype
+            log_psi_apply, run_config, ion_pos, init_pos, params, dtype
         )
 
 
@@ -326,13 +328,13 @@ def _assemble_mol_local_energy_fn(
     if local_energy_type == "standard":
         kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy(log_psi_apply)
         ei_potential_fn = physics.potential.create_electron_ion_coulomb_potential(
-            ion_pos, ion_charges, softening_term=ei_softening
+            ion_charges, softening_term=ei_softening
         )
         ee_potential_fn = physics.potential.create_electron_electron_coulomb_potential(
-            softening_term=ee_softening
+            softening_term=ee_softening,
         )
         ii_potential_fn = physics.potential.create_ion_ion_coulomb_potential(
-            ion_pos, ion_charges
+            ion_charges,
         )
         # local_energy_fn: LocalEnergyApply[P] = physics.core.combine_local_energy_terms(
         #     [kinetic_fn, ei_potential_fn, ee_potential_fn, ii_potential_fn]
@@ -445,7 +447,8 @@ def _get_energy_val_and_grad_fn(
         log_psi_apply,
         # local_energy_fn,
         kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-        vmc_config.nchains,
+        vmc_config.nchains * vmc_config.walker,
+        ion_pos,
         clipping_fn,
         nan_safe=vmc_config.nan_safe,
         local_energy_type=vmc_config.local_energy_type,
@@ -478,8 +481,8 @@ def _setup_vmc(
 ]:
     nelec_total = int(jnp.sum(nelec))
     key, init_pos = physics.core.initialize_molecular_pos(
-        key, config.vmc.nchains, ion_pos, ion_charges, nelec_total, dtype=dtype
-    )
+        key, config.vmc.nchains,ion_pos, ion_charges, nelec_total, dtype=dtype
+    )   #init_pos:(W,B,ne,dim)
 
     # Make the model
     if config.gq_wfn_type in ["gaoqiao","gq_ferminet"]:
@@ -514,14 +517,14 @@ def _setup_vmc(
 
     # Make initial data
     data = _make_initial_data(
-        log_psi_apply, config.vmc, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
-    )
+        log_psi_apply, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
+    )   #data:PositionAmplitudeData
     get_amplitude_fn = pacore.get_amplitude_from_data
-    update_data_fn = pacore.get_update_data_fn(log_psi_apply)
+    update_data_fn = pacore.get_update_data_fn(log_psi_apply,ion_pos)
 
     # Setup metropolis step
     burning_step, walker_fn = _get_mcmc_fns(
-        config.vmc, log_psi_apply, apply_pmap=apply_pmap
+        config.vmc, lambda p,xe:log_psi_apply(p,ion_pos,xe), apply_pmap=apply_pmap
     )
 
     energy_data_val_and_grad = _get_energy_val_and_grad_fn(
@@ -539,6 +542,7 @@ def _setup_vmc(
         log_psi_apply,
         config.vmc,
         params,
+        ion_pos,
         data,
         pacore.get_position_from_data,
         update_data_fn,

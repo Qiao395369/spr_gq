@@ -83,7 +83,6 @@ def _get_ion_ion_info(
 
 
 def create_electron_ion_coulomb_potential(
-    ion_locations: Array,
     ion_charges: Array,
     strength: chex.Scalar = 1.0,
     softening_term: chex.Scalar = 0.0,
@@ -111,8 +110,7 @@ def create_electron_ion_coulomb_potential(
         -> array of potential energies of shape electron_positions.shape[:-2]
     """
 
-    def potential_fn(params: ModelParams, x: Array) -> Array:
-        del params
+    def potential_fn(ion_locations:Array, x: Array) -> Array:
         multiplier = 1.0
         if nparticles is not None:
             multiplier = x.shape[-2] / nparticles
@@ -155,8 +153,7 @@ def create_electron_electron_coulomb_potential(
         -> array of potential energies of shape electron_positions.shape[:-2]
     """
 
-    def potential_fn(params: ModelParams, x: Array) -> Array:
-        del params
+    def potential_fn(x: Array) -> Array:
         electron_electron_displacements = compute_displacements(x, x)
         electron_electron_distances = compute_soft_norm(
             electron_electron_displacements, softening_term=softening_term
@@ -176,7 +173,7 @@ def create_electron_electron_coulomb_potential(
 
 
 def create_ion_ion_coulomb_potential(
-    ion_locations: Array, ion_charges: Array
+    ion_charges: Array,
 ) -> ModelApply[ModelParams]:
     """Computes the total coulomb potential repulsion between stationary ions.
 
@@ -192,16 +189,12 @@ def create_ion_ion_coulomb_potential(
         (params, electron_positions of shape (..., n_elec, d))
         -> array of potential energies of shape electron_positions.shape[:-2]
     """
-    ion_ion_displacements, charge_charge_prods = _get_ion_ion_info(
-        ion_locations, ion_charges
-    )
-    ion_ion_distances = compute_soft_norm(ion_ion_displacements)
-    constant_potential = jnp.sum(
-        jnp.triu(charge_charge_prods / ion_ion_distances, k=1), axis=(-1, -2)
-    )
+    
 
-    def potential_fn(params: ModelParams, x: ArrayLike) -> Array:
-        del params, x
+    def potential_fn(ion_locations: Array,) -> Array:
+        ion_ion_displacements, charge_charge_prods = _get_ion_ion_info(ion_locations, ion_charges)
+        ion_ion_distances = compute_soft_norm(ion_ion_displacements)
+        constant_potential = jnp.sum(jnp.triu(charge_charge_prods / ion_ion_distances, k=1), axis=(-1, -2))
         return constant_potential
 
     return potential_fn

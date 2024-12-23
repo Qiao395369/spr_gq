@@ -148,7 +148,7 @@ def make_update_move_metadata_fn(
         move_acceptance_sum = move_metadata["move_acceptance_sum"]
         moves_since_update = move_metadata["moves_since_update"]
 
-        current_avg_acceptance = mean_all_local_devices(current_move_mask)
+        current_avg_acceptance = mean_all_local_devices(current_move_mask,axis=(0,1))
         move_acceptance_sum = move_acceptance_sum + current_avg_acceptance
         moves_since_update = moves_since_update + 1
 

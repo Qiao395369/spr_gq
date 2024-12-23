@@ -104,6 +104,7 @@ def to_pam_tuple(data: PositionAmplitudeData) -> Tuple[Array, Array, Any]:
 
 def get_update_data_fn(
     model_apply: ModelApply[P],
+    ion_pos,
 ) -> UpdateDataFn[PositionAmplitudeData, P]:
     """Updates data based on new params, by recalculating amplitudes.
 
@@ -112,7 +113,7 @@ def get_update_data_fn(
 
     def update_data_fn(data: PositionAmplitudeData, params: P) -> PositionAmplitudeData:
         position = data["walker_data"]["position"]
-        amplitude = model_apply(params, position)
+        amplitude = model_apply(params, ion_pos, position)
         return make_position_amplitude_data(position, amplitude, data["move_metadata"])
 
     return update_data_fn
@@ -194,11 +195,11 @@ def make_position_amplitude_metropolis_symmetric_acceptance(
         params: P, data: PositionAmplitudeData, proposed_data: PositionAmplitudeData
     ):
         del params
-        return metropolis.metropolis_symmetric_acceptance(
+        return metropolis.metropolis_symmetric_acceptance( 
             data["walker_data"]["amplitude"],
             proposed_data["walker_data"]["amplitude"],
             logabs=logabs,
-        )
+        ) #a (W,B) array, elements are the accept ratio 
 
     return acceptance_fn
 
@@ -243,7 +244,7 @@ def make_position_amplitude_update(
         move_mask: Array,
     ) -> PositionAmplitudeData:
         def mask_on_first_dimension(old_data: Array, proposal: Array):
-            shaped_mask = jnp.reshape(move_mask, (-1, *((1,) * (old_data.ndim - 1))))
+            shaped_mask = jnp.reshape(move_mask, (old_data.shape[0:2])+((1,) * (old_data.ndim - 2)))
             return jnp.where(shaped_mask, proposal, old_data)
 
         new_walker_data = jax.tree_map(
@@ -288,8 +289,8 @@ def make_position_amplitude_gaussian_metropolis_step(
             (params, PositionAmplitudeData, key)
             -> (mean acceptance probability, PositionAmplitudeData, new_key)
     """
-    proposal_fn = make_position_amplitude_gaussian_proposal(model_apply, get_std_move)
-    accept_fn = make_position_amplitude_metropolis_symmetric_acceptance(logabs=logabs)
+    proposal_fn = make_position_amplitude_gaussian_proposal(model_apply, get_std_move) #proposal is callable,and returns a proposal data
+    accept_fn = make_position_amplitude_metropolis_symmetric_acceptance(logabs=logabs) #accept_fn is callable, reveive data and data_proposal, return a ratio array (W,B)
     metrop_step_fn = metropolis.make_metropolis_step(
         proposal_fn,
         accept_fn,

@@ -60,14 +60,14 @@ def get_first(obj: T) -> T:
 pmean_if_pmap = functools.partial(wrap_if_pmap(jax.lax.pmean), axis_name=PMAP_AXIS_NAME)
 
 
-def mean_all_local_devices(x: Array) -> Array:
+def mean_all_local_devices(x: Array,axis=0) -> Array:
     """Compute mean over all local devices if distributed, otherwise the usual mean."""
-    return pmean_if_pmap(jnp.mean(x))
+    return pmean_if_pmap(jnp.mean(x,axis))
 
 
-def nanmean_all_local_devices(x: Array) -> Array:
+def nanmean_all_local_devices(x: Array,axis=0) -> Array:
     """Compute a nan-safe mean over all local devices."""
-    return pmean_if_pmap(jnp.nanmean(x))
+    return pmean_if_pmap(jnp.nanmean(x,axis))
 
 
 def get_mean_over_first_axis_fn(
@@ -93,6 +93,19 @@ def get_mean_over_first_axis_fn(
 
     return mean_fn
 
+
+def get_mean_over_first_and_second_axis_fn(
+    nan_safe: bool = True,
+) -> Callable[[ArrayLike], ArrayLike]:
+    if nan_safe:
+        local_mean_fn = functools.partial(jnp.nanmean, axis=(0,1))
+    else:
+        local_mean_fn = functools.partial(jnp.mean, axis=(0,1))
+
+    def mean_fn(x: ArrayLike) -> ArrayLike:
+        return pmean_if_pmap(local_mean_fn(x))
+
+    return mean_fn
 
 p_split = pmap(lambda key: tuple(jax.random.split(key)))
 
