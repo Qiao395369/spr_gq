@@ -52,6 +52,8 @@ def initialize_molecular_pos(
         replace = False
 
     elecs_at_ions=[]
+    # print(ion_pos.shape)
+    # assert len(ion_pos.shape)==3
     for i in range(ion_pos.shape[0]):
         assignments = []
         for _ in range(nchains):
@@ -80,7 +82,7 @@ def combine_local_energy_terms(
 
     Args:
         local_energy_terms (Sequence): sequence of local energy terms, each with the
-            signature (params, x) -> array of terms of shape (x.shape[0],)
+            signature (params,atoms_positions, x) -> array of terms of shape (x.shape[0],)
 
     Returns:
         Callable: local energy function which computes the sum of the local energy
@@ -88,11 +90,11 @@ def combine_local_energy_terms(
         (params, x) -> local energy array of shape (x.shape[0],)
     """
 
-    def local_energy_fn(params: P, x: Array, key: Optional[PRNGKey]) -> Array:
+    def local_energy_fn(params: P,atoms_positions, x: Array, key: Optional[PRNGKey]) -> Array:
         del key
-        local_energy_sum = local_energy_terms[0](params, x)
+        local_energy_sum = local_energy_terms[0](params, atoms_positions, x)
         for term in local_energy_terms[1:]:
-            local_energy_sum = cast(Array, local_energy_sum + term(params, x))
+            local_energy_sum = cast(Array, local_energy_sum + term(params, atoms_positions, x))
         return local_energy_sum
 
     return local_energy_fn
@@ -379,9 +381,9 @@ def create_value_and_grad_energy_fn(
         #     return lambda p,xa,xe: jax.vmap(lambda xa_, xe_: jax.vmap(lambda xe__: f(p,xa_, xe__),in_axes=0)(xe_),in_axes=(0, 0))(xa, xe)
 
         kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
-        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,0)),in_axes=(0,0))(atoms_positions, positions)  #(W,B)
-        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=0),in_axes=0)(positions)#(W,B)
-        ii_potential=jax.vmap(ii_potential_fn, in_axes=0)(atoms_positions)[:,None]  #(W,1)
+        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
+        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
+        ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
         # print(kinetic.shape,ei_potential.shape,ee_potential.shape,ii_potential.shape)
         local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
 

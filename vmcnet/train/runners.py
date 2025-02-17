@@ -94,9 +94,25 @@ def _get_electron_ion_config_as_arrays(
     config: ConfigDict, dtype=jnp.float32
 ) -> Tuple[Array, Array, Array]:
     ion_pos = jnp.array(config.problem.ion_pos, dtype=dtype)
+    if len(ion_pos.shape)==2:
+        ion_pos=ion_pos[None,:]
+    assert len(ion_pos.shape)==3
     ion_charges = jnp.array(config.problem.ion_charges, dtype=dtype)
     nelec = jnp.array(config.problem.nelec)
     nspins=config.problem.nelec
+    return ion_pos, ion_charges, nelec ,nspins
+
+def _get_eval_electron_ion_config_as_arrays(
+    config: ConfigDict, dtype=jnp.float32
+) -> Tuple[Array, Array, Array]:
+    ion_pos = jnp.array(config.eval.ion_pos, dtype=dtype)
+    if len(ion_pos.shape)==2:
+        ion_pos=ion_pos[None,:]
+    assert len(ion_pos.shape)==3
+    ion_charges = jnp.array(config.eval.ion_charges, dtype=dtype)
+    nelec = jnp.array(config.eval.nelec)
+    nspins=config.eval.nelec
+    # print("ion_pos:",ion_pos)
     return ion_pos, ion_charges, nelec ,nspins
 
 
@@ -206,7 +222,7 @@ def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,fea
         elif len(xe.shape)==2:
             return log_psi_apply_novmap(params,xp,xe)
         else:
-            raise ValueError(f"wrong len(xe.shape): {len(xe.shape)} ")
+            raise ValueError(f"wrong len(xe.shape): {len(xe.shape)} , xe.shape: {xe.shape}")
         
     return log_psi_apply, params, key
 
@@ -447,7 +463,7 @@ def _get_energy_val_and_grad_fn(
         log_psi_apply,
         # local_energy_fn,
         kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-        vmc_config.nchains * vmc_config.walker,
+        vmc_config.nchains * ion_pos.shape[0],
         ion_pos,
         clipping_fn,
         nan_safe=vmc_config.nan_safe,
@@ -581,7 +597,8 @@ def _setup_eval(
     ei_softening = problem_config.ei_softening
     ee_softening = problem_config.ee_softening
 
-    local_energy_fn = _assemble_mol_local_energy_fn(
+    # local_energy_fn = _assemble_mol_local_energy_fn(
+    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn= _assemble_mol_local_energy_fn(
         eval_config.local_energy_type,
         eval_config.local_energy,
         ion_pos,
@@ -590,17 +607,22 @@ def _setup_eval(
         ee_softening,
         log_psi_apply,
     )
+    # local_energy_fn: LocalEnergyApply[P] = physics.core.combine_local_energy_terms(
+    #         [kinetic_fn, ei_potential_fn, ee_potential_fn, ii_potential_fn]
+    #     )
+
     eval_update_param_fn = updates.params.create_eval_update_param_fn(
-        local_energy_fn,
-        eval_config.nchains,
+        ion_pos,
+        kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+        # eval_config.nchains,
         get_position_fn,
         record_local_energies=eval_config.record_local_energies,
         nan_safe=eval_config.nan_safe,
         apply_pmap=apply_pmap,
-        use_PRNGKey=eval_config.local_energy_type == "random_particle",
+        # use_PRNGKey=eval_config.local_energy_type == "random_particle",
     )
     eval_burning_step, eval_walker_fn = _get_mcmc_fns(
-        eval_config, log_psi_apply, apply_pmap=apply_pmap
+        eval_config, lambda p,xe:log_psi_apply(p,ion_pos,xe), apply_pmap=apply_pmap
     )
     return eval_update_param_fn, eval_burning_step, eval_walker_fn
 
@@ -635,6 +657,7 @@ def _make_new_data_for_eval(
     data = _make_initial_data(
         log_psi_apply,
         config.eval,
+        ion_pos,
         init_pos,
         params,
         dtype=dtype,
@@ -719,10 +742,7 @@ def run_molecule() -> None:
     """Run VMC on a molecule."""
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
-    reload_from_checkpoint = (
-        reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
-        and reload_config.use_checkpoint_file
-    )
+    reload_from_checkpoint = (reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR and reload_config.use_checkpoint_file)
 
     if reload_from_checkpoint:
         config.notes = config.notes + " (reloaded from {}/{}{})".format(
@@ -738,9 +758,7 @@ def run_molecule() -> None:
 
     dtype_to_use = _get_dtype(config)
 
-    ion_pos, ion_charges, nelec ,nspins= _get_electron_ion_config_as_arrays(
-        config, dtype=dtype_to_use
-    )
+    ion_pos, ion_charges, nelec ,nspins= _get_electron_ion_config_as_arrays(config, dtype=dtype_to_use)
 
     key = jax.random.PRNGKey(config.initial_seed)
 
@@ -768,9 +786,7 @@ def run_molecule() -> None:
     start_epoch = 0
 
     if reload_from_checkpoint:
-        checkpoint_file_path = os.path.join(
-            reload_config.logdir, reload_config.checkpoint_relative_file_path
-        )
+        checkpoint_file_path = os.path.join(reload_config.logdir, reload_config.checkpoint_relative_file_path)
         directory, filename = os.path.split(checkpoint_file_path)
 
         (
@@ -782,9 +798,7 @@ def run_molecule() -> None:
         ) = utils.io.reload_vmc_state(directory, filename)
 
         if reload_config.append:
-            utils.io.copy_txt_stats(
-                reload_config.logdir, logdir, truncate=reload_at_epoch
-            )
+            utils.io.copy_txt_stats(reload_config.logdir, logdir, truncate=reload_at_epoch)
 
         if config.distribute:
             (
@@ -829,6 +843,10 @@ def run_molecule() -> None:
     # (energy, var, overall mean acceptance ratio, std error, iac) to eval_logdir, post
     # evaluation
     eval_logdir = os.path.join(logdir, "eval")
+
+    ion_pos, ion_charges, nelec ,nspins= _get_eval_electron_ion_config_as_arrays(
+        config, dtype=dtype_to_use
+    )
 
     eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
         config.eval,

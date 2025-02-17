@@ -66,8 +66,8 @@ def get_spring_update_fn(
         epsion_tilde = epsilon_bar - Ohat @ prev_grad_decayed   #(W*B,)
 
         dtheta_residual = Ohat.T @ jax.scipy.linalg.solve(T_reg, epsion_tilde, assume_a="pos") #(nparams,)
-        print(f"dtheta_residual:{dtheta_residual.shape}")
-        print(f"prev_grad_decayed:{prev_grad_decayed.shape}")
+        # print(f"dtheta_residual:{dtheta_residual.shape}")   #(nparams,)
+        # print(f"prev_grad_decayed:{prev_grad_decayed.shape}")   #(nparams,)
         SR_G = dtheta_residual + prev_grad_decayed
         SR_G = (1 - momentum) * SR_G + momentum * prev_grad
 

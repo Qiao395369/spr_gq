@@ -110,7 +110,8 @@ def create_electron_ion_coulomb_potential(
         -> array of potential energies of shape electron_positions.shape[:-2]
     """
 
-    def potential_fn(ion_locations:Array, x: Array) -> Array:
+    def potential_fn(params,ion_locations:Array, x: Array) -> Array:
+        del params
         multiplier = 1.0
         if nparticles is not None:
             multiplier = x.shape[-2] / nparticles
@@ -153,7 +154,8 @@ def create_electron_electron_coulomb_potential(
         -> array of potential energies of shape electron_positions.shape[:-2]
     """
 
-    def potential_fn(x: Array) -> Array:
+    def potential_fn(params,atoms_positions,x: Array) -> Array:
+        del params,atoms_positions
         electron_electron_displacements = compute_displacements(x, x)
         electron_electron_distances = compute_soft_norm(
             electron_electron_displacements, softening_term=softening_term
@@ -191,7 +193,8 @@ def create_ion_ion_coulomb_potential(
     """
     
 
-    def potential_fn(ion_locations: Array,) -> Array:
+    def potential_fn(params,ion_locations: Array,x) -> Array:
+        del params,x
         ion_ion_displacements, charge_charge_prods = _get_ion_ion_info(ion_locations, ion_charges)
         ion_ion_distances = compute_soft_norm(ion_ion_displacements)
         constant_potential = jnp.sum(jnp.triu(charge_charge_prods / ion_ion_distances, k=1), axis=(-1, -2))

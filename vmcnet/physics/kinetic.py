@@ -27,8 +27,8 @@ def create_laplacian_kinetic_energy(
     """
     grad_log_psi_apply = jax.grad(log_psi_apply, argnums=2)
 
-    def kinetic_energy_fn(params: P, ion_pos:Array, x: Array) -> Array:
-        return -0.5 * physics.core.laplacian_psi_over_psi(grad_log_psi_apply, params, ion_pos,x)
+    def kinetic_energy_fn(params: P, atoms_positions:Array, positions: Array) -> Array:
+        return -0.5 * physics.core.laplacian_psi_over_psi(grad_log_psi_apply, params,atoms_positions, positions)
 
     return kinetic_energy_fn
 

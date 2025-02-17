@@ -218,13 +218,15 @@ def create_kfac_update_param_fn(
 
 
 def create_eval_update_param_fn(
-    local_energy_fn: LocalEnergyApply[P],
-    nchains: int,
+    atoms_positions,
+    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+    # local_energy_fn: LocalEnergyApply[P],
+    # nchains: int,
     get_position_fn: GetPositionFromData[D],
     apply_pmap: bool = True,
     record_local_energies: bool = True,
     nan_safe: bool = False,
-    use_PRNGKey: bool = False,
+    # use_PRNGKey: bool = False,
 ) -> UpdateParamFn[P, D, OptimizerState]:
     """No update/clipping/grad function which simply evaluates the local energies.
 
@@ -250,22 +252,38 @@ def create_eval_update_param_fn(
 
     def eval_update_param_fn(params, data, optimizer_state, key):
         positions = get_position_fn(data)
+        nbatch = positions.shape[1]
+        nwalker = positions.shape[0]
+        
+        # if use_PRNGKey:
+        #     keys = jax.random.split(key, num=nbatch*nwalker)  
+        #     keys = keys.reshape(nwalker, nbatch, -1)
+        #     # key = jax.random.split(key, nbatch)
+        #     # local_energies = jax.vmap(local_energy_fn, in_axes=(None, 0, 0), out_axes=0)(params, positions, key)
+        #     # local_energies = jax.vmap(jax.vmap(local_energy_fn, in_axes=(None,None,0,0)),in_axes=(None,0,0,0))(params, atoms_positions, positions, key)
+        #     kinetic=jax.vmap(jax.vmap(kinetic_fn,in_axes=(None,None,0,0)),in_axes=(None,0,0,0))(params, atoms_positions, positions, key) #(W,B)
+        #     ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0,0)),in_axes=(None,0,0,0))(params, atoms_positions, positions, key) #(W,B)
+        #     ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0,0)),in_axes=(None,0,0,0))(params, atoms_positions, positions, key) #(W,B)
+        #     ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0,0)),in_axes=(None,0,0,0))(params, atoms_positions, positions, key) #(W,B)
+        #     local_energies=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
+        # else:
+            # local_energies = jax.vmap(local_energy_fn, in_axes=(None, 0, None), out_axes=0)(params, positions, None)
+            # local_energies = jax.vmap(jax.vmap(local_energy_fn, in_axes=(None,None,0,None)),in_axes=(None,0,0,None))(params, atoms_positions, positions, None)
+        kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
+        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
+        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
+        ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
+        local_energies=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
 
-        if use_PRNGKey:
-            nbatch = positions.shape[0]
-            key = jax.random.split(key, nbatch)
-            local_energies = jax.vmap(
-                local_energy_fn, in_axes=(None, 0, 0), out_axes=0
-            )(params, positions, key)
-        else:
-            local_energies = jax.vmap(
-                local_energy_fn, in_axes=(None, 0, None), out_axes=0
-            )(params, get_position_fn(data), None)
+        kinetic = physics.core.get_statistics_from_other_energy(kinetic, nan_safe=nan_safe) #()
+        ei_potential = physics.core.get_statistics_from_other_energy(ei_potential, nan_safe=nan_safe) #()
+        ee_potential = physics.core.get_statistics_from_other_energy(ee_potential, nan_safe=nan_safe) #()
+        ii_potential = physics.core.get_statistics_from_other_energy(ii_potential, nan_safe=nan_safe) #()
 
-        energy, variance = physics.core.get_statistics_from_local_energy(
-            local_energies, nchains, nan_safe=nan_safe
-        )
-        metrics = {"energy": energy, "variance": variance}
+        energy,_, variance = physics.core.get_statistics_from_local_energy(local_energies, nbatch*nwalker, nan_safe=nan_safe) #()
+
+        metrics = {"energy": energy, "variance": variance, "kinetic":kinetic, 
+                   "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential}
         if record_local_energies:
             metrics.update({"local_energies": local_energies})
         return params, data, optimizer_state, metrics, key

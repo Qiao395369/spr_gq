@@ -299,7 +299,7 @@ def get_default_vmc_config() -> Dict:
     """Get a default VMC training configuration."""
     vmc_config = {
         "nchains": 2000,
-        "walker":8,
+        # "walker":8,
         "nepochs": 200000,
         "nburn": 5000,
         "nsteps_per_param_update": 10,
@@ -394,6 +394,9 @@ def get_default_eval_config() -> Dict:
         "use_data_from_training": False,
         "record_local_energies": True,  # save local energies and compute statistics
         "nan_safe": False,
+        "ion_pos": ((0.0, 0.0, -1.5069621), (0.0, 0.0, 1.5069621)),
+        "ion_charges":(1.,1.),
+        "nelec":(1,1),
     }
     return eval_config
 

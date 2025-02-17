@@ -17,13 +17,9 @@ from vmcnet.train.default_config import NO_NAME, NO_PATH, DEFAULT_PRESETS_DIR
 def _get_config_from_reload(
     reload_config: ConfigDict, flag_values: flags.FlagValues
 ) -> ConfigDict:
-    reloaded_config = io.load_config_dict(
-        reload_config.logdir, reload_config.config_relative_file_path
-    )
+    reloaded_config = io.load_config_dict(reload_config.logdir, reload_config.config_relative_file_path)
     reloaded_config.logdir = reloaded_config.base_logdir
-    config_flags.DEFINE_config_dict(
-        "config", reloaded_config, lock_config=True, flag_values=flag_values
-    )
+    config_flags.DEFINE_config_dict("config", reloaded_config, lock_config=True, flag_values=flag_values)
     flag_values(sys.argv)
     return flag_values.config
 
@@ -37,12 +33,7 @@ def _get_config_from_default_config(
         presets = io.load_config_dict("", presets_path)
         base_config.update(presets)
 
-    config_flags.DEFINE_config_dict(
-        "config",
-        base_config,
-        lock_config=False,
-        flag_values=flag_values,
-    )
+    config_flags.DEFINE_config_dict("config",base_config,lock_config=False,flag_values=flag_values,)
     flag_values(sys.argv)
     config = flag_values.config
     config.model = train.default_config.choose_model_type_in_model_config(config.model)
