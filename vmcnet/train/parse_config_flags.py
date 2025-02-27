@@ -96,24 +96,22 @@ def parse_flags(flag_values: flags.FlagValues) -> Tuple[ConfigDict, ConfigDict]:
     flag_values(sys.argv, True)
 
     reload_config = flag_values.reload
+    presets_config = flag_values.presets
 
     reload = (
         reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
         and reload_config.use_config_file
     )
 
-    load_presets = (
-        flag_values.presets.name != NO_NAME or flag_values.presets.path != NO_PATH
-    )
-    if flag_values.presets.path != NO_PATH and flag_values.presets.name != NO_NAME:
+    load_presets = (presets_config.name != NO_NAME or presets_config.path != NO_PATH)
+
+    if presets_config.path != NO_PATH and presets_config.name != NO_NAME:
         raise ValueError("Cannot specify both --presets.path and --presets.name")
 
-    if flag_values.presets.name != NO_NAME:
-        presets_path = os.path.join(
-            DEFAULT_PRESETS_DIR, flag_values.presets.name + ".json"
-        )
-    elif flag_values.presets.path != NO_PATH:
-        presets_path = flag_values.presets.path
+    if presets_config.name != NO_NAME:
+        presets_path = os.path.join(DEFAULT_PRESETS_DIR, presets_config.name + ".json")
+    elif presets_config.path != NO_PATH:
+        presets_path = presets_config.path
 
     if reload and load_presets:
         raise ValueError("Cannot specify --presets.path when using reloaded config")
@@ -131,3 +129,25 @@ def parse_flags(flag_values: flags.FlagValues) -> Tuple[ConfigDict, ConfigDict]:
     config.base_logdir = config.logdir
     config.lock()
     return reload_config, config
+
+def inference_parse_flags(flag_values: flags.FlagValues) -> Tuple[ConfigDict, ConfigDict]:
+
+    config_flags.DEFINE_config_dict(
+        "infer",
+        train.default_config.get_default_infer_config(),
+        lock_config=True,
+        flag_values=flag_values,
+    )
+    flag_values(sys.argv, True)
+
+    infer_config = flag_values.infer
+
+    config = _get_config_from_default_config(flag_values)
+
+    if config.debug_nans:
+        config.distribute = False
+        jax.config.update("jax_debug_nans", True)
+
+    config.base_logdir = config.logdir
+    config.lock()
+    return infer_config, config

@@ -63,6 +63,15 @@ def get_default_reload_config() -> ConfigDict:
         }
     )
 
+def get_default_infer_config() -> ConfigDict:
+    """Make a default reload configuration (no logdir but valid defaults otherwise)."""
+    return ConfigDict(
+        {
+            "logdir": NO_RELOAD_LOG_DIR,
+            "checkpoint_relative_file_path": DEFAULT_CHECKPOINT_FILE_NAME,
+        }
+    )
+
 
 def get_default_config() -> ConfigDict:
     """Make a default configuration (single det FermiNet on LiH)."""
@@ -399,6 +408,7 @@ def get_default_eval_config() -> Dict:
         "nelec":(1,1),
     }
     return eval_config
+
 
 
 def get_default_local_energy_config() -> Dict:

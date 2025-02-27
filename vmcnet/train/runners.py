@@ -15,6 +15,7 @@ import numpy as np
 from absl import flags
 from ml_collections import ConfigDict
 
+from vmcnet.utils.distribute import distribute_vmc_state_from_checkpoint
 import vmcnet.mcmc as mcmc
 import vmcnet.mcmc.dynamic_width_position_amplitude as dwpa
 import vmcnet.mcmc.position_amplitude_core as pacore
@@ -40,22 +41,30 @@ from vmcnet.utils.typing import (
 FLAGS = flags.FLAGS
 
 
-def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict) -> str:
-    if reload_config.same_logdir:
-        config.logdir = reload_config.logdir
-    else:
+def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict,infer:bool) -> str:
+    if infer:
+        name="infer"
         if config.subfolder_name != train.default_config.NO_NAME:
             config.logdir = os.path.join(config.logdir, config.subfolder_name)
         if config.save_to_current_datetime_subfolder:
-            config.logdir = os.path.join(
-                config.logdir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            )
+            config.logdir = os.path.join(config.logdir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
         config.logdir = utils.io.add_suffix_for_uniqueness(config.logdir)
-
+    else:
+        name="reload"
+        if reload_config.same_logdir:
+            config.logdir = reload_config.logdir
+        else:
+            if config.subfolder_name != train.default_config.NO_NAME:
+                config.logdir = os.path.join(config.logdir, config.subfolder_name)
+            if config.save_to_current_datetime_subfolder:
+                config.logdir = os.path.join(config.logdir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+            config.logdir = utils.io.add_suffix_for_uniqueness(config.logdir)
     utils.io.save_config_dict_to_json(config, config.logdir, "config")
-    utils.io.save_config_dict_to_json(reload_config, config.logdir, "reload_config")
-    logging.info("Reload configuration: \n%s", reload_config)
-    logging.info("Running with configuration: \n%s", config)
+    utils.io.save_config_dict_to_json(reload_config, config.logdir, name+"_config")
+    # logging.info("%s configuration: \n%s", (name,reload_config))
+    # logging.info("Running with configuration: \n%s", config)
+    logging.info("%s configuration: %s", name, config.logdir+name+"_config")
+    logging.info("Running with configuration: %s", config.logdir+"config")
     return config.logdir
 
 
@@ -746,14 +755,12 @@ def run_molecule() -> None:
 
     if reload_from_checkpoint:
         config.notes = config.notes + " (reloaded from {}/{}{})".format(
-            reload_config.logdir,
-            reload_config.checkpoint_relative_file_path,
-            ", new optimizer state" if reload_config.new_optimizer_state else "",
-        )
+            reload_config.logdir, reload_config.checkpoint_relative_file_path,
+            ", new optimizer state" if reload_config.new_optimizer_state else "",)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(config.logging_level)
-    logdir = _get_logdir_and_save_config(reload_config, config)
+    logdir = _get_logdir_and_save_config(reload_config, config,False)
     _save_git_hash(logdir)
 
     dtype_to_use = _get_dtype(config)
@@ -762,26 +769,9 @@ def run_molecule() -> None:
 
     key = jax.random.PRNGKey(config.initial_seed)
 
-    (
-        log_psi_apply,
-        burning_step,
-        walker_fn,
-        update_param_fn,
-        get_amplitude_fn,
-        params,
-        data,
-        optimizer_state,
-        key,
-    ) = _setup_vmc(
-        config,
-        ion_pos,
-        ion_charges,
-        nelec,
-        nspins,
-        key,
-        dtype=dtype_to_use,
-        apply_pmap=config.distribute,
-    )
+    (log_psi_apply,burning_step,walker_fn,update_param_fn,
+          get_amplitude_fn,params,data,optimizer_state,key,) = _setup_vmc(config,ion_pos,ion_charges,nelec,nspins,key,
+                                                                          dtype=dtype_to_use,apply_pmap=config.distribute,)
 
     start_epoch = 0
 
@@ -789,26 +779,13 @@ def run_molecule() -> None:
         checkpoint_file_path = os.path.join(reload_config.logdir, reload_config.checkpoint_relative_file_path)
         directory, filename = os.path.split(checkpoint_file_path)
 
-        (
-            reload_at_epoch,
-            data,
-            params,
-            reloaded_optimizer_state,
-            key,
-        ) = utils.io.reload_vmc_state(directory, filename)
+        (reload_at_epoch,data,params,reloaded_optimizer_state,key,) = utils.io.reload_vmc_state(directory, filename)
 
         if reload_config.append:
             utils.io.copy_txt_stats(reload_config.logdir, logdir, truncate=reload_at_epoch)
 
         if config.distribute:
-            (
-                data,
-                params,
-                reloaded_optimizer_state,
-                key,
-            ) = utils.distribute.distribute_vmc_state_from_checkpoint(
-                data, params, reloaded_optimizer_state, key
-            )
+            (data,params,reloaded_optimizer_state,key,) = distribute_vmc_state_from_checkpoint(data, params, reloaded_optimizer_state, key)
 
         if not reload_config.new_optimizer_state:
             optimizer_state = reloaded_optimizer_state
@@ -816,37 +793,73 @@ def run_molecule() -> None:
 
     logging.info("Saving to %s", logdir)
 
-    params, optimizer_state, data, key, nans_detected = _burn_and_run_vmc(
-        config.vmc,
-        logdir,
-        params,
-        optimizer_state,
-        data,
-        burning_step,
-        walker_fn,
-        update_param_fn,
-        get_amplitude_fn,
-        key,
-        is_eval=False,
-        is_pmapped=config.distribute,
-        skip_burn=reload_from_checkpoint and not reload_config.reburn,
-        start_epoch=start_epoch,
-    )
+    (params, optimizer_state, data, key, nans_detected )= _burn_and_run_vmc(config.vmc,logdir,params,optimizer_state,data,burning_step,
+                                                                            walker_fn,update_param_fn,get_amplitude_fn, key, 
+                                                                            is_eval=False, is_pmapped=config.distribute,
+                                                                            skip_burn=reload_from_checkpoint and not reload_config.reburn,
+                                                                            start_epoch=start_epoch,)
 
     if nans_detected:
         logging.info("VMC terminated due to Nans! Aborting.")
         return
     else:
-        logging.info("Completed VMC! Evaluating")
+        logging.info("Completed VMC! Evaluating...")
 
     # TODO: integrate the stuff in mcmc/statistics and write out an evaluation summary
     # (energy, var, overall mean acceptance ratio, std error, iac) to eval_logdir, post
     # evaluation
     eval_logdir = os.path.join(logdir, "eval")
 
-    ion_pos, ion_charges, nelec ,nspins= _get_eval_electron_ion_config_as_arrays(
-        config, dtype=dtype_to_use
-    )
+    ion_pos, ion_charges, nelec ,nspins= _get_eval_electron_ion_config_as_arrays(config, dtype=dtype_to_use)
+
+    eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(config.eval,config.problem,ion_pos,ion_charges,log_psi_apply,
+                                                                          pacore.get_position_from_data, apply_pmap=config.distribute,)
+    optimizer_state = None
+
+    if not config.eval.use_data_from_training or config.vmc.nchains != config.eval.nchains:
+        key, data = _make_new_data_for_eval(config,log_psi_apply,params,ion_pos,ion_charges,nelec,key,
+                                            is_pmapped=config.distribute, dtype=dtype_to_use,)
+
+    _burn_and_run_vmc(config.eval,eval_logdir,params,optimizer_state,data,eval_burning_step,
+                    eval_walker_fn,eval_update_param_fn,get_amplitude_fn,key,
+                    is_eval=True, is_pmapped=config.distribute,)
+
+    # need to check for local_energy.txt because when config.eval.nepochs=0 the file is
+    # not created regardless of config.eval.record_local_energies
+    local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
+    if config.eval.record_local_energies and local_es_were_recorded:
+        local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics")
+
+
+def do_inference()-> None:
+    # TODO: integrate the stuff in mcmc/statistics and write out an evaluation summary
+    # (energy, var, overall mean acceptance ratio, std error, iac) to eval_logdir, post evaluation
+    infer_config, config = train.parse_config_flags.inference_parse_flags(FLAGS)
+
+    config.notes = config.notes + " (reloaded from {}/{})".format(infer_config.logdir, infer_config.checkpoint_relative_file_path,)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(config.logging_level)
+    logdir = _get_logdir_and_save_config(infer_config, config, True)
+    _save_git_hash(logdir)
+    dtype_to_use = _get_dtype(config)
+
+    ion_pos, ion_charges, nelec ,nspins= _get_eval_electron_ion_config_as_arrays(config, dtype=dtype_to_use)
+
+    key = jax.random.PRNGKey(config.initial_seed)
+
+    (log_psi_apply,burning_step,walker_fn,update_param_fn,get_amplitude_fn,params,data,optimizer_state,key,) = _setup_vmc(
+                                        config,ion_pos,ion_charges,nelec,nspins,key,dtype=dtype_to_use,
+                                        apply_pmap=config.distribute,)
+    
+    checkpoint_file_path = os.path.join(infer_config.logdir, infer_config.checkpoint_relative_file_path)
+    directory, filename = os.path.split(checkpoint_file_path)
+
+    (reload_at_epoch,data,params,reloaded_optimizer_state,key,) = utils.io.reload_vmc_state(directory, filename)
+
+    if config.distribute:
+        (data,params,reloaded_optimizer_state,key,) = distribute_vmc_state_from_checkpoint(data, params, reloaded_optimizer_state, key)
 
     eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
         config.eval,
@@ -859,45 +872,23 @@ def run_molecule() -> None:
     )
     optimizer_state = None
 
-    eval_and_vmc_nchains_match = config.vmc.nchains == config.eval.nchains
-    if not config.eval.use_data_from_training or not eval_and_vmc_nchains_match:
+    if not config.eval.use_data_from_training or config.vmc.nchains != config.eval.nchains:
         key, data = _make_new_data_for_eval(
-            config,
-            log_psi_apply,
-            params,
-            ion_pos,
-            ion_charges,
-            nelec,
-            key,
-            is_pmapped=config.distribute,
-            dtype=dtype_to_use,
-        )
-
+                                            config,log_psi_apply,params,ion_pos,ion_charges,nelec,key,
+                                            is_pmapped=config.distribute, dtype=dtype_to_use,)
+    eval_logdir = os.path.join(logdir, "data")
+    logging.info("Saving to %s", eval_logdir)
     _burn_and_run_vmc(
-        config.eval,
-        eval_logdir,
-        params,
-        optimizer_state,
-        data,
-        eval_burning_step,
-        eval_walker_fn,
-        eval_update_param_fn,
-        get_amplitude_fn,
-        key,
-        is_eval=True,
-        is_pmapped=config.distribute,
-    )
+                        config.eval,eval_logdir,params,optimizer_state,data,eval_burning_step,
+                        eval_walker_fn,eval_update_param_fn,get_amplitude_fn,key,
+                        is_eval=True, is_pmapped=config.distribute,)
 
     # need to check for local_energy.txt because when config.eval.nepochs=0 the file is
     # not created regardless of config.eval.record_local_energies
-    local_es_were_recorded = os.path.exists(
-        os.path.join(eval_logdir, "local_energies.txt")
-    )
+    local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(
-            local_energies_filepath, eval_logdir, "statistics"
-        )
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics")
 
 
 def vmc_statistics() -> None:
