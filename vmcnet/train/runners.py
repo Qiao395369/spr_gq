@@ -63,8 +63,8 @@ def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict,in
     utils.io.save_config_dict_to_json(reload_config, config.logdir, name+"_config")
     # logging.info("%s configuration: \n%s", (name,reload_config))
     # logging.info("Running with configuration: \n%s", config)
-    logging.info("%s configuration: %s", name, config.logdir+name+"_config")
-    logging.info("Running with configuration: %s", config.logdir+"config")
+    logging.info("%s configuration   : %s", name, config.logdir+"/"+name+"_config.json")
+    logging.info("Run with configuration: %s", config.logdir+"/"+"config.json")
     return config.logdir
 
 

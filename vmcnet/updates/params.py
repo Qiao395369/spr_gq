@@ -122,11 +122,14 @@ def create_grad_energy_update_param_fn(
                    "kinetic":aux_energy_data["kinetic"],
                    "ei_potential":aux_energy_data["ei_potential"],
                    "ee_potential":aux_energy_data["ee_potential"],
-                   "ii_potential":aux_energy_data["ii_potential"],}
+                   "ii_potential":aux_energy_data["ii_potential"],
+                   "multi_energy":aux_energy_data["multi_energy"],
+                   }
         metrics = _update_metrics_with_noclip(
-            aux_energy_data["energy_noclip"],
-            aux_energy_data["variance_noclip"],
-            metrics,
+            energy_noclip=aux_energy_data["energy_noclip"],
+            variance_noclip=aux_energy_data["variance_noclip"],
+            # variance_noclip=None,
+            metrics=metrics,
         )
         if record_param_l1_norm:
             metrics.update({"param_l1_norm": tree_reduce_l1(params)})
@@ -280,10 +283,10 @@ def create_eval_update_param_fn(
         ee_potential = physics.core.get_statistics_from_other_energy(ee_potential, nan_safe=nan_safe) #()
         ii_potential = physics.core.get_statistics_from_other_energy(ii_potential, nan_safe=nan_safe) #()
 
-        energy,_, variance = physics.core.get_statistics_from_local_energy(local_energies, nbatch*nwalker, nan_safe=nan_safe) #()
+        energy,multi_energy, variance = physics.core.get_statistics_from_local_energy(local_energies, nbatch*nwalker, nan_safe=nan_safe) #()
 
         metrics = {"energy": energy, "variance": variance, "kinetic":kinetic, 
-                   "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential}
+                   "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential,"multi_energy":multi_energy.reshape((-1))}
         if record_local_energies:
             metrics.update({"local_energies": local_energies})
         return params, data, optimizer_state, metrics, key
