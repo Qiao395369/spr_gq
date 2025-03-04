@@ -286,9 +286,9 @@ def create_eval_update_param_fn(
         energy,multi_energy, variance = physics.core.get_statistics_from_local_energy(local_energies, nbatch*nwalker, nan_safe=nan_safe) #()
 
         metrics = {"energy": energy, "variance": variance, "kinetic":kinetic, 
-                   "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential,"multi_energy":multi_energy.reshape((-1))}
+                   "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential}
         if record_local_energies:
-            metrics.update({"local_energies": local_energies})
+            metrics.update({"local_energies": multi_energy})
         return params, data, optimizer_state, metrics, key
 
     traced_fn = _make_traced_fn_with_single_metrics(

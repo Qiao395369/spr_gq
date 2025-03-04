@@ -136,10 +136,24 @@ def get_stats_summary(samples: np.ndarray) -> Dict[str, np.float32]:
         "std_err", and "integrated_autocorrelation"
     """
     # Nested mean may be more numerically stable than single mean
-    average = np.mean(np.mean(samples, axis=-1), axis=-1)
-    autocorr_curve, variance = multi_chain_autocorr_and_variance(samples)
-    iac = tau(autocorr_curve)
-    std_err = np.sqrt(iac * variance / np.size(samples))
+    # average = np.mean(np.mean(samples, axis=-1), axis=-1)
+    average = np.mean(samples, axis=0)
+    # autocorr_curve, variance = multi_chain_autocorr_and_variance(samples)
+    std_errs=[]
+    iacs=[]
+    variances=[]
+    print("samples",samples.shape)
+    for i in range(samples.shape[-1]):
+        sample=samples[:,i][:,None]
+        autocorr_curve, variance = multi_chain_autocorr_and_variance(sample)
+        iac = tau(autocorr_curve)
+        std_err = np.sqrt(iac * variance / np.size(samples))
+        std_errs+=[std_err]
+        iacs+=[iac]
+        variances+=[variance]
+    std_err=np.asarray(std_errs)
+    iac=np.asarray(iacs)
+    variance=np.asarray(variances)
     eval_statistics = {
         "average": average,
         "variance": variance,

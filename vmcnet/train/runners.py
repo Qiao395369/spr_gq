@@ -739,7 +739,7 @@ def _compute_and_save_energy_statistics(
 ) -> None:
     local_energies = np.loadtxt(local_energies_file_path)
     eval_statistics = mcmc.statistics.get_stats_summary(local_energies)
-    eval_statistics = jax.tree_map(lambda x: float(x), eval_statistics)
+    eval_statistics = jax.tree_map(lambda x: str(x), eval_statistics)
     utils.io.save_dict_to_json(
         eval_statistics,
         output_dir,
