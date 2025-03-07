@@ -145,7 +145,7 @@ def _get_and_init_model(
     log_psi_apply = models.construct.slog_psi_to_log_psi_apply(slog_psi.apply)
     return log_psi_apply, params, key
 
-def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,feature_scale,key,apply_pmap,xp
+def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,feature_scale,key,apply_pmap
 ):
     import vmcnet.gaoqiao.build as gaoqiaobuild
     import vmcnet.gaoqiao.param_blocks as param_blocks
@@ -169,7 +169,7 @@ def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,fea
             h2=h2, 
             nh=nh,
             do_complex=False,
-            feature_scale=False,
+            feature_scale=feature_scale,
             ef=False, 
             attn=attn_params, 
             trimul=trimul_params,
@@ -524,7 +524,6 @@ def _setup_vmc(
         feature_scale=config.gq_feature_scale,
         key=key,
         apply_pmap=apply_pmap,
-        xp=ion_pos,
         )
     elif config.gq_wfn_type =="ll" :
         log_psi_apply, params, key = _get_and_init_model(
