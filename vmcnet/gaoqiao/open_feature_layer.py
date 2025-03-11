@@ -150,14 +150,15 @@ def make_open_features(
 		charges: Optional[jnp.ndarray] = None,
 		nspins: Optional[Tuple[int,...]] = None,
 		ndim: int = 3,
-		feature_scale: bool=False,
+		feature_scale:bool=False,
+		feature_scale_num:Tuple[int,...]=(1),
 		has_decay: Optional[bool] = False,
 ):
 
 	def init() -> Tuple[Tuple[int,int],networks.Param]:
 		if feature_scale:
-			dim_one_feature=(ndim+1)*3  
-			dim_two_feature=(ndim+1)*3
+			dim_one_feature=(ndim+1)*len(feature_scale_num)
+			dim_two_feature=(ndim+1)*len(feature_scale_num)
 			if has_decay:
 				dim0+=1  #5
 				dim1+=1
@@ -198,9 +199,16 @@ def make_open_features(
 		#print('ee_features:',aa_features[0])
 		
 		if feature_scale:
-			ae_features_scale=jnp.concatenate([ae_features,ae_features/4,ae_features/8],axis=-1)
-			ee_features_sacle=jnp.concatenate([ee_features,ee_features/4,ee_features/8],axis=-1)
-			aa_features_scale=jnp.concatenate([aa_features,aa_features/4,aa_features/8],axis=-1)
+			ae_features_scale=[]
+			ee_features_sacle=[]
+			aa_features_scale=[]
+			for num in feature_scale_num:
+				ae_features_scale+=[ae_features/num]
+				ee_features_sacle+=[ee_features/num]
+				aa_features_scale+=[aa_features/num]
+			ae_features_scale=jnp.concatenate(ae_features_scale,axis=-1)
+			ee_features_sacle=jnp.concatenate(ee_features_sacle,axis=-1)
+			aa_features_scale=jnp.concatenate(aa_features_scale,axis=-1)
 			return ae_features_scale,ee_features_sacle,aa_features_scale
 		else:
 			return ae_features,ee_features,aa_features

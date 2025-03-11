@@ -104,7 +104,8 @@ def get_config(
 
 def build_network(
 		n,charges,nspins,key,nk,ndet,depth,h1,h2,nh,do_complex,
-		feature_scale:bool=False,
+		feature_scale,
+		feature_scale_num,
 		ef: bool = False,
 		attn: Optional[dict] = None,
 		trimul: Optional[dict] = None,
@@ -138,6 +139,7 @@ def build_network(
 		nspins,
 		ndim,
 		feature_scale,
+		feature_scale_num,
 		**cfg.network.make_feature_layer_kwargs)  # type: networks.FeatureLayer
 
 	# envelope_module,envelope_fn=(
