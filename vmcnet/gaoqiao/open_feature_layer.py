@@ -203,9 +203,9 @@ def make_open_features(
 			ee_features_sacle=[]
 			aa_features_scale=[]
 			for num in feature_scale_num:
-				ae_features_scale+=[ae_features/num]
-				ee_features_sacle+=[ee_features/num]
-				aa_features_scale+=[aa_features/num]
+				ae_features_scale+=[ae_features/float(num)]
+				ee_features_sacle+=[ee_features/float(num)]
+				aa_features_scale+=[aa_features/float(num)]
 			ae_features_scale=jnp.concatenate(ae_features_scale,axis=-1)
 			ee_features_sacle=jnp.concatenate(ee_features_sacle,axis=-1)
 			aa_features_scale=jnp.concatenate(aa_features_scale,axis=-1)

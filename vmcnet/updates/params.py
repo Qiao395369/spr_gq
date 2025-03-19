@@ -283,8 +283,8 @@ def create_eval_update_param_fn(
         ee_potential = physics.core.get_statistics_from_other_energy(ee_potential, nan_safe=nan_safe) #()
         ii_potential = physics.core.get_statistics_from_other_energy(ii_potential, nan_safe=nan_safe) #()
 
-        energy,multi_energy, variance = physics.core.get_statistics_from_local_energy(local_energies, nbatch*nwalker, nan_safe=nan_safe) #()
-
+        energy,_, variance = physics.core.get_statistics_from_local_energy(local_energies, nbatch*nwalker, nan_safe=nan_safe) #()
+        multi_energy=local_energies.reshape((-1))
         metrics = {"energy": energy, "variance": variance, "kinetic":kinetic, 
                    "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential}
         if record_local_energies:

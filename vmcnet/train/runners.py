@@ -736,11 +736,11 @@ def _burn_and_run_vmc(
 
 
 def _compute_and_save_energy_statistics(
-    local_energies_file_path: str, output_dir: str, output_filename: str
+    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int 
 ) -> None:
     local_energies = np.loadtxt(local_energies_file_path)
-    eval_statistics = mcmc.statistics.get_stats_summary(local_energies)
-    eval_statistics = jax.tree_map(lambda x: str(x), eval_statistics)
+    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers)
+    # eval_statistics = jax.tree_map(lambda x: x.tolist(), eval_statistics)
     utils.io.save_dict_to_json(
         eval_statistics,
         output_dir,
@@ -830,7 +830,7 @@ def run_molecule() -> None:
     local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics")
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.vmc.nchains,ion_pos.shape[0])
 
 
 def do_inference()-> None:
@@ -889,7 +889,7 @@ def do_inference()-> None:
     local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics")
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.vmc.nchains,ion_pos.shape[0])
 
 
 def vmc_statistics() -> None:

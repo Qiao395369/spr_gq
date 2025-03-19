@@ -124,7 +124,7 @@ def tau(autocorr_curve: np.ndarray) -> np.ndarray:
     return -1.0 + 2.0 * np.sum(monotonic_min_curve, axis=0)
 
 
-def get_stats_summary(samples: np.ndarray) -> Dict[str, np.float32]:
+def get_stats_summary(multiwalker_samples: np.ndarray,nchains:int,walkers:int) -> Dict[str, np.float32]:
     """Get a summary of the stats (mean, var, std_err, iac) for a collection of samples.
 
     Args:
@@ -136,29 +136,26 @@ def get_stats_summary(samples: np.ndarray) -> Dict[str, np.float32]:
         "std_err", and "integrated_autocorrelation"
     """
     # Nested mean may be more numerically stable than single mean
-    # average = np.mean(np.mean(samples, axis=-1), axis=-1)
-    average = np.mean(samples, axis=0)
-    # autocorr_curve, variance = multi_chain_autocorr_and_variance(samples)
+    assert multiwalker_samples.shape[-1]==nchains*walkers
+    averages=[]
+    variances=[]
     std_errs=[]
     iacs=[]
-    variances=[]
-    print("samples",samples.shape)
-    for i in range(samples.shape[-1]):
-        sample=samples[:,i][:,None]
-        autocorr_curve, variance = multi_chain_autocorr_and_variance(sample)
+    for i in range(walkers):
+        samples=multiwalker_samples[:,nchains*i:nchains*(i+1)]
+        average = np.mean(np.mean(samples, axis=-1), axis=-1)
+        autocorr_curve, variance = multi_chain_autocorr_and_variance(samples)
         iac = tau(autocorr_curve)
         std_err = np.sqrt(iac * variance / np.size(samples))
+        averages+=[average]
+        variances+=[variance]
         std_errs+=[std_err]
         iacs+=[iac]
-        variances+=[variance]
-    std_err=np.asarray(std_errs)
-    iac=np.asarray(iacs)
-    variance=np.asarray(variances)
     eval_statistics = {
-        "average": average,
-        "variance": variance,
-        "std_err": std_err,
-        "integrated_autocorrelation": iac,
+        "average": averages,
+        "variance": variances,
+        "std_err": std_errs,
+        "integrated_autocorrelation": iacs,
     }
 
     return eval_statistics
