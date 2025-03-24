@@ -13,6 +13,7 @@ __pycache__/
 # C extensions
 *.so
 
+statis_N.sh
 results/
 .Ds_Store
 train*.sh

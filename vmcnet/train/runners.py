@@ -830,7 +830,7 @@ def run_molecule() -> None:
     local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.vmc.nchains,ion_pos.shape[0])
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0])
 
 
 def do_inference()-> None:
@@ -889,14 +889,13 @@ def do_inference()-> None:
     local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.vmc.nchains,ion_pos.shape[0])
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0])
 
 
 def vmc_statistics() -> None:
     """Calculate statistics from a VMC evaluation run and write them to disc."""
     parser = argparse.ArgumentParser(
-        description="Calculate statistics from a VMC evaluation run and write them "
-        "to disc."
+        description="Calculate statistics from a VMC evaluation run and write them to disc."
     )
     parser.add_argument(
         "local_energies_file_path",
@@ -909,9 +908,18 @@ def vmc_statistics() -> None:
         help="File path to which to write the output statistics. The '.json' suffix "
         "will be appended to the supplied path.",
     )
+    parser.add_argument(
+        "nchains",
+        type=int,
+        help="nchains",
+    )
+    parser.add_argument(
+        "walkers",
+        type=int,
+        help="walkers",
+    )
+
     args = parser.parse_args()
 
     output_dir, output_filename = os.path.split(os.path.abspath(args.output_file_path))
-    _compute_and_save_energy_statistics(
-        args.local_energies_file_path, output_dir, output_filename
-    )
+    _compute_and_save_energy_statistics(args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers)
