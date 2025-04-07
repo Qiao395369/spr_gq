@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 # 假设 f(x, y) 是一个标量函数，x 和 y 的形状为 (3,)。
 def f(p,x, y):
@@ -34,3 +35,21 @@ print(f(1,x,y))
 
 print(batched_f(f)(1,xx,yy).shape)
 print(batched_f(f)(1,xx,yy))
+
+log_prob_new=jnp.array([[2,2],[2,2]])
+log_prob_old=jnp.array([[1,3],[3,2]])
+print(np.sum(log_prob_new))
+# rr=jnp.where(
+#         log_prob_new > log_prob_old,
+#         jnp.ones_like(log_prob_new),
+#         jnp.exp(log_prob_new - log_prob_old),
+#     )
+# print(rr)
+
+# choices=jnp.ones(14)
+# spin_up_0 = np.random.choice(np.arange(7), size=2, replace=False)
+# choices[spin_up_0]=0
+# random_numbers = np.random.choice(np.arange(7), size=5, replace=False)
+# print(random_numbers)
+# # 随机选择两个不重复的数
+

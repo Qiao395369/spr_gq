@@ -104,6 +104,9 @@ def get_default_config() -> ConfigDict:
                 "gq_nh":8,
                 "feature_scale":True,
                 "feature_scale_num":(1,2,4),
+                "density_plot":False,
+                "density_plot_filename":NO_PATH,
+                "density_plot_nepochs":0
             }
         )
     )
@@ -298,7 +301,8 @@ def get_default_molecular_config() -> Dict:
     problem_config = {
         "ion_pos": ((0.0, 0.0, -1.5069621), (0.0, 0.0, 1.5069621)),
         "ion_charges": (1.0, 3.0),
-        "nelec": (2, 2),
+        "nspins": (2, 2),
+        "single_nspins":((5,2),(2,5)),
         "ei_softening": 0.0,
         "ee_softening": 0.0,
     }
@@ -396,6 +400,7 @@ def get_default_eval_config() -> Dict:
         "nmoves_per_width_update": 100,
         "record_amplitudes": False,
         "std_move": 0.25,
+        "init_width":1.0,
         "local_energy_type": "standard",  # [standard, ibp, random_particle]
         "local_energy": get_default_local_energy_config(),
         # if use_data_from_training=True, nchains, nmoves_per_width_update, and
@@ -406,7 +411,8 @@ def get_default_eval_config() -> Dict:
         "nan_safe": False,
         "ion_pos": ((0.0, 0.0, -1.5069621), (0.0, 0.0, 1.5069621)),
         "ion_charges":(1.,1.),
-        "nelec":(1,1),
+        "single_nspins":((5,2),(2,5)),
+        "nspins":(1,1),
     }
     return eval_config
 

@@ -12,7 +12,10 @@ __pycache__/
 
 # C extensions
 *.so
-
+checkpoints/
+density_plot/
+statisitc*
+zzz*
 statis_N.sh
 results/
 .Ds_Store
@@ -22,7 +25,7 @@ aaa_server_data/
 aaa_test/
 aaa_results/
 eval.sh/
-test*.py/
+test*.py
 eval.sh
 
 # Distribution / packaging

@@ -102,27 +102,16 @@ def _get_dtype(config: ConfigDict):
 def _get_electron_ion_config_as_arrays(
     config: ConfigDict, dtype=jnp.float32
 ) -> Tuple[Array, Array, Array]:
-    ion_pos = jnp.array(config.problem.ion_pos, dtype=dtype)
+    ion_pos = jnp.array(config.ion_pos, dtype=dtype)
     if len(ion_pos.shape)==2:
         ion_pos=ion_pos[None,:]
     assert len(ion_pos.shape)==3
-    ion_charges = jnp.array(config.problem.ion_charges, dtype=dtype)
-    nelec = jnp.array(config.problem.nelec)
-    nspins=config.problem.nelec
-    return ion_pos, ion_charges, nelec ,nspins
-
-def _get_eval_electron_ion_config_as_arrays(
-    config: ConfigDict, dtype=jnp.float32
-) -> Tuple[Array, Array, Array]:
-    ion_pos = jnp.array(config.eval.ion_pos, dtype=dtype)
-    if len(ion_pos.shape)==2:
-        ion_pos=ion_pos[None,:]
-    assert len(ion_pos.shape)==3
-    ion_charges = jnp.array(config.eval.ion_charges, dtype=dtype)
-    nelec = jnp.array(config.eval.nelec)
-    nspins=config.eval.nelec
-    # print("ion_pos:",ion_pos)
-    return ion_pos, ion_charges, nelec ,nspins
+    ion_charges = jnp.array(config.ion_charges, dtype=dtype)
+    single_nspins=jnp.array(config.single_nspins,dtype=int)
+    nelec = jnp.array(config.nspins)
+    nspins=config.nspins
+    print("ion_pos:",ion_pos)
+    return ion_pos, ion_charges, nelec ,nspins,single_nspins
 
 
 def _get_and_init_model(
@@ -491,6 +480,7 @@ def _setup_vmc(
     ion_charges: Array,
     nelec: Array,
     nspins,
+    single_nspins,
     key: PRNGKey,
     dtype=jnp.float32,
     apply_pmap: bool = True,
@@ -507,7 +497,14 @@ def _setup_vmc(
 ]:
     nelec_total = int(jnp.sum(nelec))
     key, init_pos = physics.core.initialize_molecular_pos(
-        key, config.vmc.nchains,ion_pos, ion_charges, nelec_total, dtype=dtype
+        key, 
+        config.vmc.nchains,
+        ion_pos, 
+        ion_charges, 
+        nelec_total, 
+        single_nspins,
+        config.eval.init_width,
+        dtype=dtype
     )   #init_pos:(W,B,ne,dim)
 
     # Make the model
@@ -644,6 +641,7 @@ def _make_new_data_for_eval(
     ion_pos: Array,
     ion_charges: Array,
     nelec: Array,
+    single_nspins: Array,
     key: PRNGKey,
     is_pmapped: bool,
     dtype=jnp.float32,
@@ -659,6 +657,8 @@ def _make_new_data_for_eval(
         ion_pos,
         ion_charges,
         nelec_total,
+        single_nspins,
+        config.eval.init_width,
         dtype=dtype,
     )
     # redistribute if needed
@@ -736,10 +736,10 @@ def _burn_and_run_vmc(
 
 
 def _compute_and_save_energy_statistics(
-    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int 
+    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int ,nn:int
 ) -> None:
     local_energies = np.loadtxt(local_energies_file_path)
-    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers)
+    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers,nn)
     # eval_statistics = jax.tree_map(lambda x: x.tolist(), eval_statistics)
     utils.io.save_dict_to_json(
         eval_statistics,
@@ -749,7 +749,7 @@ def _compute_and_save_energy_statistics(
 
 
 def run_molecule() -> None:
-    """Run VMC on a molecule."""
+    # "Run VMC on a molecule."
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
     reload_from_checkpoint = (reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR and reload_config.use_checkpoint_file)
@@ -766,12 +766,12 @@ def run_molecule() -> None:
 
     dtype_to_use = _get_dtype(config)
 
-    ion_pos, ion_charges, nelec ,nspins= _get_electron_ion_config_as_arrays(config, dtype=dtype_to_use)
+    ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(config.problem, dtype=dtype_to_use)
 
     key = jax.random.PRNGKey(config.initial_seed)
 
     (log_psi_apply,burning_step,walker_fn,update_param_fn,
-          get_amplitude_fn,params,data,optimizer_state,key,) = _setup_vmc(config,ion_pos,ion_charges,nelec,nspins,key,
+          get_amplitude_fn,params,data,optimizer_state,key,) = _setup_vmc(config,ion_pos,ion_charges,nelec,nspins,single_nspins,key,
                                                                           dtype=dtype_to_use,apply_pmap=config.distribute,)
 
     start_epoch = 0
@@ -811,14 +811,15 @@ def run_molecule() -> None:
     # evaluation
     eval_logdir = os.path.join(logdir, "eval")
 
-    ion_pos, ion_charges, nelec ,nspins= _get_eval_electron_ion_config_as_arrays(config, dtype=dtype_to_use)
+    ion_pos, ion_charges, nelec ,nspins,single_nspins= _get_electron_ion_config_as_arrays(config.eval, dtype=dtype_to_use)
 
     eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(config.eval,config.problem,ion_pos,ion_charges,log_psi_apply,
                                                                           pacore.get_position_from_data, apply_pmap=config.distribute,)
     optimizer_state = None
 
-    if not config.eval.use_data_from_training or config.vmc.nchains != config.eval.nchains:
-        key, data = _make_new_data_for_eval(config,log_psi_apply,params,ion_pos,ion_charges,nelec,key,
+    if not config.eval.use_data_from_training :
+        logging.info("creating new data ...")
+        key, data = _make_new_data_for_eval(config,log_psi_apply,params,ion_pos,ion_charges,nelec,single_nspins,key,
                                             is_pmapped=config.distribute, dtype=dtype_to_use,)
 
     _burn_and_run_vmc(config.eval,eval_logdir,params,optimizer_state,data,eval_burning_step,
@@ -830,7 +831,7 @@ def run_molecule() -> None:
     local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0])
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0],0)
 
 
 def do_inference()-> None:
@@ -846,13 +847,29 @@ def do_inference()-> None:
     _save_git_hash(logdir)
     dtype_to_use = _get_dtype(config)
 
-    ion_pos, ion_charges, nelec ,nspins= _get_eval_electron_ion_config_as_arrays(config, dtype=dtype_to_use)
+    ion_pos, ion_charges, nelec , nspins, single_nspins= _get_electron_ion_config_as_arrays(config.eval, dtype=dtype_to_use)
 
     key = jax.random.PRNGKey(config.initial_seed)
 
-    (log_psi_apply,burning_step,walker_fn,update_param_fn,get_amplitude_fn,params,data,optimizer_state,key,) = _setup_vmc(
-                                        config,ion_pos,ion_charges,nelec,nspins,key,dtype=dtype_to_use,
-                                        apply_pmap=config.distribute,)
+    nelec_total = int(jnp.sum(nelec))
+
+    assert config.gq_wfn_type=="gaoqiao"
+    log_psi_apply, params, key =  _get_gaoqiao_model(
+                                                    wfn_type=config.gq_wfn_type,
+                                                    nelec=nelec_total,
+                                                    charges=ion_charges,
+                                                    nspins=nspins,
+                                                    ndet=config.gq_ndet,
+                                                    wfn_depth=config.gq_wfn_depth,
+                                                    h1=config.gq_h1,
+                                                    h2=config.gq_h2,
+                                                    nh=config.gq_nh,
+                                                    feature_scale=config.feature_scale,
+                                                    feature_scale_num=config.feature_scale_num,
+                                                    key=key,
+                                                    apply_pmap=config.distribute,
+                                                    )
+    get_amplitude_fn = pacore.get_amplitude_from_data
     
     checkpoint_file_path = os.path.join(infer_config.logdir, infer_config.checkpoint_relative_file_path)
     directory, filename = os.path.split(checkpoint_file_path)
@@ -873,10 +890,30 @@ def do_inference()-> None:
     )
     optimizer_state = None
 
-    if not config.eval.use_data_from_training or config.vmc.nchains != config.eval.nchains:
+    if not config.eval.use_data_from_training :
+        logging.info("new data creating...")
         key, data = _make_new_data_for_eval(
-                                            config,log_psi_apply,params,ion_pos,ion_charges,nelec,key,
+                                            config,log_psi_apply,params,ion_pos,ion_charges,nelec,single_nspins,key,
                                             is_pmapped=config.distribute, dtype=dtype_to_use,)
+
+    if config.density_plot:
+        filename=config.density_plot_filename
+        data, key = mcmc.metropolis.burn_data(eval_burning_step, config.eval.nburn, params, data, key)
+        f = open(filename, "w", buffering=1, newline="\n")
+        if os.path.getsize(filename) == 0:
+            f.write("                x        y        z\n")
+        print("Save configs to file: %s" % filename)
+        for _ in range(config.density_plot_nepochs):
+            
+            accept_ratio, data, key = eval_walker_fn(params, data, key)
+            positions = data["walker_data"]["position"].reshape(-1,3)
+            logging.info("num: %6d saves" % positions.shape[0])
+            for row in positions:
+                f.write(f"{'coordinate:'}  {row[0]}  {row[1]}  {row[2]}\n")
+        import sys 
+        sys.exit()
+
+    
     eval_logdir = os.path.join(logdir, "data")
     logging.info("Saving to %s", eval_logdir)
     _burn_and_run_vmc(
@@ -889,7 +926,7 @@ def do_inference()-> None:
     local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0])
+        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0],0)
 
 
 def vmc_statistics() -> None:
@@ -918,8 +955,13 @@ def vmc_statistics() -> None:
         type=int,
         help="walkers",
     )
+    parser.add_argument(
+        "nn",
+        type=int,
+        help="from nn to the end",
+    )
 
     args = parser.parse_args()
 
     output_dir, output_filename = os.path.split(os.path.abspath(args.output_file_path))
-    _compute_and_save_energy_statistics(args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers)
+    _compute_and_save_energy_statistics(args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers,args.nn)

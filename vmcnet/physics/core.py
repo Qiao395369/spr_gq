@@ -25,55 +25,102 @@ EnergyData = Tuple[Array, EnergyAuxData]
 ValueGradEnergyFn = Callable[[P, PRNGKey, Array], Tuple[EnergyData, P]]
 
 
+# def initialize_molecular_pos(
+#     key: PRNGKey,
+#     nchains: int,
+#     ion_pos: Array,
+#     ion_charges: Array,
+#     nelec_total: int,
+#     single_spins:Array,
+#     init_width: float = 1.0,
+#     dtype=chex.Numeric,
+# ) -> Tuple[PRNGKey, Array]:
+#     """Initialize a set of plausible initial electron positions.
+
+#     For each chain, each electron is assigned to a random ion and then its position is
+#     sampled from a normal distribution centered at that ion with diagonal covariance
+#     with diagonal entries all equal to init_width.
+
+#     If there are no more electrons than there are ions, the assignment is done without
+#     replacement. If there are more electrons than ions, the assignment is done with
+#     replacement, and the probability of choosing ion i is its relative charge (as a
+#     fraction of the sum of the ion charges).
+#     """
+#     nion = len(ion_charges)
+#     replace = True
+
+#     if nelec_total <= nion:
+#         replace = False
+
+#     elecs_at_ions=[]
+#     # print(ion_pos.shape)
+#     assert len(ion_pos.shape)==3
+#     for i in range(ion_pos.shape[0]):
+#         assignments = []
+#         for _ in range(nchains):
+#             key, subkey = jax.random.split(key)
+#             # choices = jax.random.choice(
+#             #     subkey,
+#             #     nion,
+#             #     shape=(nelec_total,),
+#             #     replace=replace,
+#             #     p=ion_charges / jnp.sum(ion_charges),
+#             # )
+
+#             # 从0到6中随机选择两个不重复的数
+#             choices=jnp.ones(nelec_total)
+#             random_numbers = jnp.random.choice(jnp.arange(7), size=2, replace=False)
+
+#             print(random_numbers)
+#             # 随机选择两个不重复的数
+
+#             choices=jnp.asarray([1 ,0 ,0 ,1 ,0 ,1 ,0 ,  0 ,1 ,0 ,1 ,1 ,0 ,1])
+#             print(choices)
+#             assignments.append(ion_pos[i][choices])
+#         elecs_at_ions.append(jnp.stack(assignments, axis=0)) #[(nchains, nelec_total, 3),...]
+#     elecs=jnp.stack(elecs_at_ions,axis=0) #(walker,nchain,ne,dim)
+#     print(f"xe.shape:{elecs.shape}")
+#     key, subkey = jax.random.split(key)
+#     return key, elecs + init_width * jax.random.normal(
+#         subkey, elecs.shape, dtype=dtype
+#     )
+
+
 def initialize_molecular_pos(
     key: PRNGKey,
     nchains: int,
     ion_pos: Array,
     ion_charges: Array,
     nelec_total: int,
-    init_width: float = 1.0,
+    single_spins:Array,
+    init_width: float = 0.2,
     dtype=chex.Numeric,
 ) -> Tuple[PRNGKey, Array]:
-    """Initialize a set of plausible initial electron positions.
-
-    For each chain, each electron is assigned to a random ion and then its position is
-    sampled from a normal distribution centered at that ion with diagonal covariance
-    with diagonal entries all equal to init_width.
-
-    If there are no more electrons than there are ions, the assignment is done without
-    replacement. If there are more electrons than ions, the assignment is done with
-    replacement, and the probability of choosing ion i is its relative charge (as a
-    fraction of the sum of the ion charges).
-    """
-    nion = len(ion_charges)
-    replace = True
-
-    if nelec_total <= nion:
-        replace = False
-
-    elecs_at_ions=[]
-    # print(ion_pos.shape)
-    # assert len(ion_pos.shape)==3
-    for i in range(ion_pos.shape[0]):
-        assignments = []
-        for _ in range(nchains):
-            key, subkey = jax.random.split(key)
-            choices = jax.random.choice(
-                subkey,
-                nion,
-                shape=(nelec_total,),
-                replace=replace,
-                p=ion_charges / jnp.sum(ion_charges),
-            )
-            assignments.append(ion_pos[i][choices])
-        elecs_at_ions.append(jnp.stack(assignments, axis=0)) #[(nchains, nelec_total, 3),...]
-    elecs=jnp.stack(elecs_at_ions,axis=0) #(walker,nchain,ne,dim)
-    print(f"xe.shape:{elecs.shape}")
+    assert len(ion_pos.shape)==3
+    natoms=len(ion_charges)
+    walker=ion_pos.shape[0]
+    assert ion_pos.shape==(walker,natoms,3)
+    # single_spins=[(5,2),(2,5)]
+    assert nelec_total==jnp.sum(single_spins)
+    print(single_spins)
+    # Assign each electron to an atom initially.
+    ppp=[]
+    for k in range(walker):
+        electron_positions = []
+        for i in range(2):
+            for j in range(natoms):
+                position = jnp.asarray(ion_pos[k][j])
+                electron_positions.append(jnp.tile(position, single_spins[j][i]))
+        electron_positions = jnp.concatenate(electron_positions)
+        print(electron_positions)
+        print(electron_positions.shape)
+        ppp.append(electron_positions.reshape((-1,3)))
+    ppp=jnp.stack(ppp,axis=0)
+    ppp=ppp[:,None,...]
+    print(ppp.shape)
     key, subkey = jax.random.split(key)
-    return key, elecs + init_width * jax.random.normal(
-        subkey, elecs.shape, dtype=dtype
-    )
-
+    ppp += jax.random.normal(subkey, shape=(walker,nchains,)+ppp.shape[-2:] , dtype=dtype) * init_width
+    return key, ppp
 
 def combine_local_energy_terms(
     local_energy_terms: Sequence[ModelApply[P]],
