@@ -134,7 +134,14 @@ def _get_and_init_model(
     log_psi_apply = models.construct.slog_psi_to_log_psi_apply(slog_psi.apply)
     return log_psi_apply, params, key
 
-def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,feature_scale,feature_scale_num,key,apply_pmap
+def _get_gaoqiao_model(
+        config_gq,
+        wfn_type,
+        nelec,
+        charges,
+        nspins,
+        key,
+        apply_pmap
 ):
     import vmcnet.gaoqiao.build as gaoqiaobuild
     import vmcnet.gaoqiao.param_blocks as param_blocks
@@ -142,32 +149,81 @@ def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,fea
     key, subkey = jax.random.split(key)
     # charges=jnp.asarray([7.,7.])
     if wfn_type == "gaoqiao":
-        attn_params = None
-        trimul_params = None
-        gemi_params = None
-        feat_params = None
-        params, network_wfn, orbitals = gaoqiaobuild.build_network(
-            n=nelec,
-            charges=charges,
-            nspins=nspins,
+        layer_update_scheme = {
+                                "update_alpha": config_gq.wfn_layer_update_alpha,
+                                "do_resd_dt": config_gq.wfn_layer_do_resd_dt,
+                              }    
+        if config_gq.wfn_layer_resd_dt_shift is not None:
+            layer_update_scheme["resd_dt_shift"] = config_gq.wfn_layer_resd_dt_shift
+        if config_gq.wfn_layer_resd_dt_scale is not None:
+            layer_update_scheme["resd_dt_scale"] = config_gq.wfn_layer_resd_dt_scale
+        if config_gq.do_attn:
+            attn_params = {
+                'qkdim' : config_gq.attn_nchnl, 
+                'nhead' : config_gq.attn_nhead, 
+                'do_gate' : config_gq.attn_do_gate,
+                'do_lnorm' : config_gq.attn_do_lnorm,
+            }
+        else: 
+            attn_params = None
+        if config_gq.do_h1_attn:
+            h1_attn_params = {
+                'qkdim' : config_gq.h1_attn_nchnl,
+                'nhead' : config_gq.h1_attn_nhead,
+                'do_gate' : config_gq.h1_attn_do_gate,
+                'do_lnorm' : config_gq.h1_attn_do_lnorm,
+                'resd_mode' : config_gq.h1_resd_mode,
+            }
+        else:
+            h1_attn_params = None
+        if config_gq.do_trimul:
+            trimul_params = {
+                "nchnl" : config_gq.trimul_nchnl, 
+                "mode" : config_gq.trimul_mode,
+            }
+        else:
+            trimul_params = None
+        if config_gq.det_mode == "gemi":
+            gemi_params = {
+                "odim" : config_gq.gemi_odim, 
+                "init_style": config_gq.gemi_init_style, 
+                "diag_shift": config_gq.gemi_diag_shift,
+                "weight_dim": config_gq.gemi_weight_dim,
+                "hiddens": config_gq.gemi_hiddens if config_gq.gemi_hiddens is not None else [],
+            }
+        else:
+            gemi_params = None
+
+        feat_params = {
+            "do_act": config_gq.feat_do_act,
+            "act_func": config_gq.feat_act_func,
+            "numb_divid": config_gq.feat_numb_divid,
+            "scale": config_gq.scale if config_gq.scale != 1.0 else []
+        }
+        # trimul_params = None
+        # gemi_params = None
+        # feat_params = None
+        params, network_wfn = gaoqiaobuild.build_network(           #orbitals
+            n=nelec,  #电子个数
+            charges=charges,  #i.e. charges=jnp.asarray([7.,7.])
+            nspins=nspins,   #i.e. (7,7)
             key=key, 
-            nk=None, 
-            ndet=ndet, 
-            depth=wfn_depth, 
-            h1=h1, 
-            h2=h2, 
-            nh=nh,
-            do_complex=False,
-            feature_scale=feature_scale,
-            feature_scale_num=feature_scale_num,
-            ef=False, 
+            ndet=config_gq.ndet,  
+            depth=config_gq.wfn_depth, 
+            h1=config_gq.h1, 
+            h2=config_gq.h2, 
+            nh=config_gq.nh,
+            do_complex=config_gq.do_complex,
+            ef=config_gq.ef, 
+            layer_update_scheme=layer_update_scheme,
             attn=attn_params, 
+            h1_attn=h1_attn_params,
             trimul=trimul_params,
             feat_params=feat_params,
-            det_mode="det", 
+            det_mode=config_gq.det_mode, 
             gemi_params=gemi_params,
         )
-        block_fn=param_blocks.block_fn
+        
 
     elif wfn_type == "gq_ferminet":
         from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
@@ -199,9 +255,13 @@ def _get_gaoqiao_model(wfn_type,nelec,charges,nspins,ndet,wfn_depth,h1,h2,nh,fea
         params = network.init(subkey)
         spins_psi=None
         network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
-        block_fn=param_blocks.block_fn
     else:
         raise ValueError(f"Unknown electron wavefunction type: {wfn_type}")
+    
+    def block_fn(block):
+        if not isinstance(block, dict):
+            return False
+        return set() < set(block.keys()) <= {"w", "b"}
 
     print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
     print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
@@ -508,23 +568,17 @@ def _setup_vmc(
     )   #init_pos:(W,B,ne,dim)
 
     # Make the model
-    if config.gq_wfn_type in ["gaoqiao","gq_ferminet"]:
+    if config.wfn_type in ["gaoqiao","gq_ferminet"]:
         log_psi_apply, params, key =  _get_gaoqiao_model(
-        wfn_type=config.gq_wfn_type,
+        config_gq=config.gq,
+        wfn_type=config.wfn_type,
         nelec=nelec_total,
         charges=ion_charges,
         nspins=nspins,
-        ndet=config.gq_ndet,
-        wfn_depth=config.gq_wfn_depth,
-        h1=config.gq_h1,
-        h2=config.gq_h2,
-        nh=config.gq_nh,
-        feature_scale=config.feature_scale,
-        feature_scale_num=config.feature_scale_num,
         key=key,
         apply_pmap=apply_pmap,
         )
-    elif config.gq_wfn_type =="ll" :
+    elif config.wfn_type =="ll" :
         log_psi_apply, params, key = _get_and_init_model(
             config.model,
             ion_pos,
@@ -536,7 +590,7 @@ def _setup_vmc(
             apply_pmap=apply_pmap,
         )
     else:
-        raise ValueError("unknown gq_wfn_type: %s "%(config.gq_wfn_type))
+        raise ValueError("unknown gq_wfn_type: %s "%(config.wfn_type))
 
     # Make initial data
     data = _make_initial_data(
@@ -794,7 +848,8 @@ def run_molecule() -> None:
 
     logging.info("Saving to %s", logdir)
 
-    (params, optimizer_state, data, key, nans_detected )= _burn_and_run_vmc(config.vmc,logdir,params,optimizer_state,data,burning_step,
+    params, optimizer_state, data, key, nans_detected = _burn_and_run_vmc(
+                                                                            config.vmc,logdir,params,optimizer_state,data,burning_step,
                                                                             walker_fn,update_param_fn,get_amplitude_fn, key, 
                                                                             is_eval=False, is_pmapped=config.distribute,
                                                                             skip_burn=reload_from_checkpoint and not reload_config.reburn,
@@ -855,6 +910,7 @@ def do_inference()-> None:
 
     assert config.gq_wfn_type=="gaoqiao"
     log_psi_apply, params, key =  _get_gaoqiao_model(
+                                                    config.attn,
                                                     wfn_type=config.gq_wfn_type,
                                                     nelec=nelec_total,
                                                     charges=ion_charges,
@@ -965,3 +1021,6 @@ def vmc_statistics() -> None:
 
     output_dir, output_filename = os.path.split(os.path.abspath(args.output_file_path))
     _compute_and_save_energy_statistics(args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers,args.nn)
+
+if __name__=='__main__':
+    run_molecule()

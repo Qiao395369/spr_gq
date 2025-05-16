@@ -83,6 +83,8 @@ def get_default_config() -> ConfigDict:
                 "model": get_default_model_config(),
                 "vmc": get_default_vmc_config(),
                 "eval": get_default_eval_config(),
+                "wfn_type":"gaoqiao",
+                "gq": get_default_gq_config(),
                 "logdir": os.path.join(
                     os.curdir,  # this will be relative to the calling script
                     "logs",
@@ -96,17 +98,7 @@ def get_default_config() -> ConfigDict:
                 "distribute": False,
                 "debug_nans": False,  # If true, OVERRIDES config.distribute to be False
                 "initial_seed": 0,
-                "gq_wfn_type":"gaoqiao",
-                "gq_ndet":16,
-                "gq_wfn_depth":4,
-                "gq_h1":64,
-                "gq_h2":16,
-                "gq_nh":8,
-                "feature_scale":True,
-                "feature_scale_num":(1,2,4),
-                "density_plot":False,
-                "density_plot_filename":NO_PATH,
-                "density_plot_nepochs":0
+                
             }
         )
     )
@@ -389,6 +381,50 @@ def get_default_vmc_config() -> Dict:
     }
     return vmc_config
 
+def get_default_gq_config() -> Dict:
+    """Get a default attention configuration."""
+    gq_config = {
+        "wfn_layer_update_alpha": None,
+        "wfn_layer_do_resd_dt": False,
+        "wfn_layer_resd_dt_shift": 1.0,
+        "wfn_layer_resd_dt_scale": 0.1,
+        "ef": True,
+        "do_attn": False,
+        "attn_nchnl": 16,
+        "attn_nhead": 4,
+        "attn_do_gate": False,
+        "attn_do_lnorm": False,
+        "do_h1_attn": False,
+        "h1_attn_nchnl": 16,
+        "h1_attn_nhead": 4,
+        "h1_attn_do_gate": False,
+        "h1_attn_do_lnorm": False,
+        "h1_resd_mode": "avg", #choices=['dt', 'avg'],residual mode of h1-attention.
+        "do_trimul": False,
+        "trimul_nchnl": 16,
+        "trimul_mode": "both", #choices=["both", "incoming", "outgoing"]
+        "det_mode": "det", 
+        "gemi_odim": 32,
+        "gemi_init_style": "normal", #choices=["normal", "invsqrtio", "invsqrti", "invio", "invi"]
+        "gemi_diag_shift": 0.1,
+        "gemi_weight_dim": 0, #choices=[0, 1, 2]
+        "gemi_hiddens": [16,16,16],
+        "feat_do_act": False,
+        "feat_act_func": 'tanh',
+        "feat_numb_divid": 1,
+        "scale": 1.0,
+        "wfn_type":"gaoqiao",
+        "ndet":16,
+        "wfn_depth":4,
+        "h1":64,
+        "h2":16,
+        "nh":8,
+        "do_complex":False,
+        "density_plot": False,
+        "density_plot_filename": NO_PATH,
+        "density_plot_nepochs": 0,
+    }
+    return gq_config
 
 def get_default_eval_config() -> Dict:
     """Get a default evaluation configuration."""
