@@ -559,9 +559,6 @@ def construct_input_features_ef(
 
 
 
-
-
-
 def construct_symmetric_features(h_one: jnp.ndarray, h_two: jnp.ndarray,
                                  nspins: Tuple[int, int]) -> jnp.ndarray:
   """Combines intermediate features from rank-one and -two streams.
@@ -853,7 +850,6 @@ def make_fermi_net_model_ef(
 
     c1 = mes.get_part_one_hot()  #(nele+nz,3)
     c2 = mes.get_pair_one_hot()  #(nele+nz,nele+nz,6)
-
     a1 = c1
     a2 = c2
     
@@ -1021,9 +1017,7 @@ def fermi_net_orbitals_part2(
       orbitals[i] = orbitals[i] * options.envelope.apply(
       hz=hz,
       ae=ae_channels[i],
-      **params['envelope'][i],
-      )    
-
+      **params['envelope'][i],     )    
 
   # Reshape into matrices.
   if options.det_mode == "det":
@@ -1110,10 +1104,6 @@ def make_fermi_net(
     use_last_layer: bool = False,
     hf_solution = None,
     full_det: bool = True,
-    lattice: Optional[jnp.ndarray] = None,
-    mes: dp.ManyElectronSystem = None,
-    equal_footing: bool = False,
-
     hidden_dims: FermiLayers = ((256, 32), (256, 32), (256, 32)),
     determinants: int = 16,
     after_determinants: Union[int, Tuple[int, ...]] = 1,  #没有输入
@@ -1123,9 +1113,10 @@ def make_fermi_net(
     orb_numb_k: int = 0,
     do_twist: bool = False,
     do_aa: bool = False,
+    mes: dp.ManyElectronSystem = None,
     det_mode: str = 'det',
     gemi_params: str = None,
-    
+    equal_footing: bool = False,
 ) -> Tuple[InitFermiNet, FermiNetLike, FermiNetOptions]:
   """Creates functions for initializing parameters and evaluating ferminet.
 
@@ -1157,7 +1148,7 @@ def make_fermi_net(
     initialise the network parameters and apply the network respectively, and
     options specifies the settings used in the network.
   """
-  del after_determinants,lattice
+  del after_determinants
   assert (envelope and feature_layer and ferminet_model),("no envelope/feature_layer/ferminet_model")
   assert (det_mode == "det"),"only det mode is supported in gq"
   assert (numb_k==0 and orb_numb_k==0),"numb_k and orb_numb_k should be 0 in gq"

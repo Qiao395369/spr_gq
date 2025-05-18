@@ -27,7 +27,8 @@ aaa_results/
 eval.sh/
 test*.py
 eval.sh
-
+vmcnet/gaoqiao/build_*
+vmcnet/gaoqiao/networks_*
 # Distribution / packaging
 .Python
 build/

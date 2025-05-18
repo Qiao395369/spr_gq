@@ -160,7 +160,6 @@ def build_network(
 		use_last_layer=cfg.network.use_last_layer,
 		hf_solution=None,
 		full_det=cfg.network.full_det,
-		# lattice=lattice,
 		mes=mes,
 		equal_footing=ef,
 		**cfg.network.detnet,

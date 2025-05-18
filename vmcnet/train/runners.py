@@ -240,7 +240,7 @@ def _get_gaoqiao_model(
             nspins=nspins,
             charges=charges,
             ndim=3,
-            determinants=ndet,
+            determinants=config_gq.ndet,
             states=0,
             envelope=envelope,
             feature_layer=feature_layer,
@@ -248,8 +248,8 @@ def _get_gaoqiao_model(
             bias_orbitals=False,
             full_det=True,
             rescale_inputs=False,
-            complex_output=True,
-            hidden_dims=tuple([(h1,h2) for _ in range(wfn_depth)])
+            complex_output=config_gq.do_complex,
+            hidden_dims=tuple([(config_gq.h1,config_gq.h2) for _ in range(config_gq.wfn_depth)])
         )
         key, subkey = jax.random.split(key)
         params = network.init(subkey)
