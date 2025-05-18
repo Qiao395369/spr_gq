@@ -3,6 +3,7 @@ from typing import Tuple, Optional
 
 import jax
 
+import time
 from vmcnet.mcmc.metropolis import WalkerFn
 from vmcnet.updates.params import UpdateParamFn
 from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
@@ -103,6 +104,7 @@ def vmc_loop(
         is_pmapped
     ) as checkpoint_writer, MetricsWriter() as metrics_writer:
         for epoch in range(start_epoch, nepochs):
+            start_time=time.time()
             # Save state for checkpointing at the start of the epoch for two reasons:
             # 1. To save the model that generates the best energy and variance metrics,
             # rather than the model one parameter UPDATE after the best metrics.
@@ -155,7 +157,11 @@ def vmc_loop(
                 record_amplitudes=record_amplitudes,
                 get_amplitude_fn=get_amplitude_fn,
             )
-            utils.checkpoint.log_vmc_loop_state(epoch, metrics, checkpoint_str)
+            current_time = time.time()
+            elapsed_time = current_time - start_time  # 已用时间（秒）
+            epochs_per_hour = int((1 / elapsed_time) * 3600)  if elapsed_time > 0 else None
+
+            utils.checkpoint.log_vmc_loop_state(epoch, metrics, checkpoint_str,str(epochs_per_hour))
 
             if nans_detected:
                 break

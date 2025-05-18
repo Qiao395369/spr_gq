@@ -626,37 +626,39 @@ def save_metrics_and_regular_checkpoint(
     return checkpoint_str, nans_detected
 
 
-def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str) -> None:
+def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str, rate :str) -> None:
     """Log current energy, variance, and accept ratio, w/ optional unclipped values."""
     epoch_str = "Epoch %(epoch)5d"
     energy_str = "E: %(energy).5e"
     variance_str = "Var: %(variance).5e"
-    # accept_ratio_str = "Accept ratio: %(accept_ratio).5f"
-    amplitude_str = ""
+    accept_ratio_str = "Acc ratio: %(accept_ratio).5f"
+    # amplitude_str = ""
     kinetic="kinetic:%(kinetic).5e"
     ei_potential="ei:%(ei_potential).5e"
     ee_potential="ee:%(ee_potential).5e"
     ii_potential="ii:%(ii_potential).5e"
+    rate_str="rate:%s epochs/h"%rate
 
-    if "energy_noclip" in metrics:
-        energy_str = energy_str + " (%(energy_noclip).5e)"
+    # if "energy_noclip" in metrics:
+    #     energy_str = energy_str + " (%(energy_noclip).5e)"
 
-    if "variance_noclip" in metrics:
-        variance_str = variance_str + " (%(variance_noclip).5e)"
+    # if "variance_noclip" in metrics:
+    #     variance_str = variance_str + " (%(variance_noclip).5e)"
 
-    if "amplitude_min" in metrics:
-        amplitude_str = "Min/max amplitude: %(amplitude_min).2f/%(amplitude_max).2f"
+    # if "amplitude_min" in metrics:
+    #     amplitude_str = "Min/max amplitude: %(amplitude_min).2f/%(amplitude_max).2f"
 
     info_out = ", ".join(
         [epoch_str, 
          energy_str, 
          variance_str, 
-        #  accept_ratio_str, 
-         amplitude_str,
+         accept_ratio_str, 
+        #  amplitude_str,
          kinetic,
          ei_potential,
          ee_potential,
          ii_potential,
+         rate_str,
          ]
     )
     info_out = info_out + checkpoint_str
