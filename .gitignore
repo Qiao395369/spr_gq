@@ -29,6 +29,8 @@ test*.py
 eval.sh
 vmcnet/gaoqiao/build_*.py
 vmcnet/gaoqiao/networks_*.py
+shrd_vs_ef/
+
 # Distribution / packaging
 .Python
 build/

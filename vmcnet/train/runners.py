@@ -909,22 +909,32 @@ def do_inference()-> None:
     nelec_total = int(jnp.sum(nelec))
 
     assert config.gq_wfn_type=="gaoqiao"
+    # log_psi_apply, params, key =  _get_gaoqiao_model(
+    #                                                 config.attn,
+    #                                                 wfn_type=config.gq_wfn_type,
+    #                                                 nelec=nelec_total,
+    #                                                 charges=ion_charges,
+    #                                                 nspins=nspins,
+    #                                                 ndet=config.gq_ndet,
+    #                                                 wfn_depth=config.gq_wfn_depth,
+    #                                                 h1=config.gq_h1,
+    #                                                 h2=config.gq_h2,
+    #                                                 nh=config.gq_nh,
+    #                                                 feature_scale=config.feature_scale,
+    #                                                 feature_scale_num=config.feature_scale_num,
+    #                                                 key=key,
+    #                                                 apply_pmap=config.distribute,
+    #                                                 )
     log_psi_apply, params, key =  _get_gaoqiao_model(
-                                                    config.attn,
-                                                    wfn_type=config.gq_wfn_type,
-                                                    nelec=nelec_total,
-                                                    charges=ion_charges,
-                                                    nspins=nspins,
-                                                    ndet=config.gq_ndet,
-                                                    wfn_depth=config.gq_wfn_depth,
-                                                    h1=config.gq_h1,
-                                                    h2=config.gq_h2,
-                                                    nh=config.gq_nh,
-                                                    feature_scale=config.feature_scale,
-                                                    feature_scale_num=config.feature_scale_num,
-                                                    key=key,
-                                                    apply_pmap=config.distribute,
-                                                    )
+        config_gq=config.gq,
+        wfn_type=config.wfn_type,
+        nelec=nelec_total,
+        charges=ion_charges,
+        nspins=nspins,
+        key=key,
+        apply_pmap=apply_pmap,
+        )
+    
     get_amplitude_fn = pacore.get_amplitude_from_data
     
     checkpoint_file_path = os.path.join(infer_config.logdir, infer_config.checkpoint_relative_file_path)
