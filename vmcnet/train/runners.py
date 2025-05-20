@@ -270,20 +270,33 @@ def _get_gaoqiao_model(
 
     if apply_pmap:
             params = utils.distribute.replicate_all_local_devices(params)
-    
+
+    @jax.jit
     def log_psi_apply_novmap(params,xp,xe):
         phase, logabsdet = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
         return logabsdet
 
-    def log_psi_apply(params,xp,xe):
-        if len(xe.shape)==4:
-            return jax.vmap(jax.vmap(log_psi_apply_novmap,in_axes=(None,None,0)),in_axes=(None,0,0))(params,xp,xe)
-        elif len(xe.shape)==2:
-            return log_psi_apply_novmap(params,xp,xe)
-        else:
-            raise ValueError(f"wrong len(xe.shape): {len(xe.shape)} , xe.shape: {xe.shape}")
+    # def log_psi_apply(params,xp,xe):
+    #     if len(xe.shape)==4:
+    #         return jax.vmap(jax.vmap(log_psi_apply_novmap,in_axes=(None,None,0)),in_axes=(None,0,0))(params,xp,xe)
+    #     elif len(xe.shape)==2:
+    #         return log_psi_apply_novmap(params,xp,xe)
+    #     else:
+    #         raise ValueError(f"wrong len(xe.shape): {len(xe.shape)} , xe.shape: {xe.shape}")
+    @jax.jit
+    def log_psi_apply(params, xp, xe):
+        # if not isinstance(xe, jnp.ndarray):
+        #     raise TypeError(f"xe must be a JAX array, got {type(xe)}")
+        # def vmap_fn(params, xp, xe):
+        return jax.vmap(jax.vmap(log_psi_apply_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, xp, xe)
+        # return jax.lax.cond(
+        #     len(xe.shape) == 4,
+        #     vmap_fn,
+        #     log_psi_apply_novmap,
+        #     params, xp, xe
+        # )
         
-    return log_psi_apply, params, key
+    return log_psi_apply,log_psi_apply_novmap, params, key
 
 
 # TODO: figure out how to merge this and other distributing logic with the current
@@ -501,6 +514,7 @@ def _get_energy_val_and_grad_fn(
     ion_pos: Array,
     ion_charges: Array,
     log_psi_apply: ModelApply[P],
+    log_psi_apply_novmap: ModelApply[P],
 ) -> physics.core.ValueGradEnergyFn[P]:
     ei_softening = problem_config.ei_softening
     ee_softening = problem_config.ee_softening
@@ -513,7 +527,8 @@ def _get_energy_val_and_grad_fn(
         ion_charges,
         ei_softening,
         ee_softening,
-        log_psi_apply,
+        # log_psi_apply,
+        log_psi_apply_novmap,
     )
 
     clipping_fn = _get_clipping_fn(vmc_config)
@@ -569,7 +584,7 @@ def _setup_vmc(
 
     # Make the model
     if config.wfn_type in ["gaoqiao","gq_ferminet"]:
-        log_psi_apply, params, key =  _get_gaoqiao_model(
+        log_psi_apply, log_psi_apply_novmap,params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
@@ -605,7 +620,7 @@ def _setup_vmc(
     )
 
     energy_data_val_and_grad = _get_energy_val_and_grad_fn(
-        config.vmc, config.problem, ion_pos, ion_charges, log_psi_apply
+        config.vmc, config.problem, ion_pos, ion_charges, log_psi_apply,log_psi_apply_novmap
     )
 
     # Setup parameter updates
@@ -616,7 +631,8 @@ def _setup_vmc(
         optimizer_state,
         key,
     ) = updates.parse_config.get_update_fn_and_init_optimizer(
-        log_psi_apply,
+        # log_psi_apply,
+        log_psi_apply_novmap,
         config.vmc,
         params,
         ion_pos,

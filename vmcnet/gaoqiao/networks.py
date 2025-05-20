@@ -843,6 +843,15 @@ def make_fermi_net_model_ef(
   ):
     return jnp.tanh(network_blocks.vmap_linear_layer(hij_in,params['w'],params['b'],))
 
+  def residual(x, y):      
+      if update_alpha is None:
+        if not do_rdt :
+          return (x + y) / jnp.sqrt(2.0)
+        else:
+          return x + y
+      else:
+        return update_alpha * x + jnp.sqrt(1. - update_alpha**2) * y  #平方和为1
+      
   def apply(
       params,
       e2_features,
@@ -853,16 +862,7 @@ def make_fermi_net_model_ef(
     a1 = c1
     a2 = c2
     
-    def residual(x, y):      
-      if update_alpha is None:
-        if not do_rdt :
-          return (x + y) / jnp.sqrt(2.0)
-        else:
-          return x + y
-      else:
-        return update_alpha * x + jnp.sqrt(1. - update_alpha**2) * y  #平方和为1
-
-    npart = e2_features.shape[0]
+    # npart = e2_features.shape[0]
     h2 = e2_features
     hee, _, haa = mes.split_ee_ea_aa(h2)
     ha = jnp.mean(haa, axis=0)  #\Sigma_x hxy : (na,na,nf_two)->(na,nf_two)
@@ -1080,13 +1080,12 @@ def fermi_net(
       options=options,
   )
   assert (options.envelope_pw is None),"envelope_pw should be None in gq"
-
   if params['det'] is not None:
     w = params['det']
+    output = network_blocks.logdet_matmul_w(orbitals, w=w, do_complex=options.do_complex)
   else:
     w = None
-
-  output = network_blocks.logdet_matmul(orbitals, w=w, do_complex=options.do_complex)
+    output = network_blocks.logdet_matmul(orbitals, do_complex=options.do_complex)
 
   return output
 

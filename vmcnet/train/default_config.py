@@ -418,7 +418,7 @@ def get_default_gq_config() -> Dict:
         "wfn_depth":4,
         "h1":64,
         "h2":16,
-        "nh":8,
+        "nh":16,
         "do_complex":False,
         "density_plot": False,
         "density_plot_filename": NO_PATH,
