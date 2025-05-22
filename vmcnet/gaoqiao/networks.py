@@ -766,7 +766,7 @@ def make_fermi_net_model_ef(
     dim_extra_params = 0,
     do_aa : bool=False,
     mes = None,
-    ef_construct_features_choice :str= "conv_0",
+    ef_construct_features_type :str= "conv_0",
     # extra parameters
     layer_update_scheme: Optional[dict] = None,
     attn_params: Optional[dict] = None,
@@ -902,7 +902,7 @@ def make_fermi_net_model_ef(
     # projection parameters
     dim_proj_1_in = dims_1_out[:len(dims_2_out)]  #[64,64,64]
     dim_proj_1_out = dims_2_out  # [16,16,16]
-    if ef_construct_features_choice == 'conv_0':
+    if ef_construct_features_type == 'conv_0':
       params['proj'] = []
       for ii in range(len(params['two'])):
         if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
@@ -922,13 +922,13 @@ def make_fermi_net_model_ef(
         params['proj_0'] = network_blocks.init_linear_layer(subkey, dim_proj_0_in, dim_proj_0_out, )  #64->16
       else:
         params['proj_0'] = None
-    elif ef_construct_features_choice == 'conv_1':
+    elif ef_construct_features_type == 'conv_1':
       params['proj']=[]
       for ii in range(len(params['two'])):
         params['proj'].append(None)
       params['proj_0'] = None
     else:
-      raise ValueError(f"ef_construct_features_choice should be 'conv_0' or 'conv_1', but got {ef_construct_features_choice}")
+      raise ValueError(f"ef_construct_features_type should be 'conv_0' or 'conv_1', but got {ef_construct_features_type}")
 
     if do_attn:
       params['attn'] = []
@@ -1052,12 +1052,12 @@ def make_fermi_net_model_ef(
           h2 : jnp.ndarray,
           proj: Optional[Mapping[str,jnp.ndarray]] = None,
   ) -> jnp.ndarray:
-    if ef_construct_features_choice == 'conv_0':
+    if ef_construct_features_type == 'conv_0':
       return construct_symmetric_features_conv_0(h1, h2, proj)
-    elif ef_construct_features_choice == 'conv_1':
+    elif ef_construct_features_type == 'conv_1':
       return construct_symmetric_features_conv_1(h1, h2, proj)
     else:
-      raise ValueError(f"ef_construct_features should be one of 'conv_0', 'conv_1', but got {ef_construct_features_choice}")
+      raise ValueError(f"ef_construct_features should be one of 'conv_0', 'conv_1', but got {ef_construct_features_type}")
 
   def _hi_next(
       hi_in,

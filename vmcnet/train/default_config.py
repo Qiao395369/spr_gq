@@ -414,7 +414,8 @@ def get_default_gq_config() -> Dict:
         "feat_numb_divid": 1,
         "scale": 1.0,
         "type":"ef",  #["ef","fermi"]
-        "ef_construct_features_choice": "conv_0", #["conv_0","conv_1"]
+        "ef_construct_features_type": "conv_0", #["conv_0","conv_1"]
+        "envelope_type": "ds_hz", #["ds_hz","iso"]
         "ndet":16,
         "wfn_depth":4,
         "h1":64,
