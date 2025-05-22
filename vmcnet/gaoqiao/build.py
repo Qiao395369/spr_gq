@@ -92,6 +92,7 @@ def build_network(
 	key, 
 	ndet, depth, h1, h2, nh, do_complex,
 	gq_type:str= 'ef',
+	ef_construct_features_choice:str= 'conv_0',
 	ef: bool = False,
 	layer_update_scheme: Optional[dict] = None,
 	attn: Optional[dict] = None,
@@ -121,7 +122,14 @@ def build_network(
 			ndim,
 			**cfg.network.make_feature_layer_kwargs
 		)  # type: networks.FeatureLayer
-		envelope = envelopes.make_ds_hz_envelope(**cfg.network.make_envelope_kwargs)  # type: envelopes.Envelope
+
+		if ef_construct_features_choice=="conv_0":
+			envelope = envelopes.make_ds_hz_envelope(**cfg.network.make_envelope_kwargs)  # type: envelopes.Envelope
+		elif ef_construct_features_choice=="conv_1":
+			envelope = envelopes.make_isotropic_envelope()
+		else :
+			raise ValueError("ef_construct_features_choice should be in ['conv_0', 'conv_1']")
+
 		ferminet_model = networks.make_fermi_net_model_ef(   #build ferminet_model : h2(0) features --> h1(L) 
 			n, 
 			ndim,
@@ -132,13 +140,24 @@ def build_network(
 			dim_extra_params=(3 if cfg.network.detnet.do_twist else 0),
 			do_aa=cfg.network.detnet.do_aa,
 			mes=mes,
+			ef_construct_features_choice=ef_construct_features_choice,
 			**cfg.network.make_model_kwargs,
 		)
 
 	elif gq_type == "fermi":
-		feature_layer=None
-		envelope=None
-		ferminet_model=None
+		natom=len(charges)
+		envelope = envelopes.make_isotropic_envelope()
+		feature_layer = networks.make_ferminet_features(charges, nspins)
+		ferminet_model = networks.make_fermi_net_model(
+			natom,
+			nspins,
+			feature_layer,
+			cfg.network.detnet.hidden_dims,
+			cfg.network.use_last_layer,
+			dim_extra_params=(3 if cfg.network.detnet.do_twist else 0),
+			do_aa=cfg.network.detnet.do_aa,
+			mes=mes,
+		)
 
 	network_init, signed_network, network_options = networks.make_fermi_net(
 		n, 

@@ -215,6 +215,7 @@ def _get_gaoqiao_model(
             nh=config_gq.nh,
             do_complex=config_gq.do_complex,
             gq_type=config_gq.type,
+            ef_construct_features_choice=config_gq.ef_construct_features_choice,
             ef=config_gq.ef, 
             layer_update_scheme=layer_update_scheme,
             attn=attn_params, 

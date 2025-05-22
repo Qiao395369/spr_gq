@@ -414,6 +414,7 @@ def get_default_gq_config() -> Dict:
         "feat_numb_divid": 1,
         "scale": 1.0,
         "type":"ef",  #["ef","fermi"]
+        "ef_construct_features_choice": "conv_0", #["conv_0","conv_1"]
         "ndet":16,
         "wfn_depth":4,
         "h1":64,

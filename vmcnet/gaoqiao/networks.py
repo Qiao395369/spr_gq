@@ -766,6 +766,7 @@ def make_fermi_net_model_ef(
     dim_extra_params = 0,
     do_aa : bool=False,
     mes = None,
+    ef_construct_features_choice :str= "conv_0",
     # extra parameters
     layer_update_scheme: Optional[dict] = None,
     attn_params: Optional[dict] = None,
@@ -901,25 +902,33 @@ def make_fermi_net_model_ef(
     # projection parameters
     dim_proj_1_in = dims_1_out[:len(dims_2_out)]  #[64,64,64]
     dim_proj_1_out = dims_2_out  # [16,16,16]
-    params['proj'] = []
-    for ii in range(len(params['two'])):
-      if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
+    if ef_construct_features_choice == 'conv_0':
+      params['proj'] = []
+      for ii in range(len(params['two'])):
+        if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
+          key, subkey = jax.random.split(key)
+          params['proj'].append(network_blocks.init_linear_layer(subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
+          #[64 , 64 , 64]
+          # |    |    |
+          # |    |    |
+          # V    V    V
+          #[16 , 16 , 16]
+        else:
+          params['proj'].append(None)  # do not project if the input and output dims are the same
+      dim_proj_0_in = hidden_dims[0][0]  #64
+      dim_proj_0_out = hidden_dims[0][1]  #16
+      if dim_proj_0_in != dim_proj_0_out:
         key, subkey = jax.random.split(key)
-        params['proj'].append(network_blocks.init_linear_layer(subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
-        #[64 , 64 , 64]
-        # |    |    |
-        # |    |    |
-        # V    V    V
-        #[16 , 16 , 16]
+        params['proj_0'] = network_blocks.init_linear_layer(subkey, dim_proj_0_in, dim_proj_0_out, )  #64->16
       else:
-        params['proj'].append(None)  # do not project if the input and output dims are the same
-    dim_proj_0_in = hidden_dims[0][0]  #64
-    dim_proj_0_out = hidden_dims[0][1]  #16
-    if dim_proj_0_in != dim_proj_0_out:
-      key, subkey = jax.random.split(key)
-      params['proj_0'] = network_blocks.init_linear_layer(subkey, dim_proj_0_in, dim_proj_0_out, )  #64->16
-    else:
+        params['proj_0'] = None
+    elif ef_construct_features_choice == 'conv_1':
+      params['proj']=[]
+      for ii in range(len(params['two'])):
+        params['proj'].append(None)
       params['proj_0'] = None
+    else:
+      raise ValueError(f"ef_construct_features_choice should be 'conv_0' or 'conv_1', but got {ef_construct_features_choice}")
 
     if do_attn:
       params['attn'] = []
@@ -948,7 +957,7 @@ def make_fermi_net_model_ef(
 
     return params, dims_orbital_in
 
-  def construct_symmetric_features_conv(
+  def construct_symmetric_features_conv_0(
           h1 : jnp.ndarray,
           h2 : jnp.ndarray,
           proj: Optional[Mapping[str,jnp.ndarray]] = None,
@@ -994,6 +1003,61 @@ def make_fermi_net_model_ef(
         jnp.concatenate([hi] + gi + hij_i + hzi_i, axis=-1),
         jnp.concatenate([hz] + gz + hiz_z + hyz_z, axis=-1),
       ], axis=0)
+  
+  def construct_symmetric_features_conv_1(
+          h1 : jnp.ndarray,
+          h2 : jnp.ndarray,
+          proj: Optional[Mapping[str,jnp.ndarray]] = None,
+  ) -> jnp.ndarray:
+    """
+    hi  : np x nfi
+    hij : np x np x nfij
+    """
+    h2xh1 = h2 
+    hijxhi, hizxhi, hzixhz, hyzxhy = mes.split_ee_ea_ae_aa(h2xh1)
+    hi, hz = mes.split_ea(h1)
+    distinguish_ele = True
+    if distinguish_ele:
+      spin_partitions = network_blocks.array_partitions(nspins)
+      # [nele x nfij, nele x nfij]
+      hij_i = [jnp.mean(h, axis=0) for h in jnp.split(hijxhi, spin_partitions, axis=0) if h.size > 0]
+      # nele x nfiz
+      hzi_i = [jnp.mean(hzixhz, axis=0)]
+      # [nz x nfiz, nz x nfiz]
+      hiz_z = [jnp.mean(h, axis=0) for h in jnp.split(hizxhi, spin_partitions, axis=0) if h.size > 0]
+      # [nz x nfyz]
+      hyz_z = [jnp.mean(hyzxhy, axis=0)] if do_aa else []
+      # 1 x nfiz
+      gz = jnp.mean(hz, axis=0, keepdims=1)
+      # nz x nfiz
+      gz = jnp.tile(gz, [hz.shape[0], 1])
+      # [1 x nfij, 1 x nfij]
+      gi = [jnp.mean(h, axis=0, keepdims=1) for h in jnp.split(hi, spin_partitions, axis=0) if h.size > 0]
+      # [nele x nfij, nele x nfij]
+      gi = [jnp.tile(g, [hi.shape[0], 1]) for g in gi]
+      # nz x nfiz, nz x nfiz
+      gz = [gz, gz] if len(gi) == 2 else [gz]
+      if reduced_h1_size is not None:
+        gi = [jnp.split(ii, [min(reduced_h1_size,ii.shape[-1])], axis=-1)[0] for ii in gi]  
+        gz = [jnp.split(ii, [min(reduced_h1_size,ii.shape[-1])], axis=-1)[0] for ii in gz]
+        #截断，只要前min(reduced_h1_size,ii.shape[-1])的特征
+    return \
+      jnp.concatenate([
+        jnp.concatenate([hi] + gi + hij_i + hzi_i, axis=-1),
+        jnp.concatenate([hz] + gz + hiz_z + hyz_z, axis=-1),
+      ], axis=0)
+  
+  def construct_symmetric_features_conv(
+          h1 : jnp.ndarray,
+          h2 : jnp.ndarray,
+          proj: Optional[Mapping[str,jnp.ndarray]] = None,
+  ) -> jnp.ndarray:
+    if ef_construct_features_choice == 'conv_0':
+      return construct_symmetric_features_conv_0(h1, h2, proj)
+    elif ef_construct_features_choice == 'conv_1':
+      return construct_symmetric_features_conv_1(h1, h2, proj)
+    else:
+      raise ValueError(f"ef_construct_features should be one of 'conv_0', 'conv_1', but got {ef_construct_features_choice}")
 
   def _hi_next(
       hi_in,
@@ -1348,21 +1412,8 @@ def make_fermi_net(
   natom=len(charges)
   if gq_type=='ef':
     assert (equal_footing),"equal_footing should be True in type ef"
-    assert (options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z),"envelope_apply_type should be PRE_DETERMINANT_Z in gq"
-
+    # assert (options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z),"envelope_apply_type should be PRE_DETERMINANT_Z in gq"
   elif gq_type=='fermi':
-    envelope = envelopes.make_isotropic_envelope()
-    feature_layer = make_ferminet_features(charges, nspins)
-    ferminet_model = make_fermi_net_model(
-      natom,
-      nspins,
-      feature_layer,
-      hidden_dims,
-      use_last_layer,
-      dim_extra_params=(3 if do_twist else 0),
-      do_aa=do_aa,
-      mes=mes,
-    )
     equal_footing=False
   else:
     raise ValueError("unknown type.")
