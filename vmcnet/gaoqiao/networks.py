@@ -219,7 +219,7 @@ class FermiNetOptions:
   gemi_params: dict = None
   gemi_ia: Any = None
   equal_footing: bool = False
-
+  gq_type: str = 'ef'
 
 ## Network initialisation ##
 
@@ -531,6 +531,50 @@ def init_fermi_net_params(
   return params
 
 ## Network layers ##
+
+def construct_input_features(
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    ndim: int = 3,
+    do_aa : bool=False,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+  """Constructs inputs to Fermi Net from raw electron and atomic positions.
+
+  Args:
+    pos: electron positions. Shape (nelectrons*ndim,).
+    atoms: atom positions. Shape (natoms, ndim).
+    ndim: dimension of system. Change only with caution.
+
+  Returns:
+    ae, ee, r_ae, r_ee tuple, where:
+      ae: atom-electron vector. Shape (nelectron, natom, ndim).
+      ee: atom-electron vector. Shape (nelectron, nelectron, ndim).
+      r_ae: atom-electron distance. Shape (nelectron, natom, 1).
+      r_ee: electron-electron distance. Shape (nelectron, nelectron, 1).
+    The diagonal terms in r_ee are masked out such that the gradients of these
+    terms are also zero.
+  """
+  assert atoms.shape[1] == ndim
+  ae = jnp.reshape(pos, [-1, 1, ndim]) - atoms[None, ...]   #(ne,1,3)-(1,na,3)->(ne,na,3)
+  ee = jnp.reshape(pos, [1, -1, ndim]) - jnp.reshape(pos, [-1, 1, ndim])
+  if do_aa:
+    aa = jnp.reshape(atoms, [1, -1, ndim]) - jnp.reshape(atoms, [-1, 1, ndim])
+  else:
+    aa = None
+
+  r_ae = jnp.linalg.norm(ae, axis=2, keepdims=True)
+  # Avoid computing the norm of zero, as is has undefined grad
+  ne = ee.shape[0]
+  r_ee = (jnp.linalg.norm(ee + jnp.eye(ne)[..., None], axis=-1) * (1.0 - jnp.eye(ne)))
+  if do_aa:
+    na = aa.shape[0]
+    r_aa = (jnp.linalg.norm(aa + jnp.eye(na)[..., None], axis=-1) * (1.0 - jnp.eye(na)))
+    r_aa = r_aa[...,None]
+  else:
+    r_aa = None
+
+  return ae, ee, aa, r_ae, r_ee[..., None], r_aa
+
 def construct_input_features_ef(
     pos_: jnp.ndarray,
     ndim: int = 3,
@@ -557,39 +601,159 @@ def construct_input_features_ef(
 
   return ee, r_ee[..., None]
 
+def make_ferminet_features(charges: Optional[jnp.ndarray] = None,
+                           nspins: Optional[Tuple[int, ...]] = None,
+                           ndim: int = 3) -> FeatureLayer:
+  """Returns the init and apply functions for the standard features."""
+
+  del charges, nspins
+
+  def init() -> Tuple[Tuple[int, int], Param]:
+    return (ndim + 1, ndim + 1), {}
+
+  def apply(ae, r_ae, ee, r_ee, aa=None, r_aa=None) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    do_aa = aa is not None and r_aa is not None
+    ae_features = jnp.concatenate((r_ae, ae), axis=2)
+    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
+    ee_features = jnp.concatenate((r_ee, ee), axis=2)
+    if do_aa:
+      aa_features = jnp.concatenate((r_aa, aa), axis=2)      
+    else:
+      aa_features = None
+    return ae_features, ee_features, aa_features
+
+  return FeatureLayer(init=init, apply=apply)
 
 
-def construct_symmetric_features(h_one: jnp.ndarray, h_two: jnp.ndarray,
+def make_fermi_net_model(
+    # atoms,
+    natom,
+    nspins,
+    feature_layer,
+    hidden_dims,   #i.e. ((64,16), (64,16), (64,16), (64,16))
+    use_last_layer,
+    dim_extra_params : int = 0,
+    do_aa : bool=False,
+    mes = None,
+):
+  assert(dim_extra_params == 0), "do not support extra input parameters!"
+  del dim_extra_params, do_aa, mes
+  # natom, ndim = atoms.shape
+  # del atoms
+
+  def init(
+      subkey,
+  ):
+    params = {}
+    active_spin_channels = [spin for spin in nspins if spin > 0]
+    nchannels = len(active_spin_channels)
+    (num_one_features, num_two_features), params['input'] = (feature_layer.init())
+    # The input to layer L of the one-electron stream is from
+    # construct_symmetric_features and shape (nelectrons, nfeatures), where
+    # nfeatures is i) output from the previous one-electron layer; ii) the mean
+    # for each spin channel from each layer; iii) the mean for each spin channel
+    # from each two-electron layer. We don't create features for spin channels
+    # which contain no electrons (i.e. spin-polarised systems).
+    nfeatures = lambda out1, out2: (nchannels + 1) * out1 + nchannels * out2
+    # one-electron stream, per electron:
+    #  - one-electron features per atom (default: electron-atom vectors
+    #    (ndim/atom) and distances (1/atom)),
+    # two-electron stream, per pair of electrons:
+    #  - two-electron features per electron pair (default: electron-electron
+    #    vector (dim) and distance (1))
+    feature_one_dims = natom * num_one_features
+    feature_two_dims = num_two_features
+    dims_one_in = (
+        [nfeatures(feature_one_dims, feature_two_dims)] +
+        [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]])  #[]
+    dims_one_out = [hdim[0] for hdim in hidden_dims]
+    if use_last_layer:
+      dims_two_in = ([feature_two_dims] +
+                     [hdim[1] for hdim in hidden_dims[:-1]])
+      dims_two_out = [hdim[1] for hdim in hidden_dims]
+    else:
+      dims_two_in = ([feature_two_dims] +
+                     [hdim[1] for hdim in hidden_dims[:-2]])
+      dims_two_out = [hdim[1] for hdim in hidden_dims[:-1]]
+    # Layer initialisation
+    params['single'], params['double'] = init_layers(
+        key=subkey,
+        dims_one_in=dims_one_in,
+        dims_one_out=dims_one_out,
+        dims_two_in=dims_two_in,
+        dims_two_out=dims_two_out)
+    # orbital input dims
+    if not use_last_layer:
+      # Just pass the activations from the final layer of the one-electron stream
+      # directly to orbital shaping.
+      dims_orbital_in = hidden_dims[-1][0]
+    else:
+      dims_orbital_in = nfeatures(hidden_dims[-1][0],
+                                  hidden_dims[-1][1])
+    return params, dims_orbital_in
+
+  def construct_symmetric_features(h_one: jnp.ndarray, h_two: jnp.ndarray,
                                  nspins: Tuple[int, int]) -> jnp.ndarray:
-  """Combines intermediate features from rank-one and -two streams.
+    """Combines intermediate features from rank-one and -two streams.
+    Args:
+      h_one: set of one-electron features. Shape: (nelectrons, n1), where n1 is
+        the output size of the previous layer.
+      h_two: set of two-electron features. Shape: (nelectrons, nelectrons, n2),
+        where n2 is the output size of the previous layer.
+      nspins: Number of spin-up and spin-down electrons.
 
-  Args:
-    h_one: set of one-electron features. Shape: (nelectrons, n1), where n1 is
-      the output size of the previous layer.
-    h_two: set of two-electron features. Shape: (nelectrons, nelectrons, n2),
-      where n2 is the output size of the previous layer.
-    nspins: Number of spin-up and spin-down electrons.
+    Returns:
+      array containing the permutation-equivariant features: the input set of
+      one-electron features, the mean of the one-electron features over each
+      (occupied) spin channel, and the mean of the two-electron features over each
+      (occupied) spin channel. Output shape (nelectrons, 3*n1 + 2*n2) if there are
+      both spin-up and spin-down electrons and (nelectrons, 2*n1 + n2) otherwise.
+    """
+    # Split features into spin up and spin down electrons
+    spin_partitions = network_blocks.array_partitions(nspins)
+    h_ones = jnp.split(h_one, spin_partitions, axis=0)  #(ne,n1)->[(n_up,n1),(n_down,n1)]
+    h_twos = jnp.split(h_two, spin_partitions, axis=0)  #(ne,ne,n2)->[(n_up,ne,n2),(n_down,ne,n2)]
+    # Construct inputs to next layer
+    # h.size == 0 corresponds to unoccupied spin channels.
+    g_one = [jnp.mean(h, axis=0, keepdims=True) for h in h_ones if h.size > 0]  #[(n_up,n1),(n_down,n1)]->[(1,n1),(1,n1)]
+    g_two = [jnp.mean(h, axis=0) for h in h_twos if h.size > 0]   #[(n_up,ne,n2),(n_down,ne,n2)]->[(ne,n2),(ne,n2)]
+    g_one = [jnp.tile(g, [h_one.shape[0], 1]) for g in g_one]  #[(1,n1),(1,n1)]->[(ne,n1),(ne,n1)]
+    return jnp.concatenate([h_one] + g_one + g_two, axis=1)
 
-  Returns:
-    array containing the permutation-equivariant features: the input set of
-    one-electron features, the mean of the one-electron features over each
-    (occupied) spin channel, and the mean of the two-electron features over each
-    (occupied) spin channel. Output shape (nelectrons, 3*n1 + 2*n2) if there are
-    both spin-up and spin-down electrons and (nelectrons, 2*n1 + n2) otherwise.
-  """
-  # Split features into spin up and spin down electrons
-  spin_partitions = network_blocks.array_partitions(nspins)
-  h_ones = jnp.split(h_one, spin_partitions, axis=0)
-  h_twos = jnp.split(h_two, spin_partitions, axis=0)
+  def apply(
+      params,
+      ae_features,
+      ee_features,
+      aa_features=None,
+      pos=None,
+  ):
+    del pos
+    h_one = ae_features
+    h_two = ee_features
+    residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y
+    for i in range(len(params['double'])):
+      h_one_in = construct_symmetric_features(h_one, h_two, nspins)
 
-  # Construct inputs to next layer
-  # h.size == 0 corresponds to unoccupied spin channels.
-  g_one = [jnp.mean(h, axis=0, keepdims=True) for h in h_ones if h.size > 0]
-  g_two = [jnp.mean(h, axis=0) for h in h_twos if h.size > 0]
+      # Execute next layer
+      h_one_next = jnp.tanh(
+          network_blocks.linear_layer(h_one_in, **params['single'][i]))
+      h_two_next = jnp.tanh(
+          network_blocks.vmap_linear_layer(h_two, params['double'][i]['w'],
+                                           params['double'][i]['b']))
+      h_one = residual(h_one, h_one_next)
+      h_two = residual(h_two, h_two_next)
+    if len(params['double']) != len(params['single']):
+      h_one_in = construct_symmetric_features(h_one, h_two, nspins)
+      h_one_next = jnp.tanh(
+          network_blocks.linear_layer(h_one_in, **params['single'][-1]))
+      h_one = residual(h_one, h_one_next)
+      h_to_orbitals = h_one
+    else:
+      h_to_orbitals = construct_symmetric_features(h_one, h_two, nspins)
+    return h_to_orbitals, None
 
-  g_one = [jnp.tile(g, [h_one.shape[0], 1]) for g in g_one]
+  return FerminetModel(init, apply)
 
-  return jnp.concatenate([h_one] + g_one + g_two, axis=1)
 
 
 def make_fermi_net_model_ef(
@@ -952,10 +1116,31 @@ def fermi_net_orbitals(
     (ndet, nalpha, nalpha) and (ndet, nbeta, nbeta)) and a tuple of (ae, r_ae,
     r_ee), the atom-electron vectors, distances and electron-electron distances.
   """
-  assert (options.equal_footing),"equal_footing should be True in gq"
-  h_to_orbitals, hz, pairs = fermi_net_orbitals_part1_ef(params, pos, atoms, nspins, options)
+  
+  if options.gq_type=="ef":
+    h_to_orbitals, hz, pairs = fermi_net_orbitals_part1_ef(params, pos, atoms, nspins, options)
+  else:
+    h_to_orbitals, hz, pairs = fermi_net_orbitals_part1(params, pos, atoms, nspins, options)
   ret = fermi_net_orbitals_part2(params, pos, h_to_orbitals, hz, pairs, nspins, options)
   return ret
+
+def fermi_net_orbitals_part1(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    options: FermiNetOptions = FermiNetOptions(),
+):    
+  ae, ee, aa, r_ae, r_ee, r_aa = construct_input_features(pos, atoms, do_aa=options.do_aa)
+  ae_features, ee_features, aa_features = options.feature_layer.apply(ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, aa=aa, r_aa=r_aa, **params['input'])
+
+  hae = ae_features  # electron-ion features
+  hee = ee_features  # two-electron features
+  haa = aa_features  # two-ion features
+  model_h_to_orbitals, hz = options.ferminet_model.apply(params, hae, hee, aa_features=haa, pos=pos,)
+  h_to_orbitals = model_h_to_orbitals
+
+  return h_to_orbitals, hz, (ee, ae, aa, r_ee, r_ae, r_aa)
 
 def fermi_net_orbitals_part1_ef(
     params,
@@ -1011,13 +1196,24 @@ def fermi_net_orbitals_part2(
     #[(n_up,nele*ndet*2),(n_dn,nele*ndet*2)]->[(n_up,nele*ndet),(n_dn,nele*ndet)]
 
   # Apply envelopes if required.
-  assert (options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z),"envelope_apply_type should be PRE_DETERMINANT_Z in gq"
-  ae_channels = jnp.split(ae, active_spin_partitions, axis=0)
-  for i in range(len(active_spin_channels)):
+  if options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT:
+    ae_channels = jnp.split(ae, active_spin_partitions, axis=0)
+    r_ae_channels = jnp.split(r_ae, active_spin_partitions, axis=0)
+    r_ee_channels = jnp.split(r_ee, active_spin_partitions, axis=0)
+    for i in range(len(active_spin_channels)):
       orbitals[i] = orbitals[i] * options.envelope.apply(
-      hz=hz,
-      ae=ae_channels[i],
-      **params['envelope'][i],     )    
+          ae=ae_channels[i],
+          r_ae=r_ae_channels[i],
+          r_ee=r_ee_channels[i],
+          **params['envelope'][i],
+      )
+  elif options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z:
+    ae_channels = jnp.split(ae, active_spin_partitions, axis=0)
+    for i in range(len(active_spin_channels)):
+        orbitals[i] = orbitals[i] * options.envelope.apply(
+        hz=hz,
+        ae=ae_channels[i],
+        **params['envelope'][i],     )    
 
   # Reshape into matrices.
   if options.det_mode == "det":
@@ -1091,7 +1287,7 @@ def fermi_net(
 
 
 def make_fermi_net(
-    natom: int, 
+    nele: int, 
     ndim:int, 
     nspins: Tuple[int, int],
     charges: jnp.ndarray,
@@ -1116,6 +1312,7 @@ def make_fermi_net(
     det_mode: str = 'det',
     gemi_params: str = None,
     equal_footing: bool = False,
+    gq_type:str='ef',
 ) -> Tuple[InitFermiNet, FermiNetLike, FermiNetOptions]:
   """Creates functions for initializing parameters and evaluating ferminet.
 
@@ -1148,9 +1345,33 @@ def make_fermi_net(
     options specifies the settings used in the network.
   """
   del after_determinants
-  assert (envelope and feature_layer and ferminet_model),("no envelope/feature_layer/ferminet_model")
-  assert (det_mode == "det"),"only det mode is supported in gq"
+  natom=len(charges)
+  if gq_type=='ef':
+    assert (equal_footing),"equal_footing should be True in type ef"
+    assert (options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z),"envelope_apply_type should be PRE_DETERMINANT_Z in gq"
+
+  elif gq_type=='fermi':
+    envelope = envelopes.make_isotropic_envelope()
+    feature_layer = make_ferminet_features(charges, nspins)
+    ferminet_model = make_fermi_net_model(
+      natom,
+      nspins,
+      feature_layer,
+      hidden_dims,
+      use_last_layer,
+      dim_extra_params=(3 if do_twist else 0),
+      do_aa=do_aa,
+      mes=mes,
+    )
+    equal_footing=False
+  else:
+    raise ValueError("unknown type.")
+  
+  assert (not do_twist),"do_twist should be False in gq"
   assert (numb_k==0 and orb_numb_k==0),"numb_k and orb_numb_k should be 0 in gq"
+  assert (det_mode == "det"),"only det mode is supported in gq"
+  assert (envelope and feature_layer and ferminet_model),("no envelope/feature_layer/ferminet_model")
+
   gemi_ia=None
 
   options = FermiNetOptions(
@@ -1173,6 +1394,7 @@ def make_fermi_net(
       det_mode=det_mode,
       gemi_params=gemi_params,
       gemi_ia=gemi_ia,
+      gq_type=gq_type,
   )
 
   init = functools.partial(

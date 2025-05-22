@@ -83,7 +83,7 @@ def get_default_config() -> ConfigDict:
                 "model": get_default_model_config(),
                 "vmc": get_default_vmc_config(),
                 "eval": get_default_eval_config(),
-                "wfn_type":"gaoqiao",
+                "wfn_type":"gaoqiao",  #["gaoqiao","gq_ferminet","ll"]
                 "gq": get_default_gq_config(),
                 "logdir": os.path.join(
                     os.curdir,  # this will be relative to the calling script
@@ -413,7 +413,7 @@ def get_default_gq_config() -> Dict:
         "feat_act_func": 'tanh',
         "feat_numb_divid": 1,
         "scale": 1.0,
-        "wfn_type":"gaoqiao",
+        "type":"ef",  #["ef","fermi"]
         "ndet":16,
         "wfn_depth":4,
         "h1":64,

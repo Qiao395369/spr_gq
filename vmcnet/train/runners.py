@@ -214,6 +214,7 @@ def _get_gaoqiao_model(
             h2=config_gq.h2, 
             nh=config_gq.nh,
             do_complex=config_gq.do_complex,
+            gq_type=config_gq.type,
             ef=config_gq.ef, 
             layer_update_scheme=layer_update_scheme,
             attn=attn_params, 
@@ -222,8 +223,7 @@ def _get_gaoqiao_model(
             feat_params=feat_params,
             det_mode=config_gq.det_mode, 
             gemi_params=gemi_params,
-        )
-        
+        )        
 
     elif wfn_type == "gq_ferminet":
         from vmcnet.gaoqiao.fermi_ferminet import fermi_networks

@@ -91,6 +91,7 @@ def build_network(
 	n, charges, nspins,
 	key, 
 	ndet, depth, h1, h2, nh, do_complex,
+	gq_type:str= 'ef',
 	ef: bool = False,
 	layer_update_scheme: Optional[dict] = None,
 	attn: Optional[dict] = None,
@@ -114,40 +115,31 @@ def build_network(
 					gemi_params=gemi_params,
 					)
 
-	#build feature_layer : pp,r_pp --> h2 features
-	# feature_layer_module, feature_layer_fn = (cfg.network.make_feature_layer_fn.rsplit('.', maxsplit=1))
-	# feature_layer_module = importlib.import_module(feature_layer_module)
-	# make_feature_layer = getattr(feature_layer_module, feature_layer_fn)
-	feature_layer = open_feature_layer.make_open_features_ef(
-		# charges,
-		# nspins, 
-		ndim,
-		**cfg.network.make_feature_layer_kwargs
-	)  # type: networks.FeatureLayer
+	
+	if gq_type == "ef":
+		feature_layer = open_feature_layer.make_open_features_ef(  #build feature_layer : pp,r_pp --> h2 features
+			ndim,
+			**cfg.network.make_feature_layer_kwargs
+		)  # type: networks.FeatureLayer
+		envelope = envelopes.make_ds_hz_envelope(**cfg.network.make_envelope_kwargs)  # type: envelopes.Envelope
+		ferminet_model = networks.make_fermi_net_model_ef(   #build ferminet_model : h2(0) features --> h1(L) 
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			cfg.network.detnet.hidden_dims,
+			cfg.network.use_last_layer,
+			dim_extra_params=(3 if cfg.network.detnet.do_twist else 0),
+			do_aa=cfg.network.detnet.do_aa,
+			mes=mes,
+			**cfg.network.make_model_kwargs,
+		)
 
-	#bulid envelope , which apply to orbitals
-	# envelope_module, envelope_fn = (cfg.network.make_envelope_fn.rsplit('.', maxsplit=1))
-	# envelope_module = importlib.import_module(envelope_module)
-	# make_envelope = getattr(envelope_module, envelope_fn)
-	envelope = envelopes.make_ds_hz_envelope(**cfg.network.make_envelope_kwargs)  # type: envelopes.Envelope
+	elif gq_type == "fermi":
+		feature_layer=None
+		envelope=None
+		ferminet_model=None
 
-	#build ferminet_model : h2(0) features --> h1(L) 
-	# model_module, model_fn = (cfg.network.make_model_fn.rsplit('.', maxsplit=1))
-	# model_module = importlib.import_module(model_module)
-	# make_model = getattr(model_module, model_fn)
-	ferminet_model = networks.make_fermi_net_model_ef(
-		n, 
-		ndim,
-		nspins,
-		feature_layer,
-		cfg.network.detnet.hidden_dims,
-		cfg.network.use_last_layer,
-		dim_extra_params=(3 if cfg.network.detnet.do_twist else 0),
-		do_aa=cfg.network.detnet.do_aa,
-		mes=mes,
-		**cfg.network.make_model_kwargs,
-	)
-    
 	network_init, signed_network, network_options = networks.make_fermi_net(
 		n, 
 		ndim, 
@@ -162,6 +154,7 @@ def build_network(
 		full_det=cfg.network.full_det,
 		mes=mes,
 		equal_footing=ef,
+		gq_type=gq_type,
 		**cfg.network.detnet,
 	)
   
