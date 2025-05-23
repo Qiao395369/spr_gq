@@ -1146,6 +1146,194 @@ def make_fermi_net_model_ef(
 
   return FerminetModel(init, apply)
 
+def make_fermi_net_model_ef_test(
+    natom,
+    ndim,
+    nspins,
+    feature_layer,
+    hidden_dims,   #i.e. ((64,16),(64,16),(64,16),(64,16))
+    use_last_layer = False,
+    dim_extra_params = 0,
+    do_aa : bool=False,
+    mes = None,
+    # extra parameters
+    layer_update_scheme: Optional[dict] = None,
+    attn_params: Optional[dict] = None,
+    trimul_params: Optional[dict] = None,
+    reduced_h1_size: Optional[int] = None,
+    h1_attn_params: Optional[dict] = None,
+):
+  del do_aa,
+  # do_aa should always be true
+  assert (dim_extra_params==0),"dim_extra_params should be 0 in gq "
+  do_aa = True
+  if mes is None :
+    raise RuntimeError('make_fermi_net_model_ef only support equal-footing models')
+  
+  update_alpha, do_rdt, resd_dt_shift, resd_dt_scale = None, False, None, None
+
+  # atten on two particle channel
+  do_attn = False
+  do_trimul = False
+  dh_scale = sum([do_attn, do_trimul])
+  if dh_scale != 0:
+    dh_scale = 1./float(dh_scale)
+  do_h1_attn = False
+
+  def _init_resd_dt(
+      key,
+      layer_size: list,
+  ):
+    ret = []
+    for ii in layer_size:
+      key, subkey = jax.random.split(key)
+      ret.append(resd_dt_shift + resd_dt_scale * jax.random.normal(subkey, shape=(ii,)))
+    return ret
+
+  def init(
+      key,
+  ):    
+    dim_posi_code = mes.get_dim_one_hot()    #3
+    dim_pair_code = 2*mes.get_dim_one_hot()   #6
+
+    # extra params, dim of rs is 1
+    # dim_1_append = dim_extra_params + 1 + dim_posi_code  
+    # dim_2_append = dim_extra_params + 1 + dim_pair_code
+    # ｜
+    # ｜
+    # V
+    #no rs in gq_job
+    dim_1_append = dim_extra_params + dim_posi_code    #3
+    dim_2_append = dim_extra_params + dim_pair_code    #6
+
+    # number of spin channel
+    active_spin_channels = [spin for spin in nspins if spin > 0]
+    nchannels = len(active_spin_channels)  #2
+    # init params
+    params = {}
+    (num_one_features, num_two_features), params['input'] = (feature_layer.init())
+    distinguish_ele = True
+    nfeatures = lambda out1, out2: (nchannels+1) * out1 + (nchannels+1) * out2  # 3*xxx + 3*xxx
+      
+    dims_1_in = [nfeatures(num_one_features + dim_1_append, num_two_features)]    
+    dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]]  
+    dims_1_out = [hdim[0] for hdim in hidden_dims]  # [64,64,64,64]
+    
+    dims_2_in = ([num_two_features ] + [hdim[1] for hdim in hidden_dims[:-2]])  # [16,16,16]
+    dims_2_out = [hdim[1] for hdim in hidden_dims[:-1]]  # [16,16,16]
+    # Layer initialisation
+    key, subkey = jax.random.split(key)
+    params['one'], params['two'] = init_layers(
+        key=subkey,
+        dims_one_in=dims_1_in,  
+        dims_one_out=dims_1_out,  
+        dims_two_in=dims_2_in,  
+        dims_two_out=dims_2_out)  
+    key, k1, k2 = jax.random.split(key, 3)    
+    params['one_dt'] = None
+    params['two_dt'] = None
+    
+    params['proj']=[]
+    for ii in range(len(params['two'])):
+      params['proj'].append(None)
+    params['proj_0'] = None
+
+    dims_orbital_in = hidden_dims[-1][0]
+
+    return params, dims_orbital_in
+  
+  def construct_symmetric_features_conv(
+          h1 : jnp.ndarray,
+          h2 : jnp.ndarray,
+          proj: Optional[Mapping[str,jnp.ndarray]] = None,
+  ) -> jnp.ndarray:
+    """
+    hi  : np x nfi
+    hij : np x np x nfij
+    """
+    h2xh1 = h2 
+    hijxhi, hizxhi, hzixhz, hyzxhy = mes.split_ee_ea_ae_aa(h2xh1)
+    hi, hz = mes.split_ea(h1)
+    distinguish_ele = True
+    if distinguish_ele:
+      spin_partitions = network_blocks.array_partitions(nspins)
+      # [nele x nfij, nele x nfij]
+      hij_i = [jnp.mean(h, axis=0) for h in jnp.split(hijxhi, spin_partitions, axis=0) if h.size > 0]
+      # nele x nfiz
+      hzi_i = [jnp.mean(hzixhz, axis=0)]
+      # [nz x nfiz, nz x nfiz]
+      hiz_z = [jnp.mean(h, axis=0) for h in jnp.split(hizxhi, spin_partitions, axis=0) if h.size > 0]
+      # [nz x nfyz]
+      hyz_z = [jnp.mean(hyzxhy, axis=0)] if do_aa else []
+      # 1 x nfiz
+      gz = jnp.mean(hz, axis=0, keepdims=1)
+      # nz x nfiz
+      gz = jnp.tile(gz, [hz.shape[0], 1])
+      # [1 x nfij, 1 x nfij]
+      gi = [jnp.mean(h, axis=0, keepdims=1) for h in jnp.split(hi, spin_partitions, axis=0) if h.size > 0]
+      # [nele x nfij, nele x nfij]
+      gi = [jnp.tile(g, [hi.shape[0], 1]) for g in gi]
+      # nz x nfiz, nz x nfiz
+      gz = [gz, gz] if len(gi) == 2 else [gz]
+      if reduced_h1_size is not None:
+        gi = [jnp.split(ii, [min(reduced_h1_size,ii.shape[-1])], axis=-1)[0] for ii in gi]  
+        gz = [jnp.split(ii, [min(reduced_h1_size,ii.shape[-1])], axis=-1)[0] for ii in gz]
+        #截断，只要前min(reduced_h1_size,ii.shape[-1])的特征
+    return \
+      jnp.concatenate([
+        jnp.concatenate([hi] + gi + hij_i + hzi_i, axis=-1),
+        jnp.concatenate([hz] + gz + hiz_z + hyz_z, axis=-1),
+      ], axis=0)
+  
+  def _hi_next(
+      hi_in,
+      params,
+  ):
+    return jnp.tanh(network_blocks.linear_layer(hi_in, **params))
+
+  def _hij_next(
+      hij_in,
+      params,
+  ):
+    return jnp.tanh(network_blocks.vmap_linear_layer(hij_in,params['w'],params['b'],))
+
+  residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y 
+      
+  def apply(
+      params,
+      e2_features,
+  ):
+    c1 = mes.get_part_one_hot()  #(nele+nz,3)
+    c2 = mes.get_pair_one_hot()  #(nele+nz,nele+nz,6)
+    a1 = c1
+    a2 = c2
+    
+    # npart = e2_features.shape[0]
+    h2 = e2_features
+    hee, _, haa = mes.split_ee_ea_aa(h2)
+    ha = jnp.mean(haa, axis=0)  #\Sigma_x hxy : (na,na,nf_two)->(na,nf_two)
+    he = jnp.mean(hee, axis=0)  #\Sigma_i hij :(ne,ne,nf_two)->(ne,nf_two)
+    h1 = jnp.concatenate([he, ha], axis=0)    #(ne+na,nf_two)
+    for i in range(len(params['two'])):
+      if i == 0:
+        h1 = jnp.concatenate([h1, a1], axis=-1)  # (ne+na,nf_two+3)
+        h1_in = construct_symmetric_features_conv(h1, h2, params['proj_0'])
+      else:
+        h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][i-1])
+      h1_next = _hi_next(h1_in, params['one'][i])
+      h2_next = _hij_next(h2, params['two'][i])
+      h1 = residual(h1, h1_next)
+      h2 = residual(h2, h2_next)
+    if len(params['two']) != len(params['one']):
+      h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
+      h1_next = _hi_next(h1_in, params['one'][-1])
+      h1 = residual(h1, h1_next)
+      h_to_orbitals = h1
+    else:
+      _, h_to_orbitals = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
+    return h_to_orbitals, h1
+
+  return FerminetModel(init, apply)
 
 def fermi_net_orbitals(
     params,
@@ -1181,7 +1369,7 @@ def fermi_net_orbitals(
     r_ee), the atom-electron vectors, distances and electron-electron distances.
   """
   
-  if options.gq_type=="ef":
+  if options.gq_type=="ef" or options.gq_type=="ef_test":
     h_to_orbitals, hz, pairs = fermi_net_orbitals_part1_ef(params, pos, atoms, nspins, options)
   else:
     h_to_orbitals, hz, pairs = fermi_net_orbitals_part1(params, pos, atoms, nspins, options)
@@ -1415,8 +1603,6 @@ def make_fermi_net(
     # assert (options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z),"envelope_apply_type should be PRE_DETERMINANT_Z in gq"
   elif gq_type=='fermi':
     equal_footing=False
-  else:
-    raise ValueError("unknown type.")
   
   assert (not do_twist),"do_twist should be False in gq"
   assert (numb_k==0 and orb_numb_k==0),"numb_k and orb_numb_k should be 0 in gq"

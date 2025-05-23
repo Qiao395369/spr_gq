@@ -144,6 +144,32 @@ def build_network(
 			ef_construct_features_type=ef_construct_features_type,
 			**cfg.network.make_model_kwargs,
 		)
+		
+	elif gq_type == "ef_test":
+		feature_layer = open_feature_layer.make_open_features_ef(  #build feature_layer : pp,r_pp --> h2 features
+			ndim,
+			**cfg.network.make_feature_layer_kwargs
+		)  # type: networks.FeatureLayer
+
+		if envelope_type=="ds_hz":
+			envelope = envelopes.make_ds_hz_envelope(**cfg.network.make_envelope_kwargs)  # type: envelopes.Envelope
+		elif envelope_type=="iso":
+			envelope = envelopes.make_isotropic_envelope()
+		else :
+			raise ValueError("envelope_type should be in ['ds_hz', 'iso']")
+	
+		ferminet_model = networks.make_fermi_net_model_ef_test(   #build ferminet_model : h2(0) features --> h1(L) 
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			cfg.network.detnet.hidden_dims,
+			cfg.network.use_last_layer,
+			dim_extra_params=(3 if cfg.network.detnet.do_twist else 0),
+			do_aa=cfg.network.detnet.do_aa,
+			mes=mes,
+			**cfg.network.make_model_kwargs,
+		)
 
 	elif gq_type == "fermi":
 		natom=len(charges)
