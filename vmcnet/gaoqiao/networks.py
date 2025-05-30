@@ -212,7 +212,6 @@ class FermiNetOptions:
   do_complex : bool = False
   envelope_pw: Any = None
   orb_env_pw: Any = None
-  do_twist: bool = False
   do_aa: bool = False
   mes: dp.ManyElectronSystem = None
   det_mode: str = 'det'
@@ -1335,6 +1334,450 @@ def make_fermi_net_model_ef_test(
 
   return FerminetModel(init, apply)
 
+def make_fermi_net_model_zinv_shrd(
+    natom,
+    ndim,
+    nspins,
+    feature_layer,
+    hidden_dims,  #i.e. ((64,16),(64,16),(64,16),(64,16))
+    use_last_layer,
+    dim_extra_params : int = 0,
+    do_aa : bool=True,
+    mes = None,
+    # extra parameters
+    distinguish_ele: bool = False,
+    code_only_first: bool = False,
+    attn_params: Optional[dict] = None,
+    attn_1_params: Optional[dict] = None,
+):
+  do_attn = attn_params is not None
+  do_attn_1 = attn_1_params is not None
+  if do_attn:
+    attn_qkdim = attn_params.get("qkdim", 8)
+    attn_nhead = attn_params.get("nhead", 2)
+
+  if not do_aa:
+    raise RuntimeError(
+      "do_aa must be true when using shared parameters"
+    )
+  if mes is None:
+    raise RuntimeError(
+      "mes should not be None when using shared parameters"
+    )
+  if do_attn and do_attn_1:
+    raise RuntimeError(
+      "cannot do both attention mechanisms in the same model"
+    )
+
+  def init(
+      key,
+  ):
+    dim_posi_code = mes.get_dim_one_hot()  #3
+    dim_pair_code = 2*mes.get_dim_one_hot()  #6
+    # extra params
+    dim_1_append = dim_extra_params + dim_posi_code
+    dim_2_append = dim_extra_params + dim_pair_code
+    # number of spin channel
+    active_spin_channels = [spin for spin in nspins if spin > 0]  
+    nchannels = len(active_spin_channels) # 2
+    # init params
+    params = {}
+    (num_one_features, num_two_features), params['input'] = (feature_layer.init())
+    if not distinguish_ele: #distinguish_ele means distinguish_ele_spin 即区分自旋，将up与down分开。
+      nfeatures = lambda out1, out2: 2 * out1 + 2 * out2
+    else:
+      nfeatures = lambda out1, out2: (nchannels+1) * out1 + (nchannels+1) * out2
+    dims_1_in = [nfeatures(num_two_features+dim_1_append, num_two_features)] #[3*(4+3)+3*4]=[33]
+    if code_only_first:
+      dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]] #[33,3*(64+16),3*(64+16),3*(64+16)]
+    else:
+      dims_1_in += [nfeatures(hdim[0]+dim_1_append, hdim[1]) for hdim in hidden_dims[:-1]]
+    dims_1_out = [hdim[0] for hdim in hidden_dims]  #[64,64,64,64]
+    # dims_1_in = [ii + dim_1_append for ii in dims_1_in]
+    if use_last_layer:
+      dims_2_in = ([num_two_features] + [hdim[1] for hdim in hidden_dims[:-1]]) #[4,16,16,16]
+      dims_2_out = [hdim[1] for hdim in hidden_dims]    #[16,16,16,16]
+    else:
+      dims_2_in = ([num_two_features] + [hdim[1] for hdim in hidden_dims[:-2]])  #[4,16,16]
+      dims_2_out = [hdim[1] for hdim in hidden_dims[:-1]]   #[16,16,16]
+    if code_only_first:
+      dims_2_in[0] += dim_2_append  #[10,16,16]
+    else:
+      dims_2_in = [ii + dim_2_append for ii in dims_2_in]  
+    # Layer initialisation
+    key, subkey = jax.random.split(key)
+    params['one'], params['two'] = init_layers(  #params in dense_layer between l and l+1 layers
+        key=subkey,
+        dims_one_in=dims_1_in,
+        dims_one_out=dims_1_out,
+        dims_two_in=dims_2_in,
+        dims_two_out=dims_2_out)
+    #dims_1_in: [33,240,240,240]
+    #             |  |   |   |
+    #             |  |   |   |
+    #             V  V   V   V
+		#dims_1_out:[64, 64, 64, 64]
+		#dims_2_in: [10,16,16]
+    #            |  |  |
+    #            |  |  |
+    #            V  V  V
+		#dims_2_out:[16,16,16]
+    if not use_last_layer:
+      # Just pass the activations from the final layer of the one-electron stream directly to orbital shaping.
+      dims_orbital_in = hidden_dims[-1][0]  #64
+    else:
+      dims_orbital_in = nfeatures(hidden_dims[-1][0], hidden_dims[-1][1])  #3*(64+16)=240
+    # projection parameters
+    dim_proj_1_in = dims_1_out[:len(dims_2_out)]  #[64,64,64]
+    dim_proj_1_out = dims_2_out  #[16,16,16]
+    if not code_only_first:
+      dim_proj_1_in = [ii + dim_1_append for ii in dim_proj_1_in]
+    params['proj'] = []
+    for ii in range(len(params['two'])):
+      if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
+        key, subkey = jax.random.split(key)
+        params['proj'].append(network_blocks.init_linear_layer(
+          subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
+        #[64,64,64] 
+        # |  |  |
+        # |  |  |
+        # V  V  V 
+        #[16,16,16]
+      else:
+        # do not project if the input and output dims are the same
+        params['proj'].append(None)
+    dim_proj_0_in = num_one_features + dim_1_append  #7
+    dim_proj_0_out = num_two_features  #4
+    if dim_proj_0_in != dim_proj_0_out:
+      key, subkey = jax.random.split(key)
+      params['proj_0'] = network_blocks.init_linear_layer(
+        subkey, dim_proj_0_in, dim_proj_0_out, )
+      #7-->4
+    else:
+      params['proj_0'] = None
+    # attn
+    if do_attn:
+      dim_attn_in = [dim_proj_0_in] + dim_proj_1_in  #[7,16,16,16]
+      dim_attn_out = [attn_qkdim] * len(dim_attn_in) #[qkdim,qkdim,qkdim,qkdim]
+      dim_attn_out = [ii*attn_nhead for ii in dim_attn_out]  #[nhead*qkdim,nhead*qkdim,nhead*qkdim,nhead*qkdim]
+      params['attn_qmap'] = []
+      params['attn_kmap'] = []
+      params['attn_headw'] = []
+      for ii in range(len(dim_attn_in)):
+        key, subkeyq, subkeyk = jax.random.split(key, 3)
+        params['attn_qmap'].append(network_blocks.init_linear_layer(subkeyq, dim_attn_in[ii], dim_attn_out[ii], include_bias=False))
+        #[      7    ,     16    ,     16    ,     16    ]
+        #       |           |           |           |
+        #       |           |           |           |
+        #       V           V           V           V
+        #[nhead*qkdim,nhead*qkdim,nhead*qkdim,nhead*qkdim]
+        params['attn_kmap'].append(network_blocks.init_linear_layer(subkeyk, dim_attn_in[ii], dim_attn_out[ii], include_bias=False))
+        #[      7    ,     16    ,     16    ,     16    ]
+        #       |           |           |           |
+        #       |           |           |           |
+        #       V           V           V           V
+        #[nhead*qkdim,nhead*qkdim,nhead*qkdim,nhead*qkdim]
+        key, subkey = jax.random.split(key)
+        params['attn_headw'].append(network_blocks.init_linear_layer(subkey, attn_nhead, 1, include_bias=False))
+        #[nhead*qkdim,nhead*qkdim,nhead*qkdim,nhead*qkdim]
+        #      |           |           |           |
+        #      |           |           |           |
+        #      V           V           V           V
+        #[     1     ,     1     ,     1     ,     1     ]
+    return params, dims_orbital_in
+
+
+  def _1_apply(
+      he,
+      params,
+      activation : bool = True
+  ):
+    ret = network_blocks.linear_layer(he, **params)
+    if activation:
+      ret = jnp.tanh(ret)
+    return ret
+
+  def collective_1_apply(
+      he, hi, 
+      params,
+      activation : bool = True
+  ):
+    nelecs = he.shape[0]
+    natoms = hi.shape[0]
+    ret = network_blocks.linear_layer(jnp.concatenate([he, hi], axis=0), **params)
+    if activation:
+      ret = jnp.tanh(ret)
+    ret = jnp.split(ret, [nelecs], axis=0)
+    return ret[0], ret[1]
+
+  def collective_2_apply(
+      hee, hei, hii, 
+      params,
+      hie: Optional[jnp.ndarray] = None,
+      activation : bool = True,
+  ):    
+    do_hie = hie is not None
+    nelecs = hee.shape[0]
+    natoms = hii.shape[0]
+    nfeats = hee.shape[-1]
+    clist = [
+      hee.reshape([-1,nfeats]),  #(ne*ne,nf)
+      hei.reshape([-1,nfeats]),    #(na*ne,nf)
+      hii.reshape([-1,nfeats]),    #(na*na,nf)
+    ]
+    if do_hie:
+      clist.append(hie.reshape([-1, nfeats]))
+    xx = jnp.concatenate(clist, axis=0)  #(ne*ne+na*ne+na*na,nf)
+    ret = network_blocks.linear_layer(xx, **params) #(ne*ne+na*ne+na*na,nf')
+    if activation:
+      ret = jnp.tanh(ret)
+    #之后再恢复前两维形状。
+    nfeats = ret.shape[-1]
+    slist = [nelecs*nelecs, nelecs*(nelecs+natoms)]
+    if do_hie:
+      slist.append(nelecs*(nelecs+natoms)+natoms*natoms)
+    ret = jnp.split(ret, slist, axis=0)
+    ret[0] = ret[0].reshape([nelecs, nelecs, nfeats])
+    ret[1] = ret[1].reshape([nelecs, natoms, nfeats])
+    ret[2] = ret[2].reshape([natoms, natoms, nfeats])
+    if do_hie:
+      ret[3] = ret[3].reshape([natoms, nelecs, nfeats])
+    else:
+      ret.append(None)
+    return ret[0], ret[1], ret[2], ret[3]
+
+  def attention_map(qq, kk, axis=1):
+    _, dd, nh = qq.shape
+    return jax.nn.softmax(
+      jnp.einsum("ikh,jkh->ijh", qq, kk) / jnp.sqrt(dd), #\Sigma_k qq_ikh*kk_jkh
+      axis=axis,
+    )
+
+  def collective_attn_head_apply(list_data, params):
+    list_shape = [ii.shape for ii in list_data]
+    nh = list_shape[0][-1]
+    list_data = [ii.reshape(-1,nh) for ii in list_data]
+    list_data_split = jnp.cumsum([ii.shape[0] for ii in list_data])[:-1]
+    #例如，如果 np.cumsum([3, 2, 4]) 生成的列表是 [3, 5, 9]，那么 [3, 5, 9][:-1] 将会生成 [3, 5]。这些累积和值将被用作分割点，用于将一个大的数组分割成多个子数组
+    coll_data = jnp.concatenate(list_data, axis=0)
+    coll_data = network_blocks.linear_layer(coll_data, **params).reshape(-1) #nh->1
+    list_data = jnp.split(coll_data, list_data_split)
+    list_data = [ii.reshape(ss[:-1]) for ii,ss in zip(list_data, list_shape)]
+    return list_data
+    #[a*b*...*nh , c*d*...*nh , ...]->[a*b*... , c*d*... , ...]
+
+  def construct_symmetric_features_conv(
+          hz : jnp.ndarray,
+          hi : jnp.ndarray,
+          hiz: jnp.ndarray, 
+          hij: jnp.ndarray,
+          hyz: jnp.ndarray,
+          spins: Tuple[int, int],
+          hzi: Optional[jnp.ndarray] = None,
+          proj: Optional[Mapping[str,jnp.ndarray]] = None,
+          attn_params: Optional[Tuple[Mapping[str,jnp.ndarray]]] = None,
+  ) -> jnp.ndarray:
+    """
+    hz  : nz x nf_one
+    hi  : nele x nf_one
+    hiz : nele x nz x nf_two
+    hij : nele x nele x nf_two
+    hyz : nz x nz x nf_two
+    """
+    has_hzi = hzi is not None
+    if proj is not None:
+      phi, phz = collective_1_apply(hi, hz, proj, activation=False) #nf_one->nf_two
+    else:
+      phi, phz = hi, hz
+    hizxhi = hiz * phi[:,None,:]  #(nele,nz,nf)*(nele,1,nf)->(nele,nz,nf)  p_hi *(pointwise product) hiz
+    if not has_hzi:
+      hizxhz = hiz * phz[None,:,:] #(nele,nz,nf)*(1,nz,nf)->(nele,nz,nf)  p_hz *(pointwise product) hiz
+    else:
+      hizxhz = jnp.transpose(hzi * phz[:,None,:], (1,0,2)) #(nz,nele,nf)*(nz,1,nf)->(nz,nele,nf)->(nele,nz,nf)  p_hz *(pointwise product) hzi
+    hijxhi = hij * phi[:,None,:] #(nele,nele,nf)*(nele,1,nf)->(nele,nele,nf)  p_hi *(pointwise product) hij
+    hyzxhz = hyz * phz[:,None,:]  #(nz,nz,nf)*(nz,1,nf)->(nz,nz,nf)  p_hz *(pointwise product) hyz
+    if do_attn:
+      q_map, k_map, head_w = attn_params
+      qhi, qhz = collective_1_apply(hi, hz, q_map, activation=False)  #(nele/nz,nf_one)->(nele/nz,qkdim*nhead)
+      khi, khz = collective_1_apply(hi, hz, k_map, activation=False)  #(nele/nz,nf_one)->(nele/nz,qkdim*nhead)
+      [qhi, qhz, khi, khz] = [ii.reshape(-1,attn_qkdim,attn_nhead) for ii in [qhi, qhz, khi, khz]] #->(nele/nz,qkdim,nhead)
+      # nele x nz x nh
+      amap_zi = attention_map(khi, qhz, axis=0) 
+      # nele x nz x nh
+      amap_iz = attention_map(qhi, khz, axis=1)
+      # nele x nele x nh
+      amap_ii = attention_map(khi, qhi, axis=0)
+      # nz x nz x nh
+      amap_zz = attention_map(khz, qhz, axis=0)
+      # update with attention maps
+      hizxhi = hizxhi[:,:,:,None] * amap_zi[:,:,None,:]  # (nele,nz,nf,1) * (nele,nz,1,nh) -> (nele,nz,nf,nh)
+      hizxhz = hizxhz[:,:,:,None] * amap_iz[:,:,None,:]  # (nele,nz,nf,1) * (nele,nz,1,nh) -> (nele,nz,nf,nh)
+      hijxhi = hijxhi[:,:,:,None] * amap_ii[:,:,None,:]  # (nele,nele,nf,1) * (nele,nele,1,nh) -> (nele,nele,nf,nh)
+      hyzxhz = hyzxhz[:,:,:,None] * amap_zz[:,:,None,:]  # (nz,nz,nf,1) * (nz,nz,1,nh) -> (nz,nz,nf,nh)
+      [hizxhi, hizxhz, hijxhi, hyzxhz] = collective_attn_head_apply([hizxhi, hizxhz, hijxhi, hyzxhz], head_w)
+      #(xx,xx,xx,nh)->(xx,xx,xx)  head_w:nh->1
+      
+    if not distinguish_ele:
+      # [nz x nfiz]
+      hiz_z = [jnp.mean(hizxhi, axis=0)]   #\Sigma_i  p_hi *(pointwise product) hiz  (nele,nz,nf)->(nz,nf)
+      # [nele x nfiz]
+      hiz_i = [jnp.mean(hizxhz, axis=1)]  #\Sigma_z  p_hz *(pointwise product) hiz  (nele,nz,nf)->(nele,nf)
+      # [nele x nfij]
+      hij_i = [jnp.mean(hijxhi, axis=0)]  #\Sigma_i  p_hi *(pointwise product) hij  (nele,nele,nf)->(nele,nf)
+      # [nz x nfyz]
+      hyz_z = [jnp.mean(hyzxhz, axis=0)]  #\Sigma_z  p_hz *(pointwise product) hyz  (nz,nz,nf)->(nz,nf)
+      # 1 x nfiz
+      gz = jnp.mean(hz, axis=0, keepdims=1)  #\Sigma_z  hz  (nz,nf_one)->(1,nf_one)
+      # nz x nfiz
+      gz = [jnp.tile(gz, [hz.shape[0], 1])]  #->(nz,nf_one)
+      # 1 x nfij
+      gi = jnp.mean(hi, axis=0, keepdims=1)  #\Sigma_i  hi  (nele,nf_one)->(1,nf_one)
+      # nele x nfij
+      gi = [jnp.tile(gi, [hi.shape[0], 1])]  #->(nele,nf_one)
+      return \
+        jnp.concatenate([hz] + gz + hiz_z + hyz_z, axis=-1), \
+        jnp.concatenate([hi] + gi + hij_i + hiz_i, axis=-1)
+    #[nz,nf_one]+[nz,nf_one]+[nz,nf_two]+[nz,nf_two] and [nele,nf_one],[nele,nf_one],[nele,nf_two],[nele,nf_two]
+    # nf_one * 2 + nf_two * 2
+    else:
+      spin_partitions = network_blocks.array_partitions(nspins)  #如果nspins=(4, 4)，spin_partitions将返回一个列表[4]
+      # [nz x nfiz, nz x nfiz]
+      hiz_z = [jnp.mean(h, axis=0) for h in jnp.split(hizxhi, spin_partitions, axis=0) if h.size > 0] #(nele,nz,nf)->[(n_up,nz,nf),(n_dn,nz,nf)]->[(nz,nf),(nz,nf)]
+      # nele x nfiz
+      hiz_i = [jnp.mean(hizxhz, axis=1)]  #\Sigma_z  p_hz *(pointwise product) hiz  (nele,nz,nf)->(nele,nf)
+      # [nele x nfij, nele x nfij]
+      hij_i = [jnp.mean(h, axis=0) for h in jnp.split(hijxhi, spin_partitions, axis=0) if h.size > 0] #(nele,nele,nf)->[(n_up,nele,nf),(n_dn,nele,nf)]->[(nele,nf),(nele,nf)]
+      # [nz x nfyz]
+      hyz_z = [jnp.mean(hyzxhz, axis=0)] if do_aa else []  #\Sigma_z  p_hz *(pointwise product) hyz  (nz,nz,nf)->(nz,nf)
+      # 1 x nfiz
+      gz = jnp.mean(hz, axis=0, keepdims=1)  #\Sigma_z  hz  (nz,nf_one)->(1,nf_one)
+      # nz x nfiz
+      gz = jnp.tile(gz, [hz.shape[0], 1])  #->(nz,nf_one)
+      # [nz x nfiz, nz x nfiz]
+      gz = [gz, gz]      
+      # [1 x nfij, 1 x nfij]
+      gi = [jnp.mean(h, axis=0, keepdims=1) for h in jnp.split(hi, spin_partitions, axis=0) if h.size > 0] #->[(n_up,nf_one),(n_dn,nf_one)]->[(1,nf_one),(1,nf_one)]
+      # [nele x nfij, nele x nfij]
+      gi = [jnp.tile(g, [hi.shape[0], 1]) for g in gi]   #->[(nele,nf_one),(nele,nf_one)]
+      return \
+          jnp.concatenate([hz] + gz + hiz_z + hyz_z, axis=-1), \
+          jnp.concatenate([hi] + gi + hij_i + hiz_i, axis=-1)
+    #[nz,nf_one]+[nz,nf_one]+[nz,nf_one]   +   [nz,nf_two]+[nz,nf_two]+【nz,nf_two】
+    # and 
+    #[nele,nf_one]+[nele,nf_one]+[nele_nf_one]  +  [nele,nf_two]+[nele,nf_two]+[nele,nf_two]
+    # nf_one * 3 + nf_two * 3
+
+  def apply(
+      params,
+      ae_features,
+      ee_features,
+      aa_features=None,
+      pos=None,
+      lattice=None,
+      extra_params=None,
+  ):
+    part_one_hot = mes.get_part_one_hot()   #(nele+nz,3)
+    pair_one_hot = mes.get_pair_one_hot()   #(nele+nz,nele+nz,6)
+    [ci, cz] = mes.split_ea(part_one_hot)   #[(nele,3),(nz,3)]
+    [cij, ciz, czi, cyz] = mes.split_ee_ea_ae_aa(pair_one_hot) #[(nele,nele,6),(nele,nz,6),(nz,nele,6),(nz,nz,6)]
+    do_ep = dim_extra_params > 0
+    nelecs = mes.nelecs
+    natoms = mes.natoms
+    ei = jnp.tile(extra_params[None,:], [nelecs,1]) if do_ep else None
+    ez = jnp.tile(extra_params[None,:], [natoms,1]) if do_ep else None
+    eij = jnp.tile(extra_params[None,None,:], [nelecs,nelecs,1]) if do_ep else None
+    eiz = jnp.tile(extra_params[None,None,:], [nelecs,natoms,1]) if do_ep else None
+    ezi = jnp.tile(extra_params[None,None,:], [natoms,nelecs,1]) if do_ep else None
+    eyz = jnp.tile(extra_params[None,None,:], [natoms,natoms,1]) if do_ep else None
+    cond_concat = lambda ci,ei: ci if ei is None else jnp.concatenate([ei,ci], axis=-1)
+    ai = cond_concat(ci, ei)  #ci
+    az = cond_concat(cz, ez)  #cz
+    aij = cond_concat(cij, eij)  #cij
+    aiz = cond_concat(ciz, eiz)  #ciz
+    azi = cond_concat(czi, ezi)  #czi
+    ayz = cond_concat(cyz, eyz)  #cyz
+
+    if dim_extra_params > 0: 
+      assert(extra_params is not None), "should provide extra parameters!"
+      assert(extra_params.size == dim_extra_params), "the size of the extra parameter should be " + str(dim_extra_params)
+    else:
+      assert(extra_params is None), "extra parameters should be None because dim_extra_params was set to 0"
+
+    residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y
+    nele = ee_features.shape[0]
+    hiz = ae_features.reshape([nele, natoms, -1])
+    hij = ee_features
+    hyz = aa_features
+    if do_attn_1:
+      hzi = jnp.transpose(hiz, (1,0,2))
+    else:
+      hzi = None
+    hz = jnp.mean(hyz, axis=0)   #0th layer
+    hi = jnp.mean(hij, axis=0)
+    for i in range(len(params['two'])):
+      if i == 0 or not code_only_first:
+        [hi, hz] = [jnp.concatenate([ii,jj], axis=-1) for ii,jj in zip([hi, hz], [ai, az])] # hi=concat(hi,ai), hz=concat(hz,az)
+      # update channel one feature
+      if do_attn:
+        attn_params = (params['attn_qmap'][i], params['attn_kmap'][i], params['attn_headw'][i])
+      else:
+        attn_params = None
+      if i == 0:
+        hz_in, hi_in = construct_symmetric_features_conv(
+          hz, hi, hiz, hij, hyz, nspins, 
+          hzi=hzi,
+          proj=params['proj_0'],
+          attn_params=attn_params,
+        )
+      else:
+        hz_in, hi_in = construct_symmetric_features_conv(
+          hz, hi, hiz, hij, hyz, nspins,
+          hzi=hzi,
+          proj=params['proj'][i-1],
+          attn_params=attn_params,
+        )
+      if i == 0 or not code_only_first:
+        [hij, hiz, hyz] = [jnp.concatenate([ii,jj], axis=-1) for ii,jj in zip([hij, hiz, hyz], [aij, aiz, ayz])]
+        if do_attn_1:
+          hzi = jnp.concatenate([hzi, azi], axis=-1)
+      # channel one
+      hi_next, hz_next = collective_1_apply(hi_in, hz_in, params['one'][i])
+      # channel two
+      hij_next, hiz_next, hyz_next, hzi_next = collective_2_apply(hij, hiz, hyz, params['two'][i], hie=hzi)
+      hz = residual(hz, hz_next)
+      hi = residual(hi, hi_next)
+      hiz = residual(hiz, hiz_next)
+      hij = residual(hij, hij_next)
+      hyz = residual(hyz, hyz_next)
+      if do_attn_1:
+        hzi = residual(hzi, hzi_next)
+    if len(params['two']) != len(params['one']):
+      #即最后一层，用前一层的h1,h2得到256的pre_h1，然后变为64的h1，即输出这个h1。h2不做更新，因为h2本来就是辅助h1更新的，，最后一层的h1只需要上一层的h2就行了。
+      if not code_only_first:
+        [hi, hz] = [jnp.concatenate([ii,jj], axis=-1) for ii,jj in zip([hi, hz], [ai, az])]
+      if do_attn:
+        attn_params = (params['attn_qmap'][-1], params['attn_kmap'][-1], params['attn_headw'][-1])
+      else:
+        attn_params = None
+      hz_in, hi_in = construct_symmetric_features_conv(
+        hz, hi, hiz, hij, hyz, nspins,
+        hzi=hzi,
+        proj=params['proj'][-1],
+        attn_params=attn_params,
+      )
+      # channel one
+      hi_next, hz_next = collective_1_apply(hi_in, hz_in, params['one'][-1])  #240->64 
+      hi = residual(hi, hi_next) #(nele,64)
+      hz = residual(hz, hz_next) #(nz,64)
+      h_to_orbitals = hi   
+    else:
+      _, h_to_orbitals = construct_symmetric_features_conv(
+        hz, hi, hiz, hij, hyz, nspins, params['proj_z'][-1], params['proj_i'][-1])
+    return h_to_orbitals, hz
+
+  return FerminetModel(init, apply)
+
+
 def fermi_net_orbitals(
     params,
     pos: jnp.ndarray,
@@ -1556,9 +1999,6 @@ def make_fermi_net(
     after_determinants: Union[int, Tuple[int, ...]] = 1,  #没有输入
     det_nlayer: Optional[int] = None,   #没有输入
     do_complex: bool = False,
-    numb_k: int = 0,
-    orb_numb_k: int = 0,
-    do_twist: bool = False,
     do_aa: bool = False,
     mes: dp.ManyElectronSystem = None,
     det_mode: str = 'det',
@@ -1604,8 +2044,6 @@ def make_fermi_net(
   elif gq_type=='fermi':
     equal_footing=False
   
-  assert (not do_twist),"do_twist should be False in gq"
-  assert (numb_k==0 and orb_numb_k==0),"numb_k and orb_numb_k should be 0 in gq"
   assert (det_mode == "det"),"only det mode is supported in gq"
   assert (envelope and feature_layer and ferminet_model),("no envelope/feature_layer/ferminet_model")
 
@@ -1624,7 +2062,6 @@ def make_fermi_net(
       do_complex=do_complex,
       envelope_pw=None,  #None
       orb_env_pw=None,  #None
-      do_twist=do_twist,
       do_aa=do_aa,
       mes=mes,
       equal_footing=equal_footing,

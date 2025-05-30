@@ -25,75 +25,33 @@ import jax.numpy as jnp
 import vmcnet.gaoqiao.networks as networks
 import vmcnet.gaoqiao.dp as dp
 
-def make_open_features(
-		# charges: Optional[jnp.ndarray] = None,
-		# nspins: Optional[Tuple[int,...]] = None,
-		ndim: int = 3,
-		feature_scale:bool=False,
-		feature_scale_num:Tuple[int,...]=(1),
-		has_decay: Optional[bool] = False,
-):
-
+def make_open_features(charges: Optional[jnp.ndarray] = None,
+                           nspins: Optional[Tuple[int, ...]] = None,
+                           ndim: int = 3) :
+	del charges, nspins
 	def init() -> Tuple[Tuple[int,int],networks.Param]:
-		if feature_scale:
-			dim_one_feature=(ndim+1)*len(feature_scale_num)
-			dim_two_feature=(ndim+1)*len(feature_scale_num)
-			if has_decay:
-				dim0+=1  #5
-				dim1+=1
-		else:
-			dim_one_feature=ndim+1 
-			dim_two_feature=ndim+1
-			if has_decay:
-				dim0+=1  #5
-				dim1+=1
-		return (dim_one_feature,dim_two_feature),{}
+		dim0,dim1=0,0
+		dim0+=ndim+1
+		dim1+=ndim+1
+		return (dim0,dim1),{}
 
-	def apply_(ae,r_ae,ee,r_ee,aa=None,r_aa=None) -> Tuple[jnp.ndarray,jnp.ndarray]:
+	def apply(ae, r_ae, ee, r_ee, aa=None, r_aa=None) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
 		# different ee convention, so use -ee
-		nele=ee.shape[0]
-		# print("ee.shape:",ee.shape)   #(nele,nele,3)
-		ee=-ee*(1-jnp.eye(nele))[...,None]
-		r_ee=-r_ee*(1-jnp.eye(nele))[...,None]
+		ne=ee.shape[0]
+		na=aa.shape[0]
+		ee=-ee*(1.0-jnp.eye(ne))[...,None]
+		r_ee=-r_ee*(1-jnp.eye(ne))[...,None]
 
-		ae_features=jnp.concatenate([ae,r_ae],axis=-1)
+		aa=-aa*(1.0-jnp.eye(na))[...,None]
+		r_aa=-r_aa*(1-jnp.eye(na))[...,None]
+
 		ee_features=jnp.concatenate([ee,r_ee],axis=-1)
-		
-		if aa is not None:
-			na=aa.shape[0]
-			aa=-aa*(1-jnp.eye(na))[...,None]
-			r_aa=-r_aa*(1-jnp.eye(na))[...,None]
-			aa_features=jnp.concatenate([aa,r_aa],axis=-1)
-		else:
-			aa_features=None
+		aa_features=jnp.concatenate([aa,r_aa],axis=-1)
+		ae_features=jnp.concatenate([ae,r_ae],axis=-1)
 
-		if has_decay:
-			def add_decay_feat(features,r_ae):
-				features=jnp.concatenate([features,decay.deacy(r_ae)],axis=-1)
-				return features
-			ae_features=add_decay_feat(ae_features,r_ae)
-			ee_features=add_decay_feat(ee_features,r_ee)
-			if aa is not None:
-				aa_features=add_decay_feat(aa_features,r_aa)
-		#print('ee_features:',aa_features[0])
-		
-		if feature_scale:
-			ae_features_scale=[]
-			ee_features_sacle=[]
-			aa_features_scale=[]
-			for num in feature_scale_num:
-				ae_features_scale+=[ae_features/float(num)]
-				ee_features_sacle+=[ee_features/float(num)]
-				aa_features_scale+=[aa_features/float(num)]
-			ae_features_scale=jnp.concatenate(ae_features_scale,axis=-1)
-			ee_features_sacle=jnp.concatenate(ee_features_sacle,axis=-1)
-			aa_features_scale=jnp.concatenate(aa_features_scale,axis=-1)
-			return ae_features_scale,ee_features_sacle,aa_features_scale
-		else:
-			return ae_features,ee_features,aa_features
+		return ae_features, ee_features, aa_features
 
-	return networks.FeatureLayer(init=init,apply=apply_)
-
+	return networks.FeatureLayer(init=init,apply=apply)
 
 
 def make_open_features_ef(
@@ -115,6 +73,7 @@ def make_open_features_ef(
 	#由于集合是无序的，为了能对元素进行排序，需要再次将集合转换回列表。
 	#最后，使用sorted函数对去重并转换为列表的结果进行排序。sorted函数返回一个新的列表，其中的元素按升序排列
 	num_scales=len(all_scales)
+	print("num_scales:",num_scales)
 	if act_func=='tanh':
 		act_func=jnp.tanh
 	elif act_func=='tanh2':
