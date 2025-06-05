@@ -93,6 +93,24 @@ def build_network(
 			reduced_h1_size=reduced_h1_size,
 			h1_attn_params=h1_attn,
 		)
+	elif gq_type == "ef_shrd":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			layer_update_scheme=layer_update_scheme,
+			attn_params=attn,
+			trimul_params=trimul,
+			reduced_h1_size=reduced_h1_size,
+			h1_attn_params=h1_attn,
+		)
 
 	elif gq_type == "fermi":
 		ef=False

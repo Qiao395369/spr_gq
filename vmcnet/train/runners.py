@@ -648,6 +648,7 @@ def _setup_vmc(
 
     return (
         log_psi_apply,
+        log_psi_apply_novmap,
         burning_step,
         walker_fn,
         update_param_fn,
@@ -666,6 +667,7 @@ def _setup_eval(
     ion_pos: Array,
     ion_charges: Array,
     log_psi_apply: ModelApply[P],
+    log_psi_apply_novmap: ModelApply[P],
     get_position_fn: GetPositionFromData[dwpa.DWPAData],
     apply_pmap: bool = True,
 ) -> Tuple[
@@ -684,7 +686,7 @@ def _setup_eval(
         ion_charges,
         ei_softening,
         ee_softening,
-        log_psi_apply,
+        log_psi_apply_novmap,
     )
     # local_energy_fn: LocalEnergyApply[P] = physics.core.combine_local_energy_terms(
     #         [kinetic_fn, ei_potential_fn, ee_potential_fn, ii_potential_fn]
@@ -842,7 +844,7 @@ def run_molecule() -> None:
 
     key = jax.random.PRNGKey(config.initial_seed)
 
-    (log_psi_apply,burning_step,walker_fn,update_param_fn,
+    (log_psi_apply,log_psi_apply_novmap,burning_step,walker_fn,update_param_fn,
           get_amplitude_fn,params,data,optimizer_state,key,) = _setup_vmc(config,ion_pos,ion_charges,nelec,nspins,single_nspins,key,
                                                                           dtype=dtype_to_use,apply_pmap=config.distribute,)
 
@@ -886,7 +888,7 @@ def run_molecule() -> None:
 
     ion_pos, ion_charges, nelec ,nspins,single_nspins= _get_electron_ion_config_as_arrays(config.eval, dtype=dtype_to_use)
 
-    eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(config.eval,config.problem,ion_pos,ion_charges,log_psi_apply,
+    eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(config.eval,config.problem,ion_pos,ion_charges,log_psi_apply,log_psi_apply_novmap,
                                                                           pacore.get_position_from_data, apply_pmap=config.distribute,)
     optimizer_state = None
 
@@ -926,32 +928,16 @@ def do_inference()-> None:
 
     nelec_total = int(jnp.sum(nelec))
 
-    assert config.gq_wfn_type=="gaoqiao"
-    # log_psi_apply, params, key =  _get_gaoqiao_model(
-    #                                                 config.attn,
-    #                                                 wfn_type=config.gq_wfn_type,
-    #                                                 nelec=nelec_total,
-    #                                                 charges=ion_charges,
-    #                                                 nspins=nspins,
-    #                                                 ndet=config.gq_ndet,
-    #                                                 wfn_depth=config.gq_wfn_depth,
-    #                                                 h1=config.gq_h1,
-    #                                                 h2=config.gq_h2,
-    #                                                 nh=config.gq_nh,
-    #                                                 feature_scale=config.feature_scale,
-    #                                                 feature_scale_num=config.feature_scale_num,
-    #                                                 key=key,
-    #                                                 apply_pmap=config.distribute,
-    #                                                 )
-    log_psi_apply, params, key =  _get_gaoqiao_model(
-        config_gq=config.gq,
-        wfn_type=config.wfn_type,
-        nelec=nelec_total,
-        charges=ion_charges,
-        nspins=nspins,
-        key=key,
-        apply_pmap=apply_pmap,
-        )
+    if config.wfn_type in ["gaoqiao","gq_ferminet"]:
+        log_psi_apply, log_psi_apply_novmap,params, key =  _get_gaoqiao_model(
+                    config_gq=config.gq,
+                    wfn_type=config.wfn_type,
+                    nelec=nelec_total,
+                    charges=ion_charges,
+                    nspins=nspins,
+                    key=key,
+                    apply_pmap=apply_pmap,
+                    )
     
     get_amplitude_fn = pacore.get_amplitude_from_data
     
@@ -969,6 +955,7 @@ def do_inference()-> None:
         ion_pos,
         ion_charges,
         log_psi_apply,
+        log_psi_apply_novmap,
         pacore.get_position_from_data,
         apply_pmap=config.distribute,
     )
