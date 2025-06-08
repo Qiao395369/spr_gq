@@ -587,7 +587,6 @@ def get_spring_update_fn_and_state(
     """
     spring_update_fn = get_spring_update_fn(
         log_psi_apply,
-        ion_pos,
         optimizer_config.damping,
         optimizer_config.mu,
         optimizer_config.momentum,
@@ -606,6 +605,7 @@ def get_spring_update_fn_and_state(
             aux["centered_local_energies"],
             params,
             prev_update(optimizer_state),
+            data["atoms_position"],
             get_position_fn(data),
         )
 

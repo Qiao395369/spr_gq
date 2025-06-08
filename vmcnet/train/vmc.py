@@ -9,7 +9,7 @@ from vmcnet.updates.params import UpdateParamFn
 from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
 import vmcnet.utils as utils
 from vmcnet.utils.typing import D, GetAmplitudeFromData, P, PRNGKey, S
-
+from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data
 
 def vmc_loop(
     params: P,
@@ -31,6 +31,8 @@ def vmc_loop(
     nhistory_max: int = 200,
     is_pmapped=True,
     start_epoch: int = 0,
+    down_sample_num: int = None,
+    is_eval: bool = False,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     """Main Variational Monte Carlo loop routine.
 
@@ -116,11 +118,14 @@ def vmc_loop(
             old_data = data.copy()
             old_key = key.copy()
 
-            accept_ratio, data, key = walker_fn(params, data, key)
-
-            params, data, optimizer_state, metrics, key = update_param_fn(
-                params, data, optimizer_state, key
-            )
+            if not is_eval:
+                data, rest_data, idx, key = down_sample_data(key, data, down_sample_num)
+                accept_ratio, data, key = walker_fn(params, data, key)
+                params, data, optimizer_state, metrics, key = update_param_fn(params, data, optimizer_state, key)
+                data, metrics = reform_data(data, rest_data, metrics, idx)
+            else:
+                accept_ratio, data, key = walker_fn(params, data, key)
+                params, data, optimizer_state, metrics, key = update_param_fn(params, data, optimizer_state, key)
 
             # Don't checkpoint if no metrics to checkpoint
             if metrics is None:

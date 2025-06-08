@@ -354,6 +354,7 @@ def _make_initial_single_device_data(
 ) -> dwpa.DWPAData:
     amplitudes = log_psi_apply(params, ion_pos, init_pos)
     return dwpa.make_dynamic_width_position_amplitude_data(
+        ion_pos,
         init_pos,
         amplitudes,
         std_move=run_config.std_move,
@@ -540,7 +541,6 @@ def _get_energy_val_and_grad_fn(
         # local_energy_fn,
         kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
         vmc_config.nchains * ion_pos.shape[0],
-        ion_pos,
         clipping_fn,
         nan_safe=vmc_config.nan_safe,
         local_energy_type=vmc_config.local_energy_type,
@@ -614,11 +614,11 @@ def _setup_vmc(
         log_psi_apply, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
     )   #data:PositionAmplitudeData
     get_amplitude_fn = pacore.get_amplitude_from_data
-    update_data_fn = pacore.get_update_data_fn(log_psi_apply,ion_pos)
+    update_data_fn = pacore.get_update_data_fn(log_psi_apply)
 
     # Setup metropolis step
     burning_step, walker_fn = _get_mcmc_fns(
-        config.vmc, lambda p,xe:log_psi_apply(p,ion_pos,xe), apply_pmap=apply_pmap
+        config.vmc, log_psi_apply, apply_pmap=apply_pmap
     )
 
     energy_data_val_and_grad = _get_energy_val_and_grad_fn(
@@ -628,8 +628,8 @@ def _setup_vmc(
     # Setup parameter updates
     if apply_pmap:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
-    (
-        update_param_fn,
+
+    (   update_param_fn,
         optimizer_state,
         key,
     ) = updates.parse_config.get_update_fn_and_init_optimizer(
@@ -693,7 +693,6 @@ def _setup_eval(
     #     )
 
     eval_update_param_fn = updates.params.create_eval_update_param_fn(
-        ion_pos,
         kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
         # eval_config.nchains,
         get_position_fn,
@@ -703,7 +702,7 @@ def _setup_eval(
         # use_PRNGKey=eval_config.local_energy_type == "random_particle",
     )
     eval_burning_step, eval_walker_fn = _get_mcmc_fns(
-        eval_config, lambda p,xe:log_psi_apply(p,ion_pos,xe), apply_pmap=apply_pmap
+        eval_config, log_psi_apply, apply_pmap=apply_pmap
     )
     return eval_update_param_fn, eval_burning_step, eval_walker_fn
 
@@ -806,6 +805,8 @@ def _burn_and_run_vmc(
         nhistory_max=nhistory_max,
         is_pmapped=is_pmapped,
         start_epoch=start_epoch,
+        down_sample_num=(None if is_eval else run_config.down_sample_num),
+        is_eval=is_eval,
     )
 
 
@@ -977,7 +978,7 @@ def do_inference()-> None:
         for _ in range(config.density_plot_nepochs):
             
             accept_ratio, data, key = eval_walker_fn(params, data, key)
-            positions = data["walker_data"]["position"].reshape(-1,3)
+            positions = data["walker_data"]["elec_position"].reshape(-1,3)
             logging.info("num: %6d saves" % positions.shape[0])
             for row in positions:
                 f.write(f"{'coordinate:'}  {row[0]}  {row[1]}  {row[2]}\n")

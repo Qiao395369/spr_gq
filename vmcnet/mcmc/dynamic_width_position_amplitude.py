@@ -36,7 +36,7 @@ class MoveMetadata(TypedDict):
 
 class DynamicWidthPositionAmplitudeData(TypedDict):
     """TypedDict holding positions and wavefunction amplitudes, plus MoveMetadata."""
-
+    atoms_position: Array
     walker_data: PositionAmplitudeWalkerData
     move_metadata: MoveMetadata
 
@@ -45,6 +45,7 @@ DWPAData = DynamicWidthPositionAmplitudeData
 
 
 def make_dynamic_width_position_amplitude_data(
+    atoms_position: Array,
     position: Array,
     amplitude: Array,
     std_move: chex.Scalar,
@@ -68,6 +69,7 @@ def make_dynamic_width_position_amplitude_data(
         DWPAData
     """
     return make_position_amplitude_data(
+        atoms_position,
         position,
         amplitude,
         MoveMetadata(

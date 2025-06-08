@@ -102,9 +102,10 @@ def create_grad_energy_update_param_fn(
 
     def update_param_fn(params, data, optimizer_state, key):
         position = get_position_fn(data)
+        atoms_position = data["atoms_position"]
         key, subkey = jax.random.split(key)
 
-        energy_data, grad_energy = energy_data_val_and_grad(params, subkey, position)
+        energy_data, grad_energy = energy_data_val_and_grad(params, subkey, atoms_position, position)
         energy, aux_energy_data = energy_data
 
         grad_energy = utils.distribute.pmean_if_pmap(grad_energy)
@@ -221,7 +222,6 @@ def create_kfac_update_param_fn(
 
 
 def create_eval_update_param_fn(
-    atoms_positions,
     kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
     # local_energy_fn: LocalEnergyApply[P],
     # nchains: int,
@@ -255,6 +255,7 @@ def create_eval_update_param_fn(
 
     def eval_update_param_fn(params, data, optimizer_state, key):
         positions = get_position_fn(data)
+        atoms_positions = data["atoms_position"]
         nbatch = positions.shape[1]
         nwalker = positions.shape[0]
         

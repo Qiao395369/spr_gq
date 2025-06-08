@@ -27,7 +27,7 @@ class PositionAmplitudeWalkerData(TypedDict):
         amplitude (Array): array of shape (n,)
     """
 
-    position: Array
+    elec_position: Array
     amplitude: Array
 
 
@@ -43,12 +43,12 @@ class PositionAmplitudeData(TypedDict):
         walker_data (PositionAmplitudeWalkerData): the positions and amplitudes
         move_metadata (any, optional): any metadata needed for the metropolis algorithm
     """
-
+    atoms_position: Array
     walker_data: PositionAmplitudeWalkerData
     move_metadata: Any
 
 
-def make_position_amplitude_data(position: Array, amplitude: Array, move_metadata: Any):
+def make_position_amplitude_data(atoms_position: Array, elec_position: Array, amplitude: Array, move_metadata: Any):
     """Create PositionAmplitudeData from position, amplitude, and move_metadata.
 
     Args:
@@ -61,7 +61,8 @@ def make_position_amplitude_data(position: Array, amplitude: Array, move_metadat
         metadata
     """
     return PositionAmplitudeData(
-        walker_data=PositionAmplitudeWalkerData(position=position, amplitude=amplitude),
+        atoms_position=atoms_position,
+        walker_data=PositionAmplitudeWalkerData(elec_position=elec_position, amplitude=amplitude),
         move_metadata=move_metadata,
     )
 
@@ -75,7 +76,7 @@ def get_position_from_data(data: PositionAmplitudeData) -> Array:
     Returns:
         Array: the particle positions from the data
     """
-    return data["walker_data"]["position"]
+    return data["walker_data"]["elec_position"]
 
 
 def get_amplitude_from_data(data: PositionAmplitudeData) -> Array:
@@ -90,13 +91,14 @@ def get_amplitude_from_data(data: PositionAmplitudeData) -> Array:
     return data["walker_data"]["amplitude"]
 
 
-def to_pam_tuple(data: PositionAmplitudeData) -> Tuple[Array, Array, Any]:
+def to_pam_tuple(data: PositionAmplitudeData) -> Tuple[Array, Array, Array, Any]:
     """Returns data as a (position, amplitude, move_metadata) tuple.
 
     Useful for quickly assigning all three pieces to local variables for further use.
     """
     return (
-        data["walker_data"]["position"],
+        data["atoms_position"],
+        data["walker_data"]["elec_position"],
         data["walker_data"]["amplitude"],
         data["move_metadata"],
     )
@@ -104,7 +106,6 @@ def to_pam_tuple(data: PositionAmplitudeData) -> Tuple[Array, Array, Any]:
 
 def get_update_data_fn(
     model_apply: ModelApply[P],
-    ion_pos,
 ) -> UpdateDataFn[PositionAmplitudeData, P]:
     """Updates data based on new params, by recalculating amplitudes.
 
@@ -112,9 +113,10 @@ def get_update_data_fn(
     """
 
     def update_data_fn(data: PositionAmplitudeData, params: P) -> PositionAmplitudeData:
-        position = data["walker_data"]["position"]
+        position = data["walker_data"]["elec_position"]
+        ion_pos = data["atoms_position"]
         amplitude = model_apply(params, ion_pos, position)
-        return make_position_amplitude_data(position, amplitude, data["move_metadata"])
+        return make_position_amplitude_data(ion_pos, position, amplitude, data["move_metadata"])
 
     return update_data_fn
 
@@ -130,11 +132,13 @@ def distribute_position_amplitude_data(
     Returns:
         PositionAmplitudeData: the distributed data.
     """
+    atoms_position = data["atoms_position"]
     walker_data = data["walker_data"]
     move_metadata = data["move_metadata"]
+    atoms_position = replicate_all_local_devices(atoms_position)
     walker_data = default_distribute_data(walker_data)
     move_metadata = replicate_all_local_devices(move_metadata)
-    return PositionAmplitudeData(walker_data=walker_data, move_metadata=move_metadata)
+    return PositionAmplitudeData(atoms_position=atoms_position, walker_data=walker_data, move_metadata=move_metadata)
 
 
 def make_position_amplitude_gaussian_proposal(
@@ -162,13 +166,12 @@ def make_position_amplitude_gaussian_proposal(
 
     def proposal_fn(params: P, data: PositionAmplitudeData, key: PRNGKey):
         std_move = get_std_move(data)
-        proposed_position, key = metropolis.gaussian_proposal(
-            data["walker_data"]["position"], std_move, key
-        )
-        proposed_amplitude = model_apply(params, proposed_position)
+        proposed_position, key = metropolis.gaussian_proposal(data["walker_data"]["elec_position"], std_move, key)
+        atoms_position = data["atoms_position"]
+        proposed_amplitude = model_apply(params, atoms_position, proposed_position)
         return (
             make_position_amplitude_data(
-                proposed_position, proposed_amplitude, data["move_metadata"]
+                atoms_position, proposed_position, proposed_amplitude, data["move_metadata"]
             ),
             key,
         )
@@ -258,7 +261,7 @@ def make_position_amplitude_update(
             )
 
         return PositionAmplitudeData(
-            walker_data=new_walker_data, move_metadata=new_move_metadata
+            atoms_position=data["atoms_position"], walker_data=new_walker_data, move_metadata=new_move_metadata
         )
 
     return update_position_amplitude
@@ -297,3 +300,57 @@ def make_position_amplitude_gaussian_metropolis_step(
         make_position_amplitude_update(update_move_metadata_fn),
     )
     return metrop_step_fn
+
+
+def down_sample_data(key, data, down_sample_num):
+    xp = data["atoms_position"]
+    xe = data["walker_data"]["elec_position"]
+    amp = data["walker_data"]["amplitude"]
+    move_metadata = data["move_metadata"]
+
+    key, subkey = jax.random.split(key)
+    walker_num = xp.shape[0]
+    idx = jax.random.permutation(subkey, jnp.arange(walker_num))
+
+    xp = xp[idx,...]
+    xe = xe[idx,...]
+    amp = amp[idx,...]
+    xp0, xp1 = jnp.split(xp, [down_sample_num], axis=0)
+    xe0, xe1 = jnp.split(xe, [down_sample_num], axis=0)
+    amp0, amp1 = jnp.split(amp, [down_sample_num], axis=0)
+    
+    data = make_position_amplitude_data(xp0, xe0, amp0, move_metadata)
+    rest_data = make_position_amplitude_data(xp1, xe1, amp1, move_metadata)
+
+    return data, rest_data, idx, key
+
+def add_zero_and_reverse(x,reverse_idx):
+    x = jnp.concatenate([x, jnp.zeros((1, *x.shape[1:]))], axis=0)
+    return x[reverse_idx, ...]
+
+def reform_data(data, rest_data, metrics, idx):
+    xp0 = data["atoms_position"]
+    xe0 = data["walker_data"]["elec_position"]
+    amp0 = data["walker_data"]["amplitude"]
+
+    xp1 = rest_data["atoms_position"]
+    xe1 = rest_data["walker_data"]["elec_position"]
+    amp1 = rest_data["walker_data"]["amplitude"]
+
+    xp = jnp.concatenate([xp0, xp1], axis=0)
+    xe = jnp.concatenate([xe0, xe1], axis=0)
+    amp = jnp.concatenate([amp0, amp1], axis=0)
+
+    # 创建反向索引以恢复原始顺序
+    reverse_idx = jnp.argsort(idx)
+
+    # 按照原始顺序重新排列
+    xp = xp[reverse_idx, ...]
+    xe = xe[reverse_idx, ...]
+    amp = amp[reverse_idx, ...]
+
+    metrics["multi_energy"] = add_zero_and_reverse(metrics["multi_energy"],reverse_idx)
+
+    data = make_position_amplitude_data(xp, xe, amp, data["move_metadata"])
+
+    return data, metrics

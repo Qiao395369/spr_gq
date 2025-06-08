@@ -305,6 +305,7 @@ def get_default_vmc_config() -> Dict:
     """Get a default VMC training configuration."""
     vmc_config = {
         "nchains": 2000,
+        "down_sample_num": 6,
         # "walker":8,
         "nepochs": 200000,
         "nburn": 5000,

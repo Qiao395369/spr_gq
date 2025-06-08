@@ -15,7 +15,6 @@ from vmcnet import utils
 
 def get_spring_update_fn(
     log_psi_apply: ModelApply[P],
-    ion_pos: Array,
     damping: chex.Scalar = 0.001,
     mu: chex.Scalar = 0.99,
     momentum: chex.Scalar = 0.0,
@@ -44,6 +43,7 @@ def get_spring_update_fn(
         centered_energies: P,
         params: P,
         prev_grad,
+        atoms_positions: Array,
         positions: Array,
     ) -> Tuple[Array, P]:
         nchains = positions.shape[1]*positions.shape[0]
@@ -51,7 +51,7 @@ def get_spring_update_fn(
         prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(prev_grad)
         prev_grad_decayed = mu * prev_grad  #(nparams,)
 
-        log_psi_grads_pre = batch_raveled_log_psi_grad(params,ion_pos, positions) 
+        log_psi_grads_pre = batch_raveled_log_psi_grad(params,atoms_positions, positions) 
         W,B,nparams=log_psi_grads_pre.shape
         log_psi_grads=log_psi_grads_pre.reshape((W*B,nparams)) /jnp.sqrt(nchains)  #(W*B,nparams)
 

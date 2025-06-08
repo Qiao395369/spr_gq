@@ -322,7 +322,6 @@ def create_value_and_grad_energy_fn(
     # local_energy_fn: LocalEnergyApply[P],
     kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
     nchains: int,
-    atoms_positions:Array,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
     local_energy_type: str = "standard",
@@ -380,6 +379,7 @@ def create_value_and_grad_energy_fn(
 
     def standard_estimator_forward(
         params: P,
+        atoms_positions: Array,
         positions: Array,
         centered_local_energies: Array,
     ) -> ArrayLike:
@@ -400,7 +400,7 @@ def create_value_and_grad_energy_fn(
             * mean_grad_fn(centered_local_energies * log_psi)  
         )  # shape:()
 
-    def get_standard_contribution(local_energies_noclip, params, positions):
+    def get_standard_contribution(local_energies_noclip, params, atoms_positions,positions):
         '''
         local_energies_noclip:(W,B)
         atoms_position:(W,natom,dim)
@@ -411,11 +411,11 @@ def create_value_and_grad_energy_fn(
         )  # energy1:(),energy2:(W,1) local_energies:(W,B)
         centered_local_energies = local_energies - energy2  # centered_local_energies:(W,B)
         grad_E = jax.grad(standard_estimator_forward, argnums=0)(
-            params, positions, centered_local_energies
+            params, atoms_positions, positions, centered_local_energies
         )  # grad_E has the same shape as params.
         return aux_data, energy1,energy2.reshape((-1)), grad_E
 
-    def standard_energy_val_and_grad(params, key, positions):
+    def standard_energy_val_and_grad(params, key, atoms_positions, positions):
         '''
         atoms_positions:(W,natom,dim)
         positions:(W,B,nele,dim)
@@ -439,7 +439,7 @@ def create_value_and_grad_energy_fn(
         ee_potential = get_statistics_from_other_energy(ee_potential, nan_safe=nan_safe) #()
         ii_potential = get_statistics_from_other_energy(ii_potential, nan_safe=nan_safe) #()
 
-        aux_data, energy, multi_energy,grad_E = get_standard_contribution(local_energies_noclip, params, positions) 
+        aux_data, energy, multi_energy,grad_E = get_standard_contribution(local_energies_noclip, params, atoms_positions, positions) 
         aux_data.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential,"multi_energy":multi_energy})
         return (energy, aux_data), grad_E
 
