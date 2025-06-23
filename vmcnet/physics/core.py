@@ -112,14 +112,14 @@ def initialize_molecular_pos(
                 position = jnp.asarray(ion_pos[k][j])
                 electron_positions.append(jnp.tile(position, single_spins[j][i]))
         electron_positions = jnp.concatenate(electron_positions)
-        print(electron_positions)
-        print(electron_positions.shape)
+        # print(electron_positions)
+        # print(electron_positions.shape)
         ppp.append(electron_positions.reshape((-1,3)))
     ppp=jnp.stack(ppp,axis=0)
     ppp=ppp[:,None,...]
-    print(ppp.shape)
     key, subkey = jax.random.split(key)
     ppp += jax.random.normal(subkey, shape=(walker,nchains,)+ppp.shape[-2:] , dtype=dtype) * init_width
+    print("xe.shape:",ppp.shape)
     return key, ppp
 
 def combine_local_energy_terms(

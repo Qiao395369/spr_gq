@@ -101,6 +101,7 @@ def vmc_loop(
         checkpoint_dir, nhistory_max, logdir, checkpoint_every
     )
     nans_detected = False
+    down_sample=(not is_eval and down_sample_num != 0)
 
     with CheckpointWriter(
         is_pmapped
@@ -118,7 +119,7 @@ def vmc_loop(
             old_data = data.copy()
             old_key = key.copy()
 
-            if not is_eval:
+            if down_sample :
                 data, rest_data, idx, key = down_sample_data(key, data, down_sample_num)
                 accept_ratio, data, key = walker_fn(params, data, key)
                 params, data, optimizer_state, metrics, key = update_param_fn(params, data, optimizer_state, key)

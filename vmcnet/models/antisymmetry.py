@@ -234,22 +234,22 @@ class GenericAntisymmetrize(Module):
             where psi is the output from antisymmetrizing
             self.fn_to_antisymmetrize on all leaves of xs.
         """
-        perms_and_signs = jax.tree_map(self._get_single_leaf_perm, xs)
-        perms_and_signs_leaves, _ = jax.tree_util.tree_flatten(
+        perms_and_signs = jax.tree_map(self._get_single_leaf_perm, xs)  #[(B,n_up,nf),(B,n_down,nf)]-->[(B,n_up!,n_up,nf),(n_up!),(B,n_down!,n_down,nf),(n_down!)]
+        perms_and_signs_leaves, _ = jax.tree_util.tree_flatten(   #[[(B,n_up!,n_up,nf)，(n_up!)],  [(B,n_down!,n_down,nf),(n_down!)]]
             perms_and_signs, is_tuple_of_arrays
         )
-        nleaves = len(perms_and_signs_leaves)
-        nperms_per_leaf = [leaf[0].shape[-3] for leaf in perms_and_signs_leaves]
+        nleaves = len(perms_and_signs_leaves)  #2
+        nperms_per_leaf = [leaf[0].shape[-3] for leaf in perms_and_signs_leaves] #[n_up!,n_down!]
 
         broadcasted_perms = []
         reshaped_signs = []
         for i, (leaf_perms, leaf_signs) in enumerate(perms_and_signs_leaves):
-            ith_factorial = (1,) * i + leaf_signs.shape[0:1] + (1,) * (nleaves - i - 1)
+            ith_factorial = (1,) * i + leaf_signs.shape[0:1] + (1,) * (nleaves - i - 1)#(n_up!,1)and (1,n_down!)
 
             # desired sign[i] shape is (1, ..., n_i!, ..., 1, 1), with nspins + 1 dims
-            sign_shape = ith_factorial + (1,)
-            leaf_signs = jnp.reshape(leaf_signs, sign_shape)
-            reshaped_signs.append(leaf_signs)
+            sign_shape = ith_factorial + (1,)  #(n_up!,1,1)and (1,n_down!,1)
+            leaf_signs = jnp.reshape(leaf_signs, sign_shape)  #(n_up!,1,1)and (1,n_down!,1)
+            reshaped_signs.append(leaf_signs) #[(n_up!,1,1),(1,n_down!,1)]
 
             # desired broadcasted x_i shape is [i: (..., n_1!, ..., n_k!, n_i * d_i)],
             # where k = nleaves, and x_i = (..., n_i, d_i). This is achieved by:
@@ -258,30 +258,30 @@ class GenericAntisymmetrize(Module):
             # 3) flatten last axis to (..., n_1!, ..., n_k!, n_i * d_i)
             reshape_x_shape = (
                 leaf_perms.shape[:-3] + ith_factorial + leaf_perms.shape[-2:]
-            )
+            )  #(B,n_up!,1,n_up,nf)
             broadcast_x_shape = (
                 leaf_perms.shape[:-3] + tuple(nperms_per_leaf) + leaf_perms.shape[-2:]
-            )
-            leaf_perms = jnp.reshape(leaf_perms, reshape_x_shape)
-            leaf_perms = jnp.broadcast_to(leaf_perms, broadcast_x_shape)
-            flat_leaf_perms = jnp.reshape(leaf_perms, leaf_perms.shape[:-2] + (-1,))
+            )  #(B,n_up!,n_down!,n_up,nf)
+            leaf_perms = jnp.reshape(leaf_perms, reshape_x_shape)  #(B,n_up!,n_up,nf)->(B,n_up!,1,n_up,nf)
+            leaf_perms = jnp.broadcast_to(leaf_perms, broadcast_x_shape)  #(B,n_up!,1,n_up,nf)->(B,n_up!,n_down!,n_up,nf)
+            flat_leaf_perms = jnp.reshape(leaf_perms, leaf_perms.shape[:-2] + (-1,)) #(B,n_up!,n_down!,n_up,nf)->(B,n_up!,n_down!,n_up*nf)
             broadcasted_perms.append(flat_leaf_perms)
 
         # make input shape (..., n_1!, ..., n_k!, n_1 * d_1 + ... + n_k * d_k)
-        concat_perms = jnp.concatenate(broadcasted_perms, axis=-1)
+        concat_perms = jnp.concatenate(broadcasted_perms, axis=-1)  #(B,n_up!,n_down!,n_up*nf+n_down*nf)
 
-        all_perms_out = self._fn_to_antisymmetrize(concat_perms)
+        all_perms_out = self._fn_to_antisymmetrize(concat_perms)  #(B,n_up!,n_down!,1)
 
         # all_perms_out has shape (..., n_1!, ..., n_k!, 1)
         # Each leaf of reshaped_signs has k+1 axes, but all except the ith axis has size
         # 1. The ith axis has size n_i!. Thus when the leaves of reshaped_signs are
         # multiplied with all_perms_out, the product will broadcast each leaf and apply
         # the signs along the correct (ith) axis of the output.
-        signed_perms_out = _reduce_prod_over_leaves([all_perms_out, reshaped_signs])
+        signed_perms_out = _reduce_prod_over_leaves([all_perms_out, reshaped_signs]) #(B,n_up!,n_down!)
 
         antisymmetrized_out = jnp.sum(
-            signed_perms_out, axis=tuple(-i for i in range(1, nleaves + 2))
-        )
+            signed_perms_out, axis=tuple(-i for i in range(1, nleaves + 2))  #axis=(-1,-2,-3)
+        ) #(B)
         if not self.logabs:
             return antisymmetrized_out
 
