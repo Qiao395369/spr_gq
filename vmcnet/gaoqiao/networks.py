@@ -219,6 +219,8 @@ class FermiNetOptions:
   gemi_ia: Any = None
   equal_footing: bool = False
   gq_type: str = 'ef'
+  RFM_layer: int=0
+  RFM_numbers: Optional[Tuple[int, ...]] = None
 
 ## Network initialisation ##
 
@@ -510,6 +512,17 @@ def init_fermi_net_params(
         ))
   else:
     params['det'] = None
+
+  if options.RFM_layer !=0 :
+    key, subkey = jax.random.split(key)
+    params['RFM_w']=network_blocks.init_linear_layer(
+          subkey,
+          in_dim=options.determinants * options.RFM_layer,
+          out_dim=1,
+          include_bias=False,
+        )
+  else:
+    params['RFM_w']=None
 
   if options.det_mode == "gemi":
     key, subkey = jax.random.split(key)
@@ -2186,12 +2199,24 @@ def fermi_net(
       options=options,
   )
   assert (options.envelope_pw is None),"envelope_pw should be None in gq"
+
   if params['det'] is not None:
-    w = params['det']
-    output = network_blocks.logdet_matmul_w(orbitals, w=w, do_complex=options.do_complex)
+      w = params['det']
   else:
-    w = None
-    output = network_blocks.logdet_matmul(orbitals, do_complex=options.do_complex)
+      w = None
+
+  if params['RFM_w'] is not None:
+      RFM_w = params['RFM_w']
+      RFM_numbers=options.RFM_numbers
+  else:
+      RFM_w = None
+      RFM_numbers=None
+    
+
+  output = network_blocks.logdet_matmul(orbitals, w=w, do_complex=options.do_complex,
+                                          RFM_layer=options.RFM_layer, RFM_w=RFM_w,RFM_numbers=RFM_numbers)
+  
+
 
   return output
 
@@ -2220,6 +2245,7 @@ def make_fermi_net(
     gemi_params: str = None,
     equal_footing: bool = False,
     gq_type:str='ef',
+    RFM_layer: int=0,
 ) -> Tuple[InitFermiNet, FermiNetLike, FermiNetOptions]:
   """Creates functions for initializing parameters and evaluating ferminet.
 
@@ -2264,6 +2290,12 @@ def make_fermi_net(
 
   gemi_ia=None
 
+  if RFM_layer!=0:
+    rng_key = jax.random.PRNGKey(42)
+    RFM_numbers = jax.random.uniform(rng_key, shape=(determinants*RFM_layer,), minval=-1, maxval=1)  # 这个要放在外头，不能每次调用波函数都随机！！
+  else:
+    RFM_numbers=None
+    
   options = FermiNetOptions(
       hidden_dims=hidden_dims,
       use_last_layer=use_last_layer,
@@ -2284,6 +2316,8 @@ def make_fermi_net(
       gemi_params=gemi_params,
       gemi_ia=gemi_ia,
       gq_type=gq_type,
+      RFM_layer=RFM_layer,
+      RFM_numbers=RFM_numbers
   )
 
   init = functools.partial(

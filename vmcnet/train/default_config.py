@@ -426,6 +426,7 @@ def get_default_gq_config() -> Dict:
         "density_plot": False,
         "density_plot_filename": NO_PATH,
         "density_plot_nepochs": 0,
+        "RFM_layer": 0,
     }
     return gq_config
 

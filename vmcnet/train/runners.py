@@ -225,6 +225,7 @@ def _get_gaoqiao_model(
             feat_params=feat_params,
             det_mode=config_gq.det_mode, 
             gemi_params=gemi_params,
+            RFM_layer=config_gq.RFM_layer,
         )        
 
     elif wfn_type == "gq_ferminet":

@@ -21,6 +21,7 @@ def build_network(
 	feat_params: Optional[dict] = None,
 	det_mode: str = "det",
 	gemi_params: Optional[dict] = None,
+	RFM_layer: int=0,
 ):
 
 	hidden_dims=tuple([(h1, h2) for _ in range(depth)])
@@ -167,6 +168,7 @@ def build_network(
 		gemi_params=gemi_params,
 		equal_footing=ef,
 		gq_type=gq_type,
+		RFM_layer=RFM_layer,
 	)
   
 	key, subkey = jax.random.split(key)

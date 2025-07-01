@@ -1,55 +1,55 @@
-import jax
 import jax.numpy as jnp
 import numpy as np
+import functools
+def slogdet(x):
+  """Computes sign and log of determinants of matrices.
 
-# 假设 f(x, y) 是一个标量函数，x 和 y 的形状为 (3,)。
-def f(p,x, y):
+  This is a jnp.linalg.slogdet with a special (fast) path for small matrices.
 
-    return jnp.sum(x)+jnp.sum(y)   # 示例标量函数
+  Args:
+    x: square matrix.
 
-# 第一步：对 y 进行批处理，适配形状为 (ne, 3)。
-# 输出形状为 (ne,)
-f_vmapped_y = jax.vmap(f, in_axes=(None, 0))  # 针对 y 的第一个维度批量化
+  Returns:
+    sign, (natural) logarithm of the determinant of x.
+  """
+  if x.shape[-1] == 1:
+    sign = jnp.sign(x[..., 0, 0])
+    logdet = jnp.log(jnp.abs(x[..., 0, 0]))
+  else:
+    sign, logdet = jnp.linalg.slogdet(x)
 
-# 第二步：对 x 进行批处理，适配形状为 (na, 3) 和 (ne, 3)。
-# 输出形状为 (na, ne)
-f_vmapped_W = jax.vmap(f_vmapped_y, in_axes=(0, 0))  # 针对 x 的第一个维度批量化
+  return sign, logdet
+# Sample data: list of square matrices
+xs = [
+    np.array([[4, 1], [1, 4]]),  # 2x2 matrix, det = 15
+    np.array([[2, 0], [0, 3]]),  # 2x2 matrix, det = 6
+    np.array([[5]]),              # 1x1 matrix, will be skipped
+    np.array([[1, 2], [3, 4]])   # 2x2 matrix, det = -2
+]
 
-# 第三步：对 x 和 y 进行批处理，适配形状为 (W, na, 3) 和 (W, ne, 3)。
-# 输出形状为 (W, na, ne)
-# f_vmapped_W = jax.vmap(f_vmapped_x_y, in_axes=(0, 0))  # 针对 W 维度批量化
+# The core computation
+sign_in, logdet = functools.reduce(
+    lambda a, b: (a[0] * b[0], a[1] + b[1]),
+    [slogdet(x) for x in xs if x.shape[-1] > 1],
+    (1, 0)
+)
+print("sign_in:",sign_in)
+print("logdet:",logdet)
+# Compute the determinant from sign and logdet
+determinant = sign_in * np.exp(logdet)
 
-# 第四步：对 B 批量化，适配形状为 (W, na, 3) 和 (W, B, ne, 3)。
-# 输出形状为 (W, B)
-def batched_f(f):
-    return lambda p,xa,xe: jax.vmap(lambda xa_, xe_: jax.vmap(lambda xe__: f(p,xa_, xe__),in_axes=0)(xe_),in_axes=(0, 0))(xa, xe)
+# Print results for clarity
+print("Input matrices (excluding 1x1):")
+for x in xs:
+    if x.shape[-1] > 1:
+        print(x)
+        print(f"Determinant: {np.linalg.det(x):.4f}\n")
 
-x=jnp.ones((4,3))
-y=jnp.ones((2,3))
-xx=jnp.ones((8,4,3))
-yy=jnp.ones((8,6,2,3))
+print(f"Product of signs: {sign_in}")
+print(f"Sum of log-determinants: {logdet:.4f}")
+print(f"Total determinant (sign * exp(logdet)): {determinant:.4f}")
 
-print(f(1,x,y))
-# print(f_vmapped_W(xx,yy).shape)
-# print(f_vmapped_W(xx,yy))
-
-print(batched_f(f)(1,xx,yy).shape)
-print(batched_f(f)(1,xx,yy))
-
-log_prob_new=jnp.array([[2,2],[2,2]])
-log_prob_old=jnp.array([[1,3],[3,2]])
-print(np.sum(log_prob_new))
-# rr=jnp.where(
-#         log_prob_new > log_prob_old,
-#         jnp.ones_like(log_prob_new),
-#         jnp.exp(log_prob_new - log_prob_old),
-#     )
-# print(rr)
-
-# choices=jnp.ones(14)
-# spin_up_0 = np.random.choice(np.arange(7), size=2, replace=False)
-# choices[spin_up_0]=0
-# random_numbers = np.random.choice(np.arange(7), size=5, replace=False)
-# print(random_numbers)
-# # 随机选择两个不重复的数
-
+# Verify by computing product of determinants directly
+dets = [np.linalg.det(x) for x in xs if x.shape[-1] > 1]
+prod_dets = np.prod(dets)
+print(f"Product of determinants (direct): {prod_dets:.4f}")
