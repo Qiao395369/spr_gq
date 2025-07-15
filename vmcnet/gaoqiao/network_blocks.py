@@ -146,9 +146,9 @@ def logdet_matmul(xs: Sequence[jnp.ndarray],
       [slogdet(x) for x in xs if x.shape[-1] > 1], (1, 0))
 
   # log-sum-exp trick
-  maxlogdet = jnp.max(logdet)  #logdet.shape:(ndet,)
-  det = sign_in * det1d * jnp.exp(logdet - maxlogdet)  #sign_in.shape:(ndet,)  det.shape:(ndet,)
-
+  # maxlogdet = jnp.max(logdet)  #logdet.shape:(ndet,)
+  # det = sign_in * det1d * jnp.exp(logdet - maxlogdet)  #sign_in.shape:(ndet,)  det.shape:(ndet,)
+  det = sign_in * det1d * jnp.exp(logdet)
   if w is None:
     if RFM_layer != 0 and RFM_w is not None:
       
@@ -173,7 +173,8 @@ def logdet_matmul(xs: Sequence[jnp.ndarray],
     sign_out = jnp.sign(result)
   else:
     sign_out = jnp.exp(1j * jnp.angle(result))
-  log_out = jnp.log(jnp.abs(result)) + maxlogdet
+  # log_out = jnp.log(jnp.abs(result)) + maxlogdet
+  log_out = jnp.log(jnp.abs(result))
   return sign_out, log_out
 
 #对于(nedt，n，n)的xs，sign_in和logdet分别为(ndet,),(nedt,)的数组，用log-sum-exp trick先把最大的提出来之后再加上
