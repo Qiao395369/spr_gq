@@ -30,7 +30,8 @@ eval.sh
 vmcnet/gaoqiao/build_*.py
 vmcnet/gaoqiao/networks_*.py
 shrd_vs_ef/
-
+N2_reload/
+7_15*
 # Distribution / packaging
 .Python
 build/

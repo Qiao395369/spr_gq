@@ -513,17 +513,6 @@ def init_fermi_net_params(
   else:
     params['det'] = None
 
-  if options.RFM_layer !=0 :
-    key, subkey = jax.random.split(key)
-    params['RFM_w']=network_blocks.init_linear_layer(
-          subkey,
-          in_dim=options.determinants * options.RFM_layer,
-          out_dim=1,
-          include_bias=False,
-        )
-  else:
-    params['RFM_w']=None
-
   if options.det_mode == "gemi":
     key, subkey = jax.random.split(key)
     params['gemi'] = options.gemi_ia[0](subkey)
@@ -540,7 +529,20 @@ def init_fermi_net_params(
     params['orb_env_pw'] = options.orb_env_pw.init(
       key, dims_orbital_in, nspin_orbitals)
 
-  return params
+  params_RFM = {}
+  if options.RFM_layer !=0 :
+    key, subkey = jax.random.split(key)
+    params_RFM['w']=network_blocks.init_linear_layer(
+          subkey,
+          in_dim=options.determinants * options.RFM_layer,
+          out_dim=1,
+          include_bias=False,
+        )
+  else:
+    params_RFM['w']=None
+    
+  return params,params_RFM
+
 
 ## Network layers ##
 
@@ -2161,6 +2163,7 @@ def fermi_net_orbitals_part2(
 
 def fermi_net(
     params,
+    params_RFM,
     pos: jnp.ndarray,
     atoms: jnp.ndarray,
     nspins: Tuple[int, ...],
@@ -2205,8 +2208,8 @@ def fermi_net(
   else:
       w = None
 
-  if params['RFM_w'] is not None:
-      RFM_w = params['RFM_w']
+  if params_RFM['w'] is not None:
+      RFM_w = params_RFM['w']
       RFM_numbers=options.RFM_numbers
   else:
       RFM_w = None
@@ -2295,7 +2298,7 @@ def make_fermi_net(
     RFM_numbers = jax.random.uniform(rng_key, shape=(determinants*RFM_layer,), minval=-1, maxval=1)  # 这个要放在外头，不能每次调用波函数都随机！！
   else:
     RFM_numbers=None
-    
+
   options = FermiNetOptions(
       hidden_dims=hidden_dims,
       use_last_layer=use_last_layer,

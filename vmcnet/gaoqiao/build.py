@@ -172,9 +172,9 @@ def build_network(
 	)
   
 	key, subkey = jax.random.split(key)
-	params = network_init(subkey)
+	params,params_RFM= network_init(subkey)
 
-	return params, signed_network
+	return params,params_RFM,signed_network
 
 if __name__=='__main__':
 	n = 14
