@@ -35,7 +35,7 @@ def make_open_features(charges: Optional[jnp.ndarray] = None,
 		dim1+=ndim+1
 		return (dim0,dim1),{}
 
-	def apply(ae, r_ae, ee, r_ee, aa=None, r_aa=None) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+	def apply(ae, r_ae,ea,r_ea, ee, r_ee, aa=None, r_aa=None) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
 		# different ee convention, so use -ee
 		ne=ee.shape[0]
 		na=aa.shape[0]
@@ -47,9 +47,10 @@ def make_open_features(charges: Optional[jnp.ndarray] = None,
 
 		ee_features=jnp.concatenate([ee,r_ee],axis=-1)
 		aa_features=jnp.concatenate([aa,r_aa],axis=-1)
-		ae_features=jnp.concatenate([ae,r_ae],axis=-1)
+		ae_features=jnp.concatenate([ae,-r_ae],axis=-1)
+		ea_features=jnp.concatenate([ea,-r_ea],axis=-1)
 
-		return ae_features, ee_features, aa_features
+		return ae_features,ea_features, ee_features, aa_features
 
 	return networks.FeatureLayer(init=init,apply=apply)
 
@@ -62,6 +63,7 @@ def make_open_features_ef(
 		numb_divid: int = 1,
 		do_act: bool = False,
 		act_func: str = 'tanh',
+		rescale:str ='log',
 ):
 	if type(scale) is float:
 		scale=[scale]
@@ -82,6 +84,12 @@ def make_open_features_ef(
 		act_func=lambda x:3.*jnp.tanh(x/3.)
 	else:
 		raise RuntimeError(f'unknow act func {act_func}')
+	def rescale_fun(x):
+		if rescale =="log":
+			return jnp.where(x > 0, (jnp.log(1 + x)) / x, 0.0)
+		elif rescale == "x":
+			return x
+
 
 
 	def init() -> Tuple[Tuple[int,int],networks.Param]:
@@ -95,7 +103,8 @@ def make_open_features_ef(
 		n=ee.shape[0]
 		ee_features_list=[]
 		ee=-ee*(1.0-jnp.eye(n))[...,None]
-		r_ee=-r_ee*(1-jnp.eye(n))[...,None]
+
+		r_ee=rescale_fun(r_ee*(1-jnp.eye(n))[...,None])
 
 		ee_features_=jnp.concatenate([ee,r_ee],axis=-1)
 		ee_features_list=[ee_features_*ss for ss in all_scales]

@@ -198,7 +198,8 @@ def _get_gaoqiao_model(
             "do_act": config_gq.feat_do_act,
             "act_func": config_gq.feat_act_func,
             "numb_divid": config_gq.feat_numb_divid,
-            "scale": config_gq.scale if config_gq.scale != 1.0 else []
+            "scale": config_gq.scale if config_gq.scale != 1.0 else [],
+            "rescale": config_gq.rescale_type,
         }
         # trimul_params = None
         # gemi_params = None
@@ -225,6 +226,9 @@ def _get_gaoqiao_model(
             feat_params=feat_params,
             det_mode=config_gq.det_mode, 
             gemi_params=gemi_params,
+            jastrow_hiddenlayers=config_gq.jastrow_hiddenlayers,
+            jastrow_dim=config_gq.jastrow_dim,
+            RHF=config_gq.RHF,
         )        
 
     elif wfn_type == "gq_ferminet":
