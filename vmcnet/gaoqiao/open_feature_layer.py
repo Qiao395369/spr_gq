@@ -63,7 +63,7 @@ def make_open_features_ef(
 		numb_divid: int = 1,
 		do_act: bool = False,
 		act_func: str = 'tanh',
-		rescale:str ='log',
+		rescale:bool=False,
 ):
 	if type(scale) is float:
 		scale=[scale]
@@ -84,11 +84,7 @@ def make_open_features_ef(
 		act_func=lambda x:3.*jnp.tanh(x/3.)
 	else:
 		raise RuntimeError(f'unknow act func {act_func}')
-	def rescale_fun(x):
-		if rescale =="log":
-			return jnp.where(x > 0, (jnp.log(1 + x)) / x, 0.0)
-		elif rescale == "x":
-			return x
+
 
 
 
@@ -104,9 +100,14 @@ def make_open_features_ef(
 		ee_features_list=[]
 		ee=-ee*(1.0-jnp.eye(n))[...,None]
 
-		r_ee=rescale_fun(r_ee*(1-jnp.eye(n))[...,None])
-
-		ee_features_=jnp.concatenate([ee,r_ee],axis=-1)
+		r_ee=r_ee*(1.0-jnp.eye(n))[...,None]
+		if rescale:
+			epi=1e-5
+			log_r_ee = jnp.log(1 + r_ee)  # grows as log(r) rather than r
+			ee_features_ = jnp.concatenate((ee * log_r_ee / (r_ee+epi), log_r_ee ), axis=2)
+		else:
+			ee_features_=jnp.concatenate([ee,r_ee],axis=-1)
+			
 		ee_features_list=[ee_features_*ss for ss in all_scales]
 		ee_features_list=[act_func(ee) if do_act else ee for ee in ee_features_list]
 

@@ -199,7 +199,7 @@ def _get_gaoqiao_model(
             "act_func": config_gq.feat_act_func,
             "numb_divid": config_gq.feat_numb_divid,
             "scale": config_gq.scale if config_gq.scale != 1.0 else [],
-            "rescale": config_gq.rescale_type,
+            "rescale": config_gq.rescale_input,
         }
         # trimul_params = None
         # gemi_params = None

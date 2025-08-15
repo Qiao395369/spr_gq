@@ -428,7 +428,7 @@ def get_default_gq_config() -> Dict:
         "density_plot_nepochs": 0,
         "jastrow_hiddenlayers": 2,
         "jastrow_dim": 16,
-        "rescale_type": "log",
+        "rescale_input": False,
         "RHF": False,
     }
     return gq_config
