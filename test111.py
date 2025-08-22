@@ -52,4 +52,14 @@ print(np.sum(log_prob_new))
 # random_numbers = np.random.choice(np.arange(7), size=5, replace=False)
 # print(random_numbers)
 # # 随机选择两个不重复的数
+from jax import jacrev, jvp
+from jax import numpy as jnp
+def hvp_v1(f, x, v):
+    return jvp(jacrev(f), (x,), (v,))
 
+def f(x):
+    # Hessian is identity
+    return (0.5 * x ** 2).sum()
+x = jnp.ones(5) # does not matter
+v = jnp.ones(5) * .12 # a vector full of 0.12
+print(hvp_v1(f, x, v)) # the result is the same as v

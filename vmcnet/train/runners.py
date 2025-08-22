@@ -1,11 +1,12 @@
 """Entry points for running standard jobs."""
+
 import argparse
 import datetime
 import functools
 import logging
 import os
 import subprocess
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Union
 
 import chex
 import flax
@@ -14,8 +15,8 @@ import jax.numpy as jnp
 import numpy as np
 from absl import flags
 from ml_collections import ConfigDict
+import wandb
 
-from vmcnet.utils.distribute import distribute_vmc_state_from_checkpoint
 import vmcnet.mcmc as mcmc
 import vmcnet.mcmc.dynamic_width_position_amplitude as dwpa
 import vmcnet.mcmc.position_amplitude_core as pacore
@@ -47,7 +48,9 @@ def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict,in
         if config.subfolder_name != train.default_config.NO_NAME:
             config.logdir = os.path.join(config.logdir, config.subfolder_name)
         if config.save_to_current_datetime_subfolder:
-            config.logdir = os.path.join(config.logdir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+            config.logdir = os.path.join(
+                config.logdir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            )
         config.logdir = utils.io.add_suffix_for_uniqueness(config.logdir)
     else:
         name="reload"
@@ -69,19 +72,16 @@ def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict,in
 
 
 def _save_git_hash(logdir):
-    # if logdir is None:
-    #     return
+    if logdir is None:
+        return
 
-    # git_hash = (
-    #     subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
-    # )
-    # git_file = os.path.join(logdir, "git_hash.txt")
-    # writer = open(git_file, "wt")
-    # writer.write(git_hash)
-    # writer.close()
-    return 
-
-
+    git_hash = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
+    )
+    git_file = os.path.join(logdir, "git_hash.txt")
+    writer = open(git_file, "wt")
+    writer.write(git_hash)
+    writer.close()
 
 
 def _get_dtype(config: ConfigDict):
@@ -282,25 +282,9 @@ def _get_gaoqiao_model(
         phase, logabsdet = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
         return logabsdet
 
-    # def log_psi_apply(params,xp,xe):
-    #     if len(xe.shape)==4:
-    #         return jax.vmap(jax.vmap(log_psi_apply_novmap,in_axes=(None,None,0)),in_axes=(None,0,0))(params,xp,xe)
-    #     elif len(xe.shape)==2:
-    #         return log_psi_apply_novmap(params,xp,xe)
-    #     else:
-    #         raise ValueError(f"wrong len(xe.shape): {len(xe.shape)} , xe.shape: {xe.shape}")
     @jax.jit
     def log_psi_apply(params, xp, xe):
-        # if not isinstance(xe, jnp.ndarray):
-        #     raise TypeError(f"xe must be a JAX array, got {type(xe)}")
-        # def vmap_fn(params, xp, xe):
         return jax.vmap(jax.vmap(log_psi_apply_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, xp, xe)
-        # return jax.lax.cond(
-        #     len(xe.shape) == 4,
-        #     vmap_fn,
-        #     log_psi_apply_novmap,
-        #     params, xp, xe
-        # )
         
     return log_psi_apply,log_psi_apply_novmap, params, key
 
@@ -412,65 +396,29 @@ def _get_mcmc_fns(
 
 # TODO: figure out where this should go, perhaps in a physics/molecule.py file?
 def _assemble_mol_local_energy_fn(
-    local_energy_type: str,
-    local_energy_config: ConfigDict,
     ion_pos: Array,
     ion_charges: Array,
+    kinetic_type: str,
     ei_softening: chex.Scalar,
     ee_softening: chex.Scalar,
     log_psi_apply: ModelApply[P],
-) -> LocalEnergyApply[P]:
-    if local_energy_type == "standard":
-        kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy(log_psi_apply)
-        ei_potential_fn = physics.potential.create_electron_ion_coulomb_potential(
-            ion_charges, softening_term=ei_softening
-        )
-        ee_potential_fn = physics.potential.create_electron_electron_coulomb_potential(
-            softening_term=ee_softening,
-        )
-        ii_potential_fn = physics.potential.create_ion_ion_coulomb_potential(
-            ion_charges,
-        )
-        # local_energy_fn: LocalEnergyApply[P] = physics.core.combine_local_energy_terms(
-        #     [kinetic_fn, ei_potential_fn, ee_potential_fn, ii_potential_fn]
-        # )
-        # return local_energy_fn
-        return kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn
-    
-    if local_energy_type == "ibp":
-        ibp_parts = local_energy_config.ibp.ibp_parts
-        local_energy_fn = physics.ibp.create_ibp_local_energy(
-            log_psi_apply,
-            ion_pos,
-            ion_charges,
-            "kinetic" in ibp_parts,
-            "ei" in ibp_parts,
-            ei_softening,
-            "ee" in ibp_parts,
-            ee_softening,
-        )
-        return local_energy_fn
-    elif local_energy_type == "random_particle":
-        nparticles = local_energy_config.random_particle.nparticles
-        sample_parts = local_energy_config.random_particle.sample_parts
-        local_energy_fn = (
-            physics.random_particle.create_molecular_random_particle_local_energy(
-                log_psi_apply,
-                ion_pos,
-                ion_charges,
-                nparticles,
-                "kinetic" in sample_parts,
-                "ei" in sample_parts,
-                ei_softening,
-                "ee" in sample_parts,
-                ee_softening,
-            )
-        )
-        return local_energy_fn
+) :
+    if kinetic_type == "old":
+        kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy_old(log_psi_apply)
+    elif kinetic_type == "new":
+        kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy_new(log_psi_apply)
     else:
-        raise ValueError(
-            f"Requested local energy type {local_energy_type} is not supported"
-        )
+        raise ValueError("unknown kinetic_type: %s"%(kinetic_type))
+    ei_potential_fn = physics.potential.create_electron_ion_coulomb_potential(
+        ion_charges, softening_term=ei_softening
+    )
+    ee_potential_fn = physics.potential.create_electron_electron_coulomb_potential(
+        softening_term=ee_softening
+    )
+    ii_potential_fn = physics.potential.create_ion_ion_coulomb_potential(
+        ion_charges
+    )
+    return kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn
 
 
 # TODO: figure out where this should go -- the act of clipping energies is kind of just
@@ -515,44 +463,6 @@ def _get_clipping_fn(
     return clipping_fn
 
 
-def _get_energy_val_and_grad_fn(
-    vmc_config: ConfigDict,
-    problem_config: ConfigDict,
-    ion_pos: Array,
-    ion_charges: Array,
-    log_psi_apply: ModelApply[P],
-    log_psi_apply_novmap: ModelApply[P],
-) -> physics.core.ValueGradEnergyFn[P]:
-    ei_softening = problem_config.ei_softening
-    ee_softening = problem_config.ee_softening
-
-    # local_energy_fn = _assemble_mol_local_energy_fn(
-    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn=_assemble_mol_local_energy_fn(
-        vmc_config.local_energy_type,
-        vmc_config.local_energy,
-        ion_pos,
-        ion_charges,
-        ei_softening,
-        ee_softening,
-        # log_psi_apply,
-        log_psi_apply_novmap,
-    )
-
-    clipping_fn = _get_clipping_fn(vmc_config)
-
-    energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
-        log_psi_apply,
-        # local_energy_fn,
-        kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-        vmc_config.nchains * ion_pos.shape[0],
-        clipping_fn,
-        nan_safe=vmc_config.nan_safe,
-        local_energy_type=vmc_config.local_energy_type,
-    )
-
-    return energy_data_val_and_grad
-
-
 # TODO: don't forget to update type hint to be more general when
 # _make_initial_distributed_data is more general
 def _setup_vmc(
@@ -569,7 +479,9 @@ def _setup_vmc(
     ModelApply[flax.core.FrozenDict],
     mcmc.metropolis.BurningStep[flax.core.FrozenDict, dwpa.DWPAData],
     mcmc.metropolis.WalkerFn[flax.core.FrozenDict, dwpa.DWPAData],
-    updates.params.UpdateParamFn[flax.core.FrozenDict, dwpa.DWPAData, OptimizerState],
+    updates.update_param_fns.UpdateParamFn[
+        flax.core.FrozenDict, dwpa.DWPAData, OptimizerState
+    ],
     GetAmplitudeFromData[dwpa.DWPAData],
     flax.core.FrozenDict,
     dwpa.DWPAData,
@@ -590,7 +502,7 @@ def _setup_vmc(
 
     # Make the model
     if config.wfn_type in ["gaoqiao","gq_ferminet"]:
-        log_psi_apply, log_psi_apply_novmap,params, key =  _get_gaoqiao_model(
+        log_psi_apply_vmap, log_psi_apply,params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
@@ -615,44 +527,50 @@ def _setup_vmc(
 
     # Make initial data
     data = _make_initial_data(
-        log_psi_apply, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
-    )   #data:PositionAmplitudeData
+        log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
+    )
     get_amplitude_fn = pacore.get_amplitude_from_data
-    update_data_fn = pacore.get_update_data_fn(log_psi_apply)
+    update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
 
     # Setup metropolis step
     burning_step, walker_fn = _get_mcmc_fns(
-        config.vmc, log_psi_apply, apply_pmap=apply_pmap
+        config.vmc, log_psi_apply_vmap, apply_pmap=apply_pmap
     )
 
-    energy_data_val_and_grad = _get_energy_val_and_grad_fn(
-        config.vmc, config.problem, ion_pos, ion_charges, log_psi_apply,log_psi_apply_novmap
+    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn = _assemble_mol_local_energy_fn(
+        ion_pos,
+        ion_charges,
+        config.vmc.kinetic_type,
+        config.problem.ei_softening,
+        config.problem.ee_softening,
+        log_psi_apply,
     )
+
+    clipping_fn = _get_clipping_fn(config.vmc)
 
     # Setup parameter updates
     if apply_pmap:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
-
-    (   update_param_fn,
+    (
+        update_param_fn,
         optimizer_state,
         key,
-    ) = updates.parse_config.get_update_fn_and_init_optimizer(
-        # log_psi_apply,
-        log_psi_apply_novmap,
+    ) = updates.parse_optimizer_config.initialize_optimizer(
+        log_psi_apply,
+        kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+        clipping_fn,
         config.vmc,
         params,
-        ion_pos,
         data,
         pacore.get_position_from_data,
         update_data_fn,
-        energy_data_val_and_grad,
         key,
         apply_pmap=apply_pmap,
     )
 
     return (
+        log_psi_apply_vmap,
         log_psi_apply,
-        log_psi_apply_novmap,
         burning_step,
         walker_fn,
         update_param_fn,
@@ -666,47 +584,41 @@ def _setup_vmc(
 
 # TODO: update output type hints when _get_mcmc_fns is made more general
 def _setup_eval(
-    eval_config: ConfigDict,
-    problem_config: ConfigDict,
+    config: ConfigDict,
     ion_pos: Array,
     ion_charges: Array,
+    log_psi_apply_vmap: ModelApply[P],
     log_psi_apply: ModelApply[P],
-    log_psi_apply_novmap: ModelApply[P],
     get_position_fn: GetPositionFromData[dwpa.DWPAData],
     apply_pmap: bool = True,
 ) -> Tuple[
-    updates.params.UpdateParamFn[P, dwpa.DWPAData, OptimizerState],
+    updates.update_param_fns.UpdateParamFn[P, dwpa.DWPAData, OptimizerState],
     mcmc.metropolis.BurningStep[P, dwpa.DWPAData],
     mcmc.metropolis.WalkerFn[P, dwpa.DWPAData],
 ]:
+    problem_config=config.problem
+    eval_config=config.eval
     ei_softening = problem_config.ei_softening
     ee_softening = problem_config.ee_softening
 
-    # local_energy_fn = _assemble_mol_local_energy_fn(
     kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn= _assemble_mol_local_energy_fn(
-        eval_config.local_energy_type,
-        eval_config.local_energy,
         ion_pos,
         ion_charges,
+        config.vmc.kinetic_type,
         ei_softening,
         ee_softening,
-        log_psi_apply_novmap,
+        log_psi_apply,
     )
-    # local_energy_fn: LocalEnergyApply[P] = physics.core.combine_local_energy_terms(
-    #         [kinetic_fn, ei_potential_fn, ee_potential_fn, ii_potential_fn]
-    #     )
-
-    eval_update_param_fn = updates.params.create_eval_update_param_fn(
+    eval_update_param_fn = updates.update_param_fns.construct_eval_update_param_fn(
         kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-        # eval_config.nchains,
+        eval_config.nchains*ion_pos.shape[0],
         get_position_fn,
         record_local_energies=eval_config.record_local_energies,
         nan_safe=eval_config.nan_safe,
         apply_pmap=apply_pmap,
-        # use_PRNGKey=eval_config.local_energy_type == "random_particle",
     )
     eval_burning_step, eval_walker_fn = _get_mcmc_fns(
-        eval_config, log_psi_apply, apply_pmap=apply_pmap
+        eval_config, log_psi_apply_vmap, apply_pmap=apply_pmap
     )
     return eval_update_param_fn, eval_burning_step, eval_walker_fn
 
@@ -762,7 +674,7 @@ def _burn_and_run_vmc(
     data: D,
     burning_step: mcmc.metropolis.BurningStep[P, D],
     walker_fn: mcmc.metropolis.WalkerFn[P, D],
-    update_param_fn: updates.params.UpdateParamFn[P, D, S],
+    update_param_fn: updates.update_param_fns.UpdateParamFn[P, D, S],
     get_amplitude_fn: GetAmplitudeFromData[D],
     key: PRNGKey,
     is_eval: bool,
@@ -828,44 +740,96 @@ def _compute_and_save_energy_statistics(
 
 
 def run_molecule() -> None:
-    # "Run VMC on a molecule."
+    """Run VMC on a molecule."""
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
-    reload_from_checkpoint = (reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR and reload_config.use_checkpoint_file)
+    reload_from_checkpoint = (
+        reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
+        and reload_config.use_checkpoint_file
+    )
 
     if reload_from_checkpoint:
         config.notes = config.notes + " (reloaded from {}/{}{})".format(
-            reload_config.logdir, reload_config.checkpoint_relative_file_path,
-            ", new optimizer state" if reload_config.new_optimizer_state else "",)
+            reload_config.logdir,
+            reload_config.checkpoint_relative_file_path,
+            ", new optimizer state" if reload_config.new_optimizer_state else "",
+        )
+
+    wandb.login()
+    wandb.init(
+        mode=config.wandb.mode,
+        project=config.wandb.project,
+        name=config.wandb.name,
+        group=config.wandb.group,
+        config=config,
+    )
 
     root_logger = logging.getLogger()
     root_logger.setLevel(config.logging_level)
     logdir = _get_logdir_and_save_config(reload_config, config,False)
-    _save_git_hash(logdir)
+    # _save_git_hash(logdir)
 
     dtype_to_use = _get_dtype(config)
 
-    ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(config.problem, dtype=dtype_to_use)
+    ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(
+        config.problem, dtype=dtype_to_use
+    )
 
     key = jax.random.PRNGKey(config.initial_seed)
 
-    (log_psi_apply,log_psi_apply_novmap,burning_step,walker_fn,update_param_fn,
-          get_amplitude_fn,params,data,optimizer_state,key,) = _setup_vmc(config,ion_pos,ion_charges,nelec,nspins,single_nspins,key,
-                                                                          dtype=dtype_to_use,apply_pmap=config.distribute,)
+    (
+        log_psi_apply,
+        log_psi_apply_novmap,
+        burning_step,
+        walker_fn,
+        update_param_fn,
+        get_amplitude_fn,
+        params,
+        data,
+        optimizer_state,
+        key,
+    ) = _setup_vmc(
+        config,
+        ion_pos,
+        ion_charges,
+        nelec,
+        nspins,
+        single_nspins,
+        key,
+        dtype=dtype_to_use,
+        apply_pmap=config.distribute,
+    )
 
     start_epoch = 0
 
     if reload_from_checkpoint:
-        checkpoint_file_path = os.path.join(reload_config.logdir, reload_config.checkpoint_relative_file_path)
+        checkpoint_file_path = os.path.join(
+            reload_config.logdir, reload_config.checkpoint_relative_file_path
+        )
         directory, filename = os.path.split(checkpoint_file_path)
 
-        (reload_at_epoch,data,params,reloaded_optimizer_state,key,) = utils.io.reload_vmc_state(directory, filename)
+        (
+            reload_at_epoch,
+            data,
+            params,
+            reloaded_optimizer_state,
+            key,
+        ) = utils.io.reload_vmc_state(directory, filename)
 
         if reload_config.append:
-            utils.io.copy_txt_stats(reload_config.logdir, logdir, truncate=reload_at_epoch)
+            utils.io.copy_txt_stats(
+                reload_config.logdir, logdir, truncate=reload_at_epoch
+            )
 
         if config.distribute:
-            (data,params,reloaded_optimizer_state,key,) = distribute_vmc_state_from_checkpoint(data, params, reloaded_optimizer_state, key)
+            (
+                data,
+                params,
+                reloaded_optimizer_state,
+                key,
+            ) = utils.distribute.distribute_vmc_state_from_checkpoint(
+                data, params, reloaded_optimizer_state, key
+            )
 
         if not reload_config.new_optimizer_state:
             optimizer_state = reloaded_optimizer_state
@@ -874,44 +838,86 @@ def run_molecule() -> None:
     logging.info("Saving to %s", logdir)
 
     params, optimizer_state, data, key, nans_detected = _burn_and_run_vmc(
-                                                                            config.vmc,logdir,params,optimizer_state,data,burning_step,
-                                                                            walker_fn,update_param_fn,get_amplitude_fn, key, 
-                                                                            is_eval=False, is_pmapped=config.distribute,
-                                                                            skip_burn=reload_from_checkpoint and not reload_config.reburn,
-                                                                            start_epoch=start_epoch,)
+        config.vmc,
+        logdir,
+        params,
+        optimizer_state,
+        data,
+        burning_step,
+        walker_fn,
+        update_param_fn,
+        get_amplitude_fn,
+        key,
+        is_eval=False,
+        is_pmapped=config.distribute,
+        skip_burn=reload_from_checkpoint and not reload_config.reburn,
+        start_epoch=start_epoch,
+    )
 
     if nans_detected:
         logging.info("VMC terminated due to Nans! Aborting.")
         return
     else:
-        logging.info("Completed VMC! Evaluating...")
+        logging.info("Completed VMC! Evaluating")
 
     # TODO: integrate the stuff in mcmc/statistics and write out an evaluation summary
     # (energy, var, overall mean acceptance ratio, std error, iac) to eval_logdir, post
     # evaluation
     eval_logdir = os.path.join(logdir, "eval")
-
     ion_pos, ion_charges, nelec ,nspins,single_nspins= _get_electron_ion_config_as_arrays(config.eval, dtype=dtype_to_use)
 
-    eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(config.eval,config.problem,ion_pos,ion_charges,log_psi_apply,log_psi_apply_novmap,
-                                                                          pacore.get_position_from_data, apply_pmap=config.distribute,)
+    eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
+        config,
+        ion_pos,
+        ion_charges,
+        log_psi_apply,
+        log_psi_apply_novmap,
+        pacore.get_position_from_data,
+        apply_pmap=config.distribute,
+    )
     optimizer_state = None
 
-    if not config.eval.use_data_from_training :
+    eval_and_vmc_nchains_match = config.vmc.nchains == config.eval.nchains
+    if not config.eval.use_data_from_training or not eval_and_vmc_nchains_match:
         logging.info("creating new data ...")
-        key, data = _make_new_data_for_eval(config,log_psi_apply,params,ion_pos,ion_charges,nelec,single_nspins,key,
-                                            is_pmapped=config.distribute, dtype=dtype_to_use,)
+        key, data = _make_new_data_for_eval(
+            config,
+            log_psi_apply,
+            params,
+            ion_pos,
+            ion_charges,
+            nelec,
+            single_nspins,
+            key,
+            is_pmapped=config.distribute,
+            dtype=dtype_to_use,
+        )
 
-    _burn_and_run_vmc(config.eval,eval_logdir,params,optimizer_state,data,eval_burning_step,
-                    eval_walker_fn,eval_update_param_fn,get_amplitude_fn,key,
-                    is_eval=True, is_pmapped=config.distribute,)
+    _burn_and_run_vmc(
+        config.eval,
+        eval_logdir,
+        params,
+        optimizer_state,
+        data,
+        eval_burning_step,
+        eval_walker_fn,
+        eval_update_param_fn,
+        get_amplitude_fn,
+        key,
+        is_eval=True,
+        is_pmapped=config.distribute,
+    )
 
     # need to check for local_energy.txt because when config.eval.nepochs=0 the file is
     # not created regardless of config.eval.record_local_energies
-    local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
+    local_es_were_recorded = os.path.exists(
+        os.path.join(eval_logdir, "local_energies.txt")
+    )
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0],0)
+        _compute_and_save_energy_statistics(
+            local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0],0
+        )
 
 
 def do_inference()-> None:
@@ -924,7 +930,7 @@ def do_inference()-> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(config.logging_level)
     logdir = _get_logdir_and_save_config(infer_config, config, True)
-    _save_git_hash(logdir)
+    # _save_git_hash(logdir)
     dtype_to_use = _get_dtype(config)
 
     ion_pos, ion_charges, nelec , nspins, single_nspins= _get_electron_ion_config_as_arrays(config.eval, dtype=dtype_to_use)
@@ -1008,7 +1014,8 @@ def do_inference()-> None:
 def vmc_statistics() -> None:
     """Calculate statistics from a VMC evaluation run and write them to disc."""
     parser = argparse.ArgumentParser(
-        description="Calculate statistics from a VMC evaluation run and write them to disc."
+        description="Calculate statistics from a VMC evaluation run and write them "
+        "to disc."
     )
     parser.add_argument(
         "local_energies_file_path",
@@ -1040,7 +1047,6 @@ def vmc_statistics() -> None:
     args = parser.parse_args()
 
     output_dir, output_filename = os.path.split(os.path.abspath(args.output_file_path))
-    _compute_and_save_energy_statistics(args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers,args.nn)
-
-if __name__=='__main__':
-    run_molecule()
+    _compute_and_save_energy_statistics(
+        args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers,args.nn
+    )

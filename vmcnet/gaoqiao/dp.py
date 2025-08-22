@@ -111,8 +111,13 @@ class ManyElectronSystem():
     """
     data : np x np x ...
     """
-    ea_split = self.get_split_ea()[:-1]
-    split0 = jnp.split(data, ea_split, axis=axis[0])
-    [ee, ea] = jnp.split(split0[0], ea_split, axis=axis[1])
-    [ae, aa] = jnp.split(split0[1], ea_split, axis=axis[1])
+    ea_split = self.get_split_ea()[:-1]  #[nele]
+    split0 = jnp.split(data, ea_split, axis=axis[0])  #(np,np,...)->(nele,np,...),(na,np,...)
+    [ee, ea] = jnp.split(split0[0], ea_split, axis=axis[1])  #(nele,np,...)->(nele,nele,...),(nele,na,...)
+    [ae, aa] = jnp.split(split0[1], ea_split, axis=axis[1])  #(na,np,...)->(na,nele,...),(na,na,...)
     return ee, ea, ae, aa
+  
+  def reform_ee_ea_ae_aa(self, ee, ea, ae, aa):
+     ee_ea=jnp.concatenate([ee,ea],axis=-1)
+     ae_aa=jnp.concatenate([ae,aa],axis=-1)
+     return jnp.concatenate([ee_ea,ae_aa],axis=0)

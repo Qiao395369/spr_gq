@@ -4,6 +4,7 @@ Running queues of energy and variance histories are tracked, along with their av
 Unlike many of the other routines in this package, these are not pure functions, as they
 modify the RunningMetrics inside RunningEnergyVariance.
 """
+
 import logging
 import os
 import queue
@@ -260,6 +261,7 @@ def _add_amplitude_to_metrics_if_requested(
         amplitudes = get_amplitude_fn(data)
         metrics["amplitude_min"] = jnp.min(amplitudes)
         metrics["amplitude_max"] = jnp.max(amplitudes)
+        metrics["amplitude_mean"] = jnp.mean(amplitudes)
 
 
 def get_checkpoint_metric(
@@ -522,12 +524,11 @@ def track_and_save_best_checkpoint(
         energy, variance = running_energy_and_variance
 
         energy.move_history_window(metrics["energy"])
-        # print(f"metrics['energy']:{metrics['energy'].shape}")
         variance.move_history_window(metrics["variance"])
         error_adjusted_running_avg = get_checkpoint_metric(
             energy.avg, variance.avg, nchains * len(energy.history), variance_scale
         )
-        # print(f"error_adjusted_running_avg:{error_adjusted_running_avg.shape}")
+
         if error_adjusted_running_avg < checkpoint_metric:
             best_checkpoint_data = (
                 epoch,
@@ -579,7 +580,7 @@ def save_metrics_and_regular_checkpoint(
         new_params (pytree-like): model parameters, from after the update function.
         optimizer_state (pytree-like): running state of the optimizer other than the
             trainable parameters. Needs to be serialiable via `np.savez`
-        data (pytree-like): current mcmc data (e.g. position and amplitude data). Needs 
+        data (pytree-like): current mcmc data (e.g. position and amplitude data). Needs
             to be serializable via `np.savez`
         metrics (dict): dictionary of metrics. If this is not None, then it must include
             "energy" and "variance". Metrics are currently flattened and written to a
@@ -631,7 +632,7 @@ def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str, rate :str
     epoch_str = "Epoch %(epoch)5d"
     energy_str = "E: %(energy).5e"
     variance_str = "Var: %(variance).5e"
-    accept_ratio_str = "Acc ratio: %(accept_ratio).5f"
+    accept_ratio_str = "Acc_r: %(accept_ratio).5f"
     # amplitude_str = ""
     kinetic="kinetic:%(kinetic).5e"
     ei_potential="ei:%(ei_potential).5e"
@@ -649,17 +650,10 @@ def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str, rate :str
     #     amplitude_str = "Min/max amplitude: %(amplitude_min).2f/%(amplitude_max).2f"
 
     info_out = ", ".join(
-        [epoch_str, 
-         energy_str, 
-         variance_str, 
-         accept_ratio_str, 
+        [epoch_str, energy_str, variance_str, accept_ratio_str, 
         #  amplitude_str,
-         kinetic,
-         ei_potential,
-         ee_potential,
-         ii_potential,
-         rate_str,
-         ]
+         kinetic,ei_potential,ee_potential,ii_potential,rate_str,
+        ]
     )
     info_out = info_out + checkpoint_str
 

@@ -1,0 +1,373 @@
+_convert_dict:
+    value: true
+_fields:
+    value:
+        base_logdir: ./results
+        debug_nans: false
+        distribute: false
+        dtype: float32
+        eval: |
+            init_width: 0.1
+            ion_charges: !!python/tuple
+            - 7.0
+            - 7.0
+            ion_pos: !!python/tuple
+            - !!python/tuple
+              - 0.0
+              - 0.0
+              - -1.088
+            - !!python/tuple
+              - 0.0
+              - 0.0
+              - 1.088
+            nan_safe: false
+            nburn: 4000
+            nchains: 128
+            nepochs: 50000
+            nmoves_per_width_update: 100
+            nspins: !!python/tuple
+            - 7
+            - 7
+            nsteps_per_param_update: 10
+            record_amplitudes: false
+            record_local_energies: true
+            single_nspins: !!python/tuple
+            - !!python/tuple
+              - 5
+              - 2
+            - !!python/tuple
+              - 2
+              - 5
+            std_move: 0.25
+            use_data_from_training: false
+        gq: |
+            RHF: false
+            attn_do_gate: false
+            attn_do_lnorm: false
+            attn_nchnl: 32
+            attn_nhead: 1
+            density_plot: false
+            density_plot_filename: NONE
+            density_plot_nepochs: 0
+            det_mode: det
+            do_attn: false
+            do_complex: false
+            do_h1_attn: false
+            do_trimul: false
+            ef: true
+            ef_construct_features_type: conv_0
+            envelope_type: ds_hz
+            feat_act_func: tanh
+            feat_do_act: false
+            feat_numb_divid: 1
+            gemi_diag_shift: 0.1
+            gemi_hiddens:
+            - 16
+            - 16
+            - 16
+            gemi_init_style: normal
+            gemi_odim: 32
+            gemi_weight_dim: 0
+            h1: 32
+            h1_attn_do_gate: false
+            h1_attn_do_lnorm: false
+            h1_attn_nchnl: 16
+            h1_attn_nhead: 4
+            h1_resd_mode: avg
+            h2: 8
+            jastrow_dim: 16
+            jastrow_hiddenlayers: 2
+            ndet: 16
+            nh: 16
+            rescale_input: e-a
+            scale: 1.0
+            trimul_mode: both
+            trimul_nchnl: 16
+            type: ef_shrd
+            wfn_depth: 4
+            wfn_layer_do_resd_dt: false
+            wfn_layer_resd_dt_scale: 0.1
+            wfn_layer_resd_dt_shift: 1.0
+            wfn_layer_update_alpha: null
+        initial_seed: 0
+        logdir: ./results
+        logging_level: INFO
+        model: |
+            backflow:
+              activation_fn: tanh
+              bias_init_1e_stream:
+                type: normal
+              bias_init_2e_stream:
+                type: normal
+              bias_init_transformer:
+                type: normal
+              cyclic_spins: false
+              kernel_init_2e_1e_stream:
+                scale: 1.0
+                type: orthogonal
+              kernel_init_2e_2e_stream:
+                scale: 2.0
+                type: orthogonal
+              kernel_init_mixed:
+                scale: 1.0
+                type: orthogonal
+              kernel_init_transformer:
+                scale: 1.0
+                type: orthogonal
+              kernel_init_unmixed:
+                scale: 2.0
+                type: orthogonal
+              ndense_list: !!python/tuple
+              - &id001 !!python/tuple
+                - 256
+                - 16
+              - *id001
+              - *id001
+              - !!python/tuple
+                - 256
+              num_heads: 1
+              one_electron_skip: true
+              one_electron_skip_scale: 1.0
+              two_electron_skip: true
+              two_electron_skip_scale: 1.0
+              use_bias: true
+              use_transformer: false
+            bias_init_orbital_linear:
+              type: normal
+            det_resnet:
+              activation: gelu
+              bias_init:
+                type: normal
+              kernel_init:
+                scale: 2.0
+                type: orthogonal
+              mode: parallel_even
+              ndense: 10
+              nlayers: 3
+              use_bias: true
+            determinant_fn_mode: parallel_even
+            envelope_softening: 0.0
+            full_det: false
+            input_streams:
+              ee_norm_softening: 0.0
+              ei_norm_softening: 0.0
+              include_2e_stream: true
+              include_ee_norm: true
+              include_ei_norm: true
+            isotropic_decay: true
+            kernel_init_envelope_dim:
+              type: ones
+            kernel_init_envelope_ion:
+              type: ones
+            kernel_init_orbital_linear:
+              scale: 2.0
+              type: orthogonal
+            ndeterminants: 16
+            orbitals_use_bias: true
+            type: ferminet
+            use_det_resnet: false
+        notes: default
+        problem: |
+            ee_softening: 0.0
+            ei_softening: 0.0
+            ion_charges: !!python/tuple
+            - 7.0
+            - 7.0
+            ion_pos: !!python/tuple
+            - !!python/tuple
+              - 0.0
+              - 0.0
+              - -1.088
+            - !!python/tuple
+              - 0.0
+              - 0.0
+              - 1.088
+            nspins: !!python/tuple
+            - 7
+            - 7
+            single_nspins: !!python/tuple
+            - !!python/tuple
+              - 5
+              - 2
+            - !!python/tuple
+              - 2
+              - 5
+        save_to_current_datetime_subfolder: false
+        subfolder_name: N2_single
+        vmc: |
+            best_checkpoint_every: 100
+            check_for_nans: true
+            checkpoint_dir: checkpoints
+            checkpoint_every: 10000
+            checkpoint_variance_scale: 10
+            clip_center: mean
+            clip_threshold: 5.0
+            down_sample_num: 0
+            nan_safe: true
+            nburn: 20
+            nchains: 128
+            nepochs: 150000
+            nhistory_max: 200
+            nmoves_per_width_update: 100
+            nsteps_per_param_update: 10
+            optimizer:
+              adam:
+                b1: 0.9
+                b2: 0.999
+                eps: 1.0e-08
+                eps_root: 0.0
+                learning_decay_rate: 0.0001
+                learning_rate: 0.05
+                schedule_type: inverse_time
+              gauss_newton:
+                E: 0.0
+                clip_threshold: 1000.0
+                constrain_norm: true
+                damping: 0.001
+                learning_decay_rate: 0.0001
+                learning_rate: 1.0
+                norm_constraint: 0.001
+                schedule_type: inverse_time
+              kfac:
+                curvature_ema: 0.95
+                damping: 0.001
+                estimation_mode: fisher_exact
+                inverse_update_period: 1
+                l2_reg: 0.0
+                learning_decay_rate: 0.0001
+                learning_rate: 0.05
+                min_damping: 0.0001
+                norm_constraint: 0.001
+                register_only_generic: false
+                schedule_type: inverse_time
+              sgd:
+                learning_decay_rate: 0.0001
+                learning_rate: 0.05
+                momentum: 0.0
+                nesterov: false
+                schedule_type: inverse_time
+              spring:
+                constrain_norm: true
+                damping: 0.001
+                learning_decay_rate: 0.0001
+                learning_rate: 0.02
+                mu: 0.99
+                norm_constraint: 0.001
+                schedule_type: inverse_time
+            optimizer_type: spring
+            record_amplitudes: false
+            record_param_l1_norm: false
+            std_move: 0.25
+        wandb: |
+            group: '222'
+            mode: online
+            name: '333'
+            project: test
+        wfn_type: gaoqiao
+_locked:
+    value: true
+_type_safe:
+    value: true
+_wandb:
+    value:
+        cli_version: 0.21.1
+        e:
+            cy5u33lc37qyfdthqpovcfch77z8aklc:
+                apple:
+                    ecpuCores: 4
+                    gpuCores: 8
+                    memoryGb: 16
+                    name: Apple M2
+                    pcpuCores: 4
+                    ramTotalBytes: "17179869184"
+                    swapTotalBytes: "28991029248"
+                args:
+                    - --config.logdir=./results
+                    - --config.save_to_current_datetime_subfolder=False
+                    - --config.subfolder_name=N2_single
+                    - --config.dtype=float32
+                    - --config.problem.ion_pos=(((0.,0.,-1.088),(0.,0.,1.088)))
+                    - --config.problem.ion_charges=(7.,7.)
+                    - --config.problem.nspins=(7,7)
+                    - --config.problem.single_nspins=((5,2),(2,5))
+                    - --config.vmc.optimizer_type=spring
+                    - --config.vmc.optimizer.spring.learning_rate=2e-2
+                    - --config.vmc.check_for_nans=True
+                    - --config.vmc.nchains=128
+                    - --config.vmc.down_sample_num=0
+                    - --config.vmc.nepochs=150000
+                    - --config.vmc.checkpoint_every=10000
+                    - --config.vmc.nburn=20
+                    - --config.wfn_type=gaoqiao
+                    - --config.gq.ndet=16
+                    - --config.gq.wfn_depth=4
+                    - --config.gq.h1=32
+                    - --config.gq.h2=8
+                    - --config.gq.nh=16
+                    - --config.gq.scale=1.0
+                    - --config.gq.do_attn=False
+                    - --config.gq.attn_nchnl=32
+                    - --config.gq.attn_nhead=1
+                    - --config.gq.attn_do_gate=False
+                    - --config.gq.attn_do_lnorm=False
+                    - --config.gq.type=ef_shrd
+                    - --config.gq.ef_construct_features_type=conv_0
+                    - --config.gq.envelope_type=ds_hz
+                    - --config.gq.jastrow_hiddenlayers=2
+                    - --config.gq.jastrow_dim=16
+                    - --config.gq.rescale_input=e-a
+                    - --config.gq.RHF=False
+                    - --config.eval.nepochs=50000
+                    - --config.eval.nchains=128
+                    - --config.eval.nburn=4000
+                    - --config.eval.use_data_from_training=False
+                    - --config.eval.ion_pos=(((0.,0.,-1.088),(0.,0.,1.088)))
+                    - --config.eval.ion_charges=(7.,7.)
+                    - --config.eval.init_width=0.1
+                    - --config.eval.std_move=0.25
+                    - --config.eval.single_nspins=((5,2),(2,5))
+                    - --config.eval.nspins=(7,7)
+                    - --config.wandb.mode=online
+                    - --config.wandb.project=test
+                    - --config.wandb.name=333
+                    - --config.wandb.group=222
+                cpu_count: 8
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "494384795648"
+                        used: "268264435712"
+                email: qiaoqiao777@proton.me
+                executable: /Users/gaoqiao/miniforge3/envs/vmcnet_env/bin/python3.9
+                git:
+                    commit: 828b664b2545dc686258e945ada7a881b13742ba
+                    remote: git@github.com:Qiao395369/spr_gq.git
+                host: Qiao.local
+                memory:
+                    total: "17179869184"
+                os: macOS-14.3.1-arm64-arm-64bit
+                program: /Users/gaoqiao/miniforge3/envs/vmcnet_env/bin/vmc-molecule
+                python: CPython 3.9.20
+                root: /Users/gaoqiao/Desktop/spring/spring_gq_1
+                startedAt: "2025-08-20T07:34:56.638659Z"
+                writerId: cy5u33lc37qyfdthqpovcfch77z8aklc
+        m: []
+        python_version: 3.9.20
+        t:
+            "1":
+                - 2
+                - 3
+                - 12
+                - 45
+            "2":
+                - 2
+                - 3
+                - 12
+                - 45
+            "3":
+                - 13
+                - 16
+            "4": 3.9.20
+            "5": 0.21.1
+            "12": 0.21.1
+            "13": darwin-arm64

@@ -2131,7 +2131,7 @@ def fermi_net_orbitals_part1_ef(
   """
   pos = jnp.concatenate([pos.reshape(-1), atoms.reshape(-1)])  #(ne+na,3)
   pp, r_pp = construct_input_features_ef(pos)  # (ne+na,ne+na,3),(ne+na,ne+na,1)
-  pp_features = options.feature_layer.apply(ee=pp, r_ee=r_pp, **params['input'])  # (ne+na,ne+na,nf_two)
+  pp_features = options.feature_layer.apply(pp, r_pp, **params['input'])  # (ne+na,ne+na,nf_two)
   hpp = pp_features
   h_to_orbitals, hp = options.ferminet_model.apply(params, hpp,)
   [h_to_orbitals, _] = options.mes.split_ea(h_to_orbitals)  #(ne,64)

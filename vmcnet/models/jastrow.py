@@ -1,4 +1,5 @@
 """Jastrow factors."""
+
 from typing import Optional, Sequence, Union
 
 import flax
@@ -8,7 +9,12 @@ import vmcnet.models as models
 import vmcnet.physics as physics
 from vmcnet.utils.typing import Array, Backflow, Jastrow
 
-from .core import Dense, ElementWiseMultiply, Module, compute_ee_norm_with_safe_diag
+from .core import (
+    Dense,
+    ElementWiseMultiply,
+    Module,
+    compute_ee_norm_with_safe_diag,
+)
 from .weights import WeightInitializer, get_constant_init, zeros
 
 

@@ -1,4 +1,5 @@
 """Create configuration of hyperparameters."""
+
 import os
 from typing import Dict
 
@@ -98,7 +99,12 @@ def get_default_config() -> ConfigDict:
                 "distribute": False,
                 "debug_nans": False,  # If true, OVERRIDES config.distribute to be False
                 "initial_seed": 0,
-                
+                "wandb": {
+                    "mode": "disabled",
+                    "project": "default",
+                    "name": "vmc-molecule_run",
+                    "group": "default",
+                },
             }
         )
     )
@@ -176,7 +182,7 @@ def get_default_model_config() -> Dict:
     base_ferminet_config = {
         "input_streams": input_streams,
         "backflow": ferminet_backflow,
-        "ndeterminants": 1,
+        "ndeterminants": 16,
         "kernel_init_orbital_linear": {"type": "orthogonal", "scale": 2.0},
         "kernel_init_envelope_dim": {"type": "ones"},
         "kernel_init_envelope_ion": {"type": "ones"},
@@ -304,16 +310,13 @@ def get_default_molecular_config() -> Dict:
 def get_default_vmc_config() -> Dict:
     """Get a default VMC training configuration."""
     vmc_config = {
-        "nchains": 2000,
+        "nchains": 1000,
         "down_sample_num": 6,
-        # "walker":8,
         "nepochs": 200000,
         "nburn": 5000,
         "nsteps_per_param_update": 10,
         "nmoves_per_width_update": 100,
         "std_move": 0.25,
-        "local_energy_type": "standard",  # [standard, ibp, random_particle]
-        "local_energy": get_default_local_energy_config(),
         "checkpoint_every": 5000,
         "best_checkpoint_every": 100,
         "checkpoint_dir": "checkpoints",
@@ -322,6 +325,7 @@ def get_default_vmc_config() -> Dict:
         "nhistory_max": 200,
         "record_amplitudes": False,
         "record_param_l1_norm": False,
+        "kinetic_type": "old",
         "clip_threshold": 5.0,
         "clip_center": "mean",  # mean or median
         "nan_safe": True,
@@ -356,27 +360,29 @@ def get_default_vmc_config() -> Dict:
                 "learning_rate": 5e-2,
                 "learning_decay_rate": 1e-4,
             },
-            "sr": {
-                "damping": 1.0,  # needs to be tuned with everything else
-                "maxiter": 10,  # when maxiter <= -1, uses default 10 * nparams
-                "descent_type": "sgd",
-                "norm_constraint": 0.001,
-                "mode": "lazy",
-                "schedule_type": "inverse_time",  # constant or inverse_time
-                "learning_rate": 5e-2,  # needs to be tuned with everything else
-                "learning_decay_rate": 1e-4,
-            },
             "spring": {
                 # Learning rate settings
                 "schedule_type": "inverse_time",  # constant or inverse_time
-                "learning_rate": 5e-2,  # needs to be tuned with everything else
+                "learning_rate": 5e-2,
                 "learning_decay_rate": 1e-4,
                 # SPRING hyperparams
                 "mu": 0.99,
-                "momentum": 0.0,  # non-zero value not recommended
                 "damping": 0.001,
                 "constrain_norm": True,
                 "norm_constraint": 0.001,
+                "type": "old",
+            },
+            "gauss_newton": {
+                # Learning rate settings
+                "schedule_type": "inverse_time",  # constant or inverse_time
+                "learning_rate": 1.0,
+                "learning_decay_rate": 1e-4,
+                # GN hyperparams
+                "E": 0.0,  # target energy
+                "damping": 0.001,
+                "constrain_norm": True,
+                "norm_constraint": 0.001,
+                "clip_threshold": 1000.0,  # GN works best with cusp Jastrow and no clipping
             },
         },
     }
@@ -428,7 +434,7 @@ def get_default_gq_config() -> Dict:
         "density_plot_nepochs": 0,
         "jastrow_hiddenlayers": 2,
         "jastrow_dim": 16,
-        "rescale_input": False,
+        "rescale_input": "all",
         "RHF": False,
     }
     return gq_config
@@ -436,7 +442,7 @@ def get_default_gq_config() -> Dict:
 def get_default_eval_config() -> Dict:
     """Get a default evaluation configuration."""
     eval_config = {
-        "nchains": 2000,
+        "nchains": 1000,
         "nburn": 5000,
         "nepochs": 20000,
         "nsteps_per_param_update": 10,
@@ -444,8 +450,6 @@ def get_default_eval_config() -> Dict:
         "record_amplitudes": False,
         "std_move": 0.25,
         "init_width":1.0,
-        "local_energy_type": "standard",  # [standard, ibp, random_particle]
-        "local_energy": get_default_local_energy_config(),
         # if use_data_from_training=True, nchains, nmoves_per_width_update, and
         # std_move are completely ignored, and the data output from training is
         # used as the initial positions instead
@@ -458,21 +462,3 @@ def get_default_eval_config() -> Dict:
         "nspins":(1,1),
     }
     return eval_config
-
-
-
-def get_default_local_energy_config() -> Dict:
-    """Get a default local energy configuration."""
-    local_energy_config = {
-        "standard": {},
-        "ibp": {
-            # '("kinetic","ei","ee")', or some subset.
-            "ibp_parts": ("kinetic", "ei", "ee")
-        },
-        "random_particle": {
-            # '("kinetic","ei","ee")', or some subset.
-            "sample_parts": ("kinetic", "ei", "ee"),
-            "nparticles": 1,
-        },
-    }
-    return local_energy_config

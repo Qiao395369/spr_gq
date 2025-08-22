@@ -4,16 +4,16 @@ Because type-checking with numpy/jax numpy can be tricky and does not always agr
 type-checkers, this package uses types for static type-checking when possible, but
 otherwise they are intended for documentation and clarity.
 """
+
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
-from jax.random import KeyArray
 from jax import Array
 from jax.typing import ArrayLike
 import kfac_jax
 import optax
 
 
-PRNGKey = KeyArray
+PRNGKey = Array
 
 # Currently using PyTree = Any just to improve readability in the code.
 # A pytree is a "tree-like structure built out of container-like Python objects": see
@@ -67,9 +67,10 @@ ComputeInputStreams = Callable[[Array], InputStreams]
 Backflow = Callable[[Array, Optional[Array]], Array]
 
 Jastrow = Callable[[Array, Array, Array, Array, Array], Array]
+CuspJastrowType = Callable[[Array, Array], Array]
 
 ModelApply = Callable[[P, Array], Array]
-LocalEnergyApply = Callable[[P, Array, Optional[PRNGKey]], Array]
+LocalEnergyApply = Callable[[P, Array], Array]
 
 GetPositionFromData = Callable[[D], Array]
 GetAmplitudeFromData = GetPositionFromData[D]

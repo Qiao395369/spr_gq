@@ -1,11 +1,13 @@
 """Main VMC loop."""
+
 from typing import Tuple, Optional
 
 import jax
+import wandb
 
 import time
 from vmcnet.mcmc.metropolis import WalkerFn
-from vmcnet.updates.params import UpdateParamFn
+from vmcnet.updates.update_param_fns import UpdateParamFn
 from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
 import vmcnet.utils as utils
 from vmcnet.utils.typing import D, GetAmplitudeFromData, P, PRNGKey, S
@@ -103,6 +105,9 @@ def vmc_loop(
     nans_detected = False
     down_sample=(not is_eval and down_sample_num != 0)
 
+    MAX_WANDB_LOGS = 10000
+    wandb_freq = nepochs // min(max(nepochs, 1), MAX_WANDB_LOGS)
+
     with CheckpointWriter(
         is_pmapped
     ) as checkpoint_writer, MetricsWriter() as metrics_writer:
@@ -126,7 +131,10 @@ def vmc_loop(
                 data, metrics = reform_data(data, rest_data, metrics, idx)
             else:
                 accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics, key = update_param_fn(params, data, optimizer_state, key)
+
+                params, data, optimizer_state, metrics, key = update_param_fn(
+                    params, data, optimizer_state, key
+                )
 
             # Don't checkpoint if no metrics to checkpoint
             if metrics is None:
@@ -166,8 +174,10 @@ def vmc_loop(
             current_time = time.time()
             elapsed_time = current_time - start_time  # 已用时间（秒）
             epochs_per_hour = int((1 / elapsed_time) * 3600)  if elapsed_time > 0 else None
-
             utils.checkpoint.log_vmc_loop_state(epoch, metrics, checkpoint_str,str(epochs_per_hour))
+
+            if epoch % wandb_freq == 0:
+                wandb.log(metrics, step=epoch)
 
             if nans_detected:
                 break

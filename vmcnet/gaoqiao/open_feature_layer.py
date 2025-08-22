@@ -63,7 +63,7 @@ def make_open_features_ef(
 		numb_divid: int = 1,
 		do_act: bool = False,
 		act_func: str = 'tanh',
-		rescale:bool=False,
+		rescale:str="all",
 ):
 	if type(scale) is float:
 		scale=[scale]
@@ -94,26 +94,59 @@ def make_open_features_ef(
 		dim1+=(ndim+1)*num_scales
 		return (dim0,dim1),{}
 
-	def apply_(ee,r_ee,) -> Tuple[jnp.ndarray,jnp.ndarray]:
+	def apply_(pp,r_pp,) -> Tuple[jnp.ndarray,jnp.ndarray]:
 		# different ee convention, so use -ee
-		n=ee.shape[0]
-		ee_features_list=[]
-		ee=-ee*(1.0-jnp.eye(n))[...,None]
+		n=pp.shape[0]
+		pp_features_list=[]
+		pp=-pp*(1.0-jnp.eye(n))[...,None]
 
-		r_ee=r_ee*(1.0-jnp.eye(n))[...,None]
-		if rescale:
-			epi=1e-5
-			log_r_ee = jnp.log(1 + r_ee)  # grows as log(r) rather than r
-			ee_features_ = jnp.concatenate((ee * log_r_ee / (r_ee+epi), log_r_ee ), axis=2)
-		else:
+		r_pp=r_pp*(1.0-jnp.eye(n))[...,None]
+		if rescale=="all_eps":
+			eps=1e-5
+			log_r_pp = jnp.log(1 + r_pp)  # grows as log(r) rather than r
+			pp_features_ = jnp.concatenate((pp * log_r_pp / (r_pp+eps), log_r_pp ), axis=2)
+		elif rescale=="all":
+			log_r_pp = jnp.log(1 + r_pp)  
+			factor=jnp.where(log_r_pp!=0, log_r_pp / r_pp, 0.0)
+			pp_features_ = jnp.concatenate(( pp * factor , log_r_pp ), axis=2)
+		elif rescale=="a-e":
+			ee,ea,ae,aa=split_ee_ea_ae_aa(pp)
+			r_ee,r_ea,r_ae,r_aa=split_ee_ea_ae_aa(r_pp)
 			ee_features_=jnp.concatenate([ee,r_ee],axis=-1)
+
+			log_r_ea = jnp.log(1 + r_ea)  
+			ea_features_ = jnp.concatenate((ea * log_r_ea /r_ea , log_r_ea ), axis=-1)
+
+			log_r_ae = jnp.log(1 + r_ae)  
+			ae_features_ = jnp.concatenate((ae * log_r_ae /r_ae , log_r_ae ), axis=-1)
+
+			aa_features_=jnp.concatenate([aa,r_aa],axis=-1)
+
+			pp_features_ = reform_ee_ea_ae_aa(ee_features_,ea_features_,ae_features_,aa_features_)
+		else:
+			pp_features_=jnp.concatenate([pp,r_pp],axis=-1)
 			
-		ee_features_list=[ee_features_*ss for ss in all_scales]
-		ee_features_list=[act_func(ee) if do_act else ee for ee in ee_features_list]
+		pp_features_list=[pp_features_*ss for ss in all_scales]
+		pp_features_list=[act_func(pp) if do_act else pp for pp in pp_features_list]
 
-		ee_features=jnp.concatenate(ee_features_list,axis=-1)
+		pp_features=jnp.concatenate(pp_features_list,axis=-1)
 
-		return ee_features
+		return pp_features
 
 	return networks.FeatureLayer(init=init,apply=apply_)
 
+
+def split_ee_ea_ae_aa(data, ne):
+	"""
+	data : np x np x ...
+	"""
+	ea_split = [ne]  #[nele]
+	split0 = jnp.split(data, ea_split, axis=0)  #(np,np,...)->(nele,np,...),(na,np,...)
+	[ee, ea] = jnp.split(split0[0], ea_split, axis=1)  #(nele,np,...)->(nele,nele,...),(nele,na,...)
+	[ae, aa] = jnp.split(split0[1], ea_split, axis=1)  #(na,np,...)->(na,nele,...),(na,na,...)
+	return ee, ea, ae, aa
+  
+def reform_ee_ea_ae_aa(ee, ea, ae, aa):
+	ee_ea=jnp.concatenate([ee,ea],axis=-1)
+	ae_aa=jnp.concatenate([ae,aa],axis=-1)
+	return jnp.concatenate([ee_ea,ae_aa],axis=0)

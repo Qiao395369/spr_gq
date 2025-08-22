@@ -17,9 +17,13 @@ from vmcnet.train.default_config import NO_NAME, NO_PATH, DEFAULT_PRESETS_DIR
 def _get_config_from_reload(
     reload_config: ConfigDict, flag_values: flags.FlagValues
 ) -> ConfigDict:
-    reloaded_config = io.load_config_dict(reload_config.logdir, reload_config.config_relative_file_path)
+    reloaded_config = io.load_config_dict(
+        reload_config.logdir, reload_config.config_relative_file_path
+    )
     reloaded_config.logdir = reloaded_config.base_logdir
-    config_flags.DEFINE_config_dict("config", reloaded_config, lock_config=True, flag_values=flag_values)
+    config_flags.DEFINE_config_dict(
+        "config", reloaded_config, lock_config=True, flag_values=flag_values
+    )
     flag_values(sys.argv)
     return flag_values.config
 
@@ -33,7 +37,12 @@ def _get_config_from_default_config(
         presets = io.load_config_dict("", presets_path)
         base_config.update(presets)
 
-    config_flags.DEFINE_config_dict("config",base_config,lock_config=False,flag_values=flag_values,)
+    config_flags.DEFINE_config_dict(
+        "config",
+        base_config,
+        lock_config=False,
+        flag_values=flag_values,
+    )
     flag_values(sys.argv)
     config = flag_values.config
     config.model = train.default_config.choose_model_type_in_model_config(config.model)
@@ -96,22 +105,24 @@ def parse_flags(flag_values: flags.FlagValues) -> Tuple[ConfigDict, ConfigDict]:
     flag_values(sys.argv, True)
 
     reload_config = flag_values.reload
-    presets_config = flag_values.presets
 
     reload = (
         reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
         and reload_config.use_config_file
     )
 
-    load_presets = (presets_config.name != NO_NAME or presets_config.path != NO_PATH)
-
-    if presets_config.path != NO_PATH and presets_config.name != NO_NAME:
+    load_presets = (
+        flag_values.presets.name != NO_NAME or flag_values.presets.path != NO_PATH
+    )
+    if flag_values.presets.path != NO_PATH and flag_values.presets.name != NO_NAME:
         raise ValueError("Cannot specify both --presets.path and --presets.name")
 
-    if presets_config.name != NO_NAME:
-        presets_path = os.path.join(DEFAULT_PRESETS_DIR, presets_config.name + ".json")
-    elif presets_config.path != NO_PATH:
-        presets_path = presets_config.path
+    if flag_values.presets.name != NO_NAME:
+        presets_path = os.path.join(
+            DEFAULT_PRESETS_DIR, flag_values.presets.name + ".json"
+        )
+    elif flag_values.presets.path != NO_PATH:
+        presets_path = flag_values.presets.path
 
     if reload and load_presets:
         raise ValueError("Cannot specify --presets.path when using reloaded config")
