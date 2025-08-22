@@ -25,6 +25,7 @@ aaa_server_data/
 aaa_test/
 aaa_results/
 eval.sh/
+wandb/
 test*.py
 eval.sh
 vmcnet/gaoqiao/build_*.py

@@ -213,7 +213,7 @@ def get_clipped_energies_and_stats(
 
     energy_stats = dict(
         variance=variance,  #()
-        energy_noclip=energy_noclip,  #(W,1)
+        energy_noclip=utils.distribute.nanmean_all_local_devices(energy_noclip,axis=(0,1)),  #(W,1)
         variance_noclip=variance_noclip,  #()
     )
 
@@ -381,6 +381,6 @@ def create_energy_and_statistics_fn(
         multi_energy=energy.reshape((-1))
         stats.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential,"multi_energy":multi_energy})
 
-        return energy, local_energies, stats
+        return utils.distribute.nanmean_all_local_devices(energy,axis=(0,1)), local_energies, stats
 
     return energy_and_statistics
