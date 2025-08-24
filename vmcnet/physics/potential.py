@@ -196,7 +196,9 @@ def create_ion_ion_coulomb_potential(
         del params,x
         ion_ion_displacements, charge_charge_prods = _get_ion_ion_info(ion_locations, ion_charges)
         ion_ion_distances = compute_soft_norm(ion_ion_displacements)
-        constant_potential = jnp.sum(jnp.triu(charge_charge_prods / ion_ion_distances, k=1), axis=(-1, -2))
+        constant_potential = jnp.sum(
+        jnp.triu(charge_charge_prods / ion_ion_distances, k=1), axis=(-1, -2)
+    )
         return constant_potential
 
     return potential_fn

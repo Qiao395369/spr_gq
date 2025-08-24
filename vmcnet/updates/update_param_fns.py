@@ -176,8 +176,8 @@ def construct_eval_update_param_fn(
         energy, variance = physics.core.get_statistics_from_local_energy(
             local_energies, nchains, nan_safe=nan_safe
         )
-        
-        metrics = {"energy": energy, "variance": variance}
+
+        metrics = {"energy": utils.distribute.nanmean_all_local_devices(energy,axis=(0,1)), "variance": variance}
         metrics.update({"kinetic":kinetic, "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential})
         if record_local_energies:
             metrics.update({"local_energies": local_energies.reshape((-1))})

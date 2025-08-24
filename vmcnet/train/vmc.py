@@ -3,7 +3,7 @@
 from typing import Tuple, Optional
 
 import jax
-import wandb
+# import wandb
 
 import time
 from vmcnet.mcmc.metropolis import WalkerFn
@@ -105,8 +105,8 @@ def vmc_loop(
     nans_detected = False
     down_sample=(not is_eval and down_sample_num != 0)
 
-    MAX_WANDB_LOGS = 10000
-    wandb_freq = nepochs // min(max(nepochs, 1), MAX_WANDB_LOGS)
+    # MAX_WANDB_LOGS = 10000
+    # wandb_freq = nepochs // min(max(nepochs, 1), MAX_WANDB_LOGS)
 
     with CheckpointWriter(
         is_pmapped
@@ -176,8 +176,8 @@ def vmc_loop(
             epochs_per_hour = int((1 / elapsed_time) * 3600)  if elapsed_time > 0 else None
             utils.checkpoint.log_vmc_loop_state(epoch, metrics, checkpoint_str,str(epochs_per_hour))
 
-            if epoch % wandb_freq == 0:
-                wandb.log(metrics, step=epoch)
+            # if epoch % wandb_freq == 0:
+            #     wandb.log(metrics, step=epoch)
 
             if nans_detected:
                 break

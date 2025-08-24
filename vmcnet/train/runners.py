@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from absl import flags
 from ml_collections import ConfigDict
-import wandb
+# import wandb
 
 import vmcnet.mcmc as mcmc
 import vmcnet.mcmc.dynamic_width_position_amplitude as dwpa
@@ -144,7 +144,6 @@ def _get_gaoqiao_model(
         apply_pmap
 ):
     import vmcnet.gaoqiao.build as gaoqiaobuild
-    import vmcnet.gaoqiao.param_blocks as param_blocks
     from vmcnet.gaoqiao.sr import block_ravel_pytree
     key, subkey = jax.random.split(key)
     # charges=jnp.asarray([7.,7.])
@@ -755,14 +754,14 @@ def run_molecule() -> None:
             ", new optimizer state" if reload_config.new_optimizer_state else "",
         )
 
-    wandb.login()
-    wandb.init(
-        mode=config.wandb.mode,
-        project=config.wandb.project,
-        name=config.wandb.name,
-        group=config.wandb.group,
-        config=config,
-    )
+    # wandb.login()
+    # wandb.init(
+    #     mode=config.wandb.mode,
+    #     project=config.wandb.project,
+    #     name=config.wandb.name,
+    #     group=config.wandb.group,
+    #     config=config,
+    # )
 
     root_logger = logging.getLogger()
     root_logger.setLevel(config.logging_level)
