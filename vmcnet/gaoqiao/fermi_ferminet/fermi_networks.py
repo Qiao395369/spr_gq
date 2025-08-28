@@ -19,7 +19,7 @@ from typing import Any, Iterable, Mapping, MutableMapping, Optional, Sequence, T
 import attr
 import chex
 from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
-from vmcnet.gaoqiao.fermi_ferminet import fermi_jastrows
+from vmcnet.gaoqiao.fermi_ferminet import jastrows
 from vmcnet.gaoqiao.fermi_ferminet import fermi_network_blocks
 import jax
 import jax.numpy as jnp
@@ -291,7 +291,7 @@ class BaseNetworkOptions:
           fermi_envelopes.make_isotropic_envelope,
           takes_self=False))
   feature_layer: FeatureLayer = None
-  jastrow: fermi_jastrows.JastrowType = fermi_jastrows.JastrowType.NONE
+  jastrow: jastrows.JastrowType = jastrows.JastrowType.NONE
   complex_output: bool = False
 
 
@@ -1079,7 +1079,7 @@ def make_orbitals(
   equivariant_layers_init, equivariant_layers_apply = equivariant_layers
 
   # Optional Jastrow factor.
-  jastrow_init, jastrow_apply = fermi_jastrows.get_jastrow(options.jastrow)
+  jastrow_init, jastrow_apply = jastrows.get_jastrow(options.jastrow)
 
   def init(key: chex.PRNGKey) -> ParamTree:
     """Returns initial random parameters for creating orbitals.
@@ -1377,7 +1377,7 @@ def make_fermi_net(
     states: int = 0,
     envelope: Optional[fermi_envelopes.Envelope] = None,
     feature_layer: Optional[FeatureLayer] = None,
-    jastrow: Union[str, fermi_jastrows.JastrowType] = fermi_jastrows.JastrowType.NONE,
+    jastrow: Union[str, jastrows.JastrowType] = jastrows.JastrowType.NONE,
     complex_output: bool = False,
     bias_orbitals: bool = False,
     full_det: bool = True,
@@ -1450,9 +1450,9 @@ def make_fermi_net(
 
   if isinstance(jastrow, str):
     if jastrow.upper() == 'DEFAULT':
-      jastrow = fermi_jastrows.JastrowType.NONE
+      jastrow = jastrows.JastrowType.NONE
     else:
-      jastrow = fermi_jastrows.JastrowType[jastrow.upper()]
+      jastrow = jastrows.JastrowType[jastrow.upper()]
 
   options = FermiNetOptions(
       ndim=ndim,

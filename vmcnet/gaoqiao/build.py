@@ -3,6 +3,7 @@ import vmcnet.gaoqiao.envelopes as envelopes
 import vmcnet.gaoqiao.networks as networks
 import vmcnet.gaoqiao.dp as dp
 import vmcnet.gaoqiao.open_feature_layer as open_feature_layer
+import vmcnet.gaoqiao.jastrows as jastrows
 import jax
 import ml_collections
 
@@ -21,10 +22,16 @@ def build_network(
 	feat_params: Optional[dict] = None,
 	det_mode: str = "det",
 	gemi_params: Optional[dict] = None,
-	jastrow_hiddenlayers: int = 2,
-	jastrow_dim: int = 16,
+	jastrow_type: str = "mlp",
 	RHF: bool = False,
+	activation_type: str = "tanh",
 ):
+	if activation_type == "tanh":
+		activation_fn = jax.nn.tanh
+	elif activation_type == "relu":
+		activation_fn = jax.nn.relu
+	elif activation_type == "silu":
+		activation_fn = jax.nn.silu
 
 	hidden_dims=tuple([(h1, h2) for _ in range(depth)])
 	ndim = 3 
@@ -38,6 +45,8 @@ def build_network(
 	gemi_params=None
 	full_det=True
 	hf_solution=None
+	hiddenlayers_num=4
+	hiddenlayers_size=64
 	make_envelope_kwargs = {"hiddens": [] if nh==0 else [nh],}
 	mes = dp.ManyElectronSystem(charges, nspins)
 	make_feature_layer_kwargs={}
@@ -57,6 +66,17 @@ def build_network(
 	else :
 		raise ValueError("envelope_type should be in ['ds_hz', 'iso']")
 	
+	if jastrow_type == "mlp":
+		jastrow = jastrows.make_mlp_jastrow(
+			hiddenlayers_num=hiddenlayers_num,
+			hiddenlayers_size=hiddenlayers_size,
+			activation_fn=activation_fn,
+			)
+	elif jastrow_type == "simple_ee":
+		jastrow = jastrows.make_simple_ee_jastrow(
+			nspins = nspins,
+			)
+
 	#build ferminet_model : h2(0) features --> h1(L) 
 	if gq_type == "ef":
 		ef=True
@@ -108,6 +128,7 @@ def build_network(
 			dim_extra_params=dim_extra_params,
 			do_aa=do_aa,
 			mes=mes,
+			activation_fn=activation_fn,
 			layer_update_scheme=layer_update_scheme,
 			attn_params=attn,
 			trimul_params=trimul,
@@ -170,8 +191,7 @@ def build_network(
 		gemi_params=gemi_params,
 		equal_footing=ef,
 		gq_type=gq_type,
-		jastrow_hiddenlayers=jastrow_hiddenlayers,
-		jastrow_dim=jastrow_dim,
+		jastrow=jastrow,
 		RHF=RHF,
 	)
   

@@ -30,6 +30,7 @@ import vmcnet.gaoqiao.sto as sto
 import vmcnet.gaoqiao.gemi as gemi
 import vmcnet.gaoqiao.attn as attn
 import vmcnet.gaoqiao.tri as tri
+from vmcnet.gaoqiao.jastrows import JastrowModel
 
 FermiLayers = Tuple[Tuple[int, int], ...]
 # Recursive types are not yet supported in pytype - b/109648354.
@@ -219,8 +220,7 @@ class FermiNetOptions:
   gemi_ia: Any = None
   equal_footing: bool = False
   gq_type: str = 'ef'
-  jastrow_hiddenlayers :int=2
-  jastrow_dim : int=16
+  jastrow: JastrowModel =None
   RHF: bool = False
 
 ## Network initialisation ##
@@ -519,35 +519,12 @@ def init_fermi_net_params(
         bias_orbitals=options.bias_orbitals)
     params['RHF_orbital']=None
   
-  
-  if options.jastrow_hiddenlayers >0  and options.jastrow_dim > 0 :
-    params['jastrow'] = []
-    key, subkey = jax.random.split(key)
-    params['jastrow'].append(
-      network_blocks.init_linear_layer(
-        subkey,
-        in_dim=dims_orbital_in,
-        out_dim=options.jastrow_dim,
-        include_bias=False,
-      ))
-    for ii in range(options.jastrow_hiddenlayers-1):
-      key, subkey = jax.random.split(key)
-      params['jastrow'].append(
-        network_blocks.init_linear_layer(
-          subkey,
-          in_dim=options.jastrow_dim,
-          out_dim=options.jastrow_dim,
-          include_bias=False,
-        ))
-    params['jastrow'].append(
-      network_blocks.init_linear_layer(
-        subkey,
-        in_dim=options.jastrow_dim,
-        out_dim=1,
-        include_bias=False,
-      ))
-  else:
-    params['jastrow'] = None
+  key, subkey = jax.random.split(key, num=2)
+  params['jastrow'] = options.jastrow.init(
+    key=subkey,
+    dims_orbital_in=dims_orbital_in,
+    include_bias=False,
+    )
 
   if hf_solution is not None:
     params['single'], params['orbital'] = init_to_hf_solution(
@@ -1407,6 +1384,7 @@ def make_fermi_net_model_ef_shrd(
     dim_extra_params = 0,
     do_aa : bool=False,
     mes = None,
+    activation_fn=jax.nn.relu,
     # extra parameters
     layer_update_scheme: Optional[dict] = None,
     attn_params: Optional[dict] = None,
@@ -1565,13 +1543,13 @@ def make_fermi_net_model_ef_shrd(
       hi_in,
       params,
   ):
-    return jnp.tanh(network_blocks.linear_layer(hi_in, **params))
+    return activation_fn(network_blocks.linear_layer(hi_in, **params))
 
   def _hij_next(
       hij_in,
       params,
   ):
-    return jnp.tanh(network_blocks.vmap_linear_layer(hij_in,params['w'],params['b'],))
+    return activation_fn(network_blocks.vmap_linear_layer(hij_in,params['w'],params['b'],))
 
   residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y 
       
@@ -2260,21 +2238,13 @@ def fermi_net(
   )
   # print("orbitals:",orbitals)
   assert (options.envelope_pw is None),"envelope_pw should be None in gq"
+  jastrow = options.jastrow.apply(params['jastrow'], r_ee, he)
+
   if params['det'] is not None:
     w = params['det']
-    sign_out, log_out = network_blocks.logdet_matmul_w(orbitals, w=w, do_complex=options.do_complex)
   else:
     w = None
-    sign_out, log_out = network_blocks.logdet_matmul(orbitals, do_complex=options.do_complex)
-  
-  if params['jastrow'] is not None:
-    jastrow = he
-    for ii in range(options.jastrow_hiddenlayers):
-      jastrow = network_blocks.linear_layer(jastrow, **params['jastrow'][ii])
-      jastrow = jnp.tanh(jastrow)
-    jastrow = network_blocks.linear_layer(jastrow, **params['jastrow'][-1])
-    jastrow = jnp.sum(jastrow)
-    log_out = log_out + jastrow 
+  sign_out, log_out = network_blocks.logdet_matmul(orbitals, w=w, do_complex=options.do_complex, jastrow=jastrow)
 
   return sign_out, log_out
 
@@ -2303,8 +2273,7 @@ def make_fermi_net(
     gemi_params: str = None,
     equal_footing: bool = False,
     gq_type:str='ef',
-    jastrow_hiddenlayers: int = 2,
-    jastrow_dim: int = 16,
+    jastrow : Optional[JastrowModel] = None,
     RHF: bool = False,
 ) -> Tuple[InitFermiNet, FermiNetLike, FermiNetOptions]:
   """Creates functions for initializing parameters and evaluating ferminet.
@@ -2370,8 +2339,7 @@ def make_fermi_net(
       gemi_params=gemi_params,
       gemi_ia=gemi_ia,
       gq_type=gq_type,
-      jastrow_hiddenlayers=jastrow_hiddenlayers,
-      jastrow_dim=jastrow_dim,
+      jastrow=jastrow,
       RHF=RHF,
   )
 

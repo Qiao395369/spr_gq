@@ -38,12 +38,12 @@ def _jastrow_ee(
   """Jastrow factor for electron-electron cusps."""
   r_ees = [
       jnp.split(r, nspins[0:1], axis=1)
-      for r in jnp.split(r_ee, nspins[0:1], axis=0)
+      for r in jnp.split(r_ee, nspins[0:1], axis=0)   #(ne,ne)->[[(n_up,n_up),(n_up,n_down)],[(n_down,n_up),(n_down,n_down)]]
   ]
   r_ees_parallel = jnp.concatenate([
-      r_ees[0][0][jnp.triu_indices(nspins[0], k=1)],
+      r_ees[0][0][jnp.triu_indices(nspins[0], k=1)],  #jnp.triu_indices(nspins[0], k=1)生成(n_up,n_up)的上三角矩阵的索引，不包括对角线
       r_ees[1][1][jnp.triu_indices(nspins[1], k=1)],
-  ])
+  ]) #得到一个长的一维数组，里面包含了所有(n_up,n_up)和(n_down,n_down)的上三角矩阵的元素
 
   if r_ees_parallel.shape[0] > 0:
     jastrow_ee_par = jnp.sum(
