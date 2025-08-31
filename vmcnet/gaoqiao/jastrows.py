@@ -123,6 +123,7 @@ def make_mlp_jastrow(
     hiddenlayers_num:int,
     hiddenlayers_size:int,
     activation_fn:Callable[[jnp.ndarray], jnp.ndarray],
+    residual:bool=False,
       ) -> ...:
   """MLP jastrow built from the last layer of eletron feature"""
   def init(
@@ -166,7 +167,10 @@ def make_mlp_jastrow(
     jastrow = he
     for ii in range(len(params)-1):
       jastrow_f = activation_fn(network_blocks.linear_layer(jastrow, **params[ii]))
-      jastrow = jastrow + jastrow_f if jastrow_f.shape[1] == jastrow.shape[1] else jastrow_f
+      if residual:
+        jastrow = (jastrow + jastrow_f)/jnp.sqrt(2.0) if jastrow_f.shape[1] == jastrow.shape[1] else jastrow_f
+      else :
+        jastrow = jastrow_f
     jastrow = network_blocks.linear_layer(jastrow, **params[-1])
     jastrow = jnp.sum(jastrow)
     return jastrow 

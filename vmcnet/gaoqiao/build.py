@@ -66,11 +66,12 @@ def build_network(
 	else :
 		raise ValueError("envelope_type should be in ['ds_hz', 'iso']")
 	
-	if jastrow_type == "mlp":
+	if jastrow_type in ["mlp","mlp_res"]:
 		jastrow = jastrows.make_mlp_jastrow(
 			hiddenlayers_num=hiddenlayers_num,
 			hiddenlayers_size=hiddenlayers_size,
 			activation_fn=activation_fn,
+			residual=True if jastrow_type=="mlp_res" else False,
 			)
 	elif jastrow_type == "simple_ee":
 		jastrow = jastrows.make_simple_ee_jastrow(

@@ -432,7 +432,7 @@ def get_default_gq_config() -> Dict:
         "density_plot": False,
         "density_plot_filename": NO_PATH,
         "density_plot_nepochs": 0,
-        "jastrow_type": "mlp", #choices=["mlp", "simple_ee"]
+        "jastrow_type": "mlp", #choices=["mlp", "mlp_res", "simple_ee"]
         "rescale_input": "all",
         "RHF": False,
         "activation_type": "tanh",
