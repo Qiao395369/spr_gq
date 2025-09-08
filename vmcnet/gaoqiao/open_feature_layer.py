@@ -124,8 +124,10 @@ def make_open_features_ef(
 			aa_features_=jnp.concatenate([aa,r_aa],axis=-1)
 
 			pp_features_ = reform_ee_ea_ae_aa(ee_features_,ea_features_,ae_features_,aa_features_)
-		else:
+		elif rescale=="None":
 			pp_features_=jnp.concatenate([pp,r_pp],axis=-1)
+		else:
+			raise RuntimeError(f"unknow rescale {rescale}")
 			
 		pp_features_list=[pp_features_*ss for ss in all_scales]
 		pp_features_list=[act_func(pp) if do_act else pp for pp in pp_features_list]

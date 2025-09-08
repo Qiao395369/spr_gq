@@ -78,6 +78,8 @@ def build_network(
 		jastrow = jastrows.make_simple_ee_jastrow(
 			nspins = nspins,
 			)
+	else:
+		raise ValueError("jastrow_type should be in ['mlp','mlp_res','simple_ee']")
 
 	#build ferminet_model : h2(0) features --> h1(L) 
 	if gq_type == "ef":
@@ -121,6 +123,25 @@ def build_network(
 	elif gq_type == "ef_shrd":
 		ef=True
 		ferminet_model = networks.make_fermi_net_model_ef_shrd(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			activation_fn=activation_fn,
+			layer_update_scheme=layer_update_scheme,
+			attn_params=attn,
+			trimul_params=trimul,
+			reduced_h1_size=reduced_h1_size,
+			h1_attn_params=h1_attn,
+		)
+	elif gq_type == "ef_shrd_sym":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym(
 			n, 
 			ndim,
 			nspins,
