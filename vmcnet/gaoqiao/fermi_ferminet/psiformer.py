@@ -103,9 +103,10 @@ def make_psiformer_features_new(
     else:
       ae_features = jnp.concatenate((r_ae, ae), axis=2)
       ee_features = jnp.concatenate((r_ee, ee), axis=2)
+      pp_features = None
     ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
     aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
-    return ae_features, None, aa_features
+    return ae_features, pp_features, aa_features
 
   return networks.FeatureLayer(init=init, apply=apply)
 

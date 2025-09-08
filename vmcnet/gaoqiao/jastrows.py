@@ -78,7 +78,7 @@ def _jastrow_ee(
   else:
     jastrow_ee_anti = jnp.asarray(0.0)
 
-  return jastrow_ee_anti + jastrow_ee_par
+  return jnp.exp(jastrow_ee_anti + jastrow_ee_par)
 
 
 def make_simple_ee_jastrow(
@@ -172,8 +172,8 @@ def make_mlp_jastrow(
       else :
         jastrow = jastrow_f
     jastrow = network_blocks.linear_layer(jastrow, **params[-1])
-    jastrow = jnp.sum(jastrow)
-    return jastrow 
+    # jastrow = jnp.sum(jastrow)
+    return jnp.exp(jastrow)
 
   return JastrowModel(init, apply)
 

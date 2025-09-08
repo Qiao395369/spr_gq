@@ -545,7 +545,8 @@ def construct_symmetric_features(
     (nelectrons, 2*n1 + n2 + naux) otherwise.
   """
   # Split features into spin up and spin down electrons
-  spin_partitions = fermi_network_blocks.array_partitions(nspins)
+  # spin_partitions = fermi_network_blocks.array_partitions(nspins)
+  spin_partitions=[nspins[0],nspins[0]+nspins[1]]
   h_ones = jnp.split(h_one, spin_partitions, axis=0)
   h_twos = jnp.split(h_two, spin_partitions, axis=0)
 
@@ -788,7 +789,7 @@ def make_fermi_net_layers(
     nchannels = len([nspin for nspin in nspins if nspin > 0])
 
     def nfeatures(out1, out2, aux):
-      return (nchannels + 1) * out1 + nchannels * out2 + aux
+      return (nchannels + 2) * out1 + (nchannels+1) * out2 + aux
 
     # one-electron stream, per electron:
     #  - one-electron features per atom (default: electron-atom vectors
@@ -981,6 +982,8 @@ def make_fermi_net_layers(
       r_ae: jnp.ndarray,
       ee: jnp.ndarray,
       r_ee: jnp.ndarray,
+      aa: jnp.ndarray,
+      r_aa: jnp.ndarray,
       spins: jnp.ndarray,
       charges: jnp.ndarray,
   ) -> jnp.ndarray:
@@ -1002,8 +1005,8 @@ def make_fermi_net_layers(
     """
     del spins  # Unused.
 
-    ae_features, ee_features = options.feature_layer.apply(
-        ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, **params['input']
+    ae_features, pp_features, aa_features = options.feature_layer.apply(
+        ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, aa=aa, r_aa=r_aa, **params['input']
     )
 
     if options.electron_nuclear_aux_dims:
@@ -1013,7 +1016,7 @@ def make_fermi_net_layers(
     else:
       h_elec_ion = None
 
-    h_one = ae_features  # single-electron features
+    h_one = jnp.concatenate((ae_features,aa_features),axis=0)  # single-electron features
 
     if options.separate_spin_channels:
       # Use the same stream for spin-parallel and spin-antiparallel electrons.
@@ -1026,7 +1029,7 @@ def make_fermi_net_layers(
       # Keep as 3D array to make splitting over spin channels in
       # construct_symmetric_features simple.
       # Shape: (nelectron, nelectron, nfeatures)
-      h_two = [ee_features]
+      h_two = [pp_features]
 
     if options.nuclear_embedding_dim:
       nuclear_embedding = fermi_network_blocks.linear_layer(
@@ -1061,7 +1064,7 @@ def make_fermi_net_layers(
       # the output of the one-electron stream to the orbital projection layer.
       h_to_orbitals = h_one
 
-    return h_to_orbitals
+    return h_to_orbitals[:-2]
 
   return init, apply
 
