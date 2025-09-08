@@ -469,13 +469,17 @@ def construct_input_features(
   assert atoms.shape[1] == ndim
   ae = jnp.reshape(pos, [-1, 1, ndim]) - atoms[None, ...]
   ee = jnp.reshape(pos, [1, -1, ndim]) - jnp.reshape(pos, [-1, 1, ndim])
+  aa = jnp.reshape(atoms, [1, -1, ndim]) - jnp.reshape(atoms, [-1, 1, ndim])
 
   r_ae = jnp.linalg.norm(ae, axis=2, keepdims=True)
   # Avoid computing the norm of zero, as is has undefined grad
   n = ee.shape[0]
   r_ee = (
       jnp.linalg.norm(ee + jnp.eye(n)[..., None], axis=-1) * (1.0 - jnp.eye(n)))
-  return ae, ee, r_ae, r_ee[..., None]
+  na = aa.shape[0]
+  r_aa = (
+      jnp.linalg.norm(aa + jnp.eye(na)[..., None], axis=-1) * (1.0 - jnp.eye(na)))
+  return ae, ee, r_ae, r_ee[..., None], aa, r_aa[..., None]
 
 
 def make_ferminet_features(
@@ -491,19 +495,24 @@ def make_ferminet_features(
   def init() -> Tuple[Tuple[int, int], Param]:
     return (natoms * (ndim + 1), ndim + 1), {}
 
-  def apply(ae, r_ae, ee, r_ee) -> Tuple[jnp.ndarray, jnp.ndarray]:
+  def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
     if rescale_inputs:
+      eps=1e-5
       log_r_ae = jnp.log(1 + r_ae)  # grows as log(r) rather than r
       ae_features = jnp.concatenate((log_r_ae, ae * log_r_ae / r_ae), axis=2)
 
       log_r_ee = jnp.log(1 + r_ee)
       ee_features = jnp.concatenate((log_r_ee, ee * log_r_ee / r_ee), axis=2)
 
+      log_r_aa = jnp.log(1 + r_aa)
+      aa_features = jnp.concatenate((log_r_aa, aa * log_r_aa / (r_aa+eps)), axis=2)
+
     else:
       ae_features = jnp.concatenate((r_ae, ae), axis=2)
       ee_features = jnp.concatenate((r_ee, ee), axis=2)
     ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
-    return ae_features, ee_features
+    aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
+    return ae_features, ee_features, aa_features
 
   return FeatureLayer(init=init, apply=apply)
 
@@ -1177,17 +1186,18 @@ def make_orbitals(
       columns under the exchange of inputs of shape (ndet, nalpha+nbeta,
       nalpha+nbeta) (or (ndet, nalpha, nalpha) and (ndet, nbeta, nbeta)).
     """
-    ae, ee, r_ae, r_ee = construct_input_features(pos, atoms, ndim=options.ndim)
+    ae, ee, r_ae, r_ee, aa, r_aa = construct_input_features(pos, atoms, ndim=options.ndim)
     h_to_orbitals = equivariant_layers_apply(
         params['layers'],
         ae=ae,
         r_ae=r_ae,
         ee=ee,
         r_ee=r_ee,
+        aa=aa,
+        r_aa=r_aa,
         spins=spins,
         charges=charges,
     )
-
     if options.envelope.apply_type == fermi_envelopes.EnvelopeType.PRE_ORBITAL:
       envelope_factor = options.envelope.apply(
           ae=ae, r_ae=r_ae, r_ee=r_ee, **params['envelope']

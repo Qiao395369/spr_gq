@@ -295,7 +295,7 @@ def _get_gaoqiao_model(
         )
         key, subkey = jax.random.split(key)
         params = network.init(subkey)
-        spins_psi=jnp.concatenate([jnp.ones(nspins[0]),jnp.zeros(nspins[1])])
+        spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1]),jnp.zeros(charges.shape[0])])
         network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
 
     else:

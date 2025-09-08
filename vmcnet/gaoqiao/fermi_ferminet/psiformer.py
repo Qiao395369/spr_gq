@@ -223,7 +223,7 @@ def make_self_attention_block(num_layers: int,
       if use_layer_norm:
         x = layer_norm_apply(params['ln'][layer][1], x)
 
-    return x
+    return x[:-2]
 
   return init, apply
 
@@ -283,6 +283,8 @@ def make_psiformer_layers(
       r_ae: jnp.ndarray,
       ee: jnp.ndarray,
       r_ee: jnp.ndarray,
+      aa: jnp.ndarray,
+      r_aa: jnp.ndarray,
       spins: jnp.ndarray,
       charges: jnp.ndarray,
   ) -> jnp.ndarray:
@@ -305,12 +307,15 @@ def make_psiformer_layers(
     del charges  # Unused.
 
     # Only one-electron features are used by the Psiformer.
-    ae_features, _ = options.feature_layer.apply(
-        ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, **params['input']
+    ae_features, _, aa_features = options.feature_layer.apply(
+        ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, aa=aa, r_aa=r_aa,  **params['input']
     )
-
+    ae_features=jnp.concatenate([ae_features,aa_features],axis=0)
+    
     # For the Psiformer, the spin feature is required for correct permutation
     # equivariance.
+    # print("spins:",spins.shape)
+    # print("ae_features:",ae_features.shape)
     ae_features = jnp.concatenate((ae_features, spins[..., None]), axis=-1)
 
     features = ae_features  # Just 1-electron stream for now.
