@@ -233,7 +233,7 @@ def _get_gaoqiao_model(
     elif wfn_type == "gq_ferminet":
         from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
-        import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
+
         envelope = fermi_envelopes.make_isotropic_envelope()
         feature_layer = fermi_networks.make_ferminet_features(
             natoms=charges.shape[0],
@@ -261,17 +261,28 @@ def _get_gaoqiao_model(
         spins_psi=None
         network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
     elif wfn_type == 'psiformer':
-        from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
         from vmcnet.gaoqiao.fermi_ferminet import psiformer
-        import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
+
         envelope = fermi_envelopes.make_isotropic_envelope()
-        feature_layer = fermi_networks.make_ferminet_features(
-            natoms=charges.shape[0],
-            nspins=nspins,
-            ndim=3,
-            rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
-        )
+        if config_gq.psiformer_layer=="default":
+            feature_layer = psiformer.make_psiformer_features(
+                natoms=charges.shape[0],
+                nspins=nspins,
+                ndim=3,
+                rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
+            )
+        elif config_gq.psiformer_layer=="new":
+            feature_layer = psiformer.make_psiformer_features_new(
+                natoms=charges.shape[0],
+                nele=nelec,
+                nspins=nspins,
+                ndim=3,
+                rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
+            )
+        else:
+            raise ValueError(f"Unknown psiformer layer type: {config_gq.psiformer_layer}")
+        
         psiformer_config={
               'num_layers': 4,
               'num_heads': 4,

@@ -55,6 +55,7 @@ def build_network(
 
 	#build feature_layer : pp,r_pp --> h2 features
 	feature_layer = open_feature_layer.make_open_features_ef(  
+			n,
 			ndim,
 			**make_feature_layer_kwargs
 		)  # type: networks.FeatureLayer

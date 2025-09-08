@@ -58,6 +58,7 @@ def make_open_features(charges: Optional[jnp.ndarray] = None,
 def make_open_features_ef(
 		# charges: Optional[jnp.ndarray] = None,
 		# nspins: Optional[Tuple[int,...]] = None,
+		nele:int, 
 		ndim: int = 3,
 		scale: Union[float,List[float]] = [],  #scale既可以被赋值为一个浮点数，也可以被赋值为一个包含浮点数的列表。
 		numb_divid: int = 1,
@@ -109,9 +110,9 @@ def make_open_features_ef(
 			log_r_pp = jnp.log(1 + r_pp)  
 			factor=jnp.where(log_r_pp!=0, log_r_pp / r_pp, 0.0)
 			pp_features_ = jnp.concatenate(( pp * factor , log_r_pp ), axis=2)
-		elif rescale=="a-e":
-			ee,ea,ae,aa=split_ee_ea_ae_aa(pp)
-			r_ee,r_ea,r_ae,r_aa=split_ee_ea_ae_aa(r_pp)
+		elif rescale=="e-a":
+			ee,ea,ae,aa=split_ee_ea_ae_aa(pp,nele)
+			r_ee,r_ea,r_ae,r_aa=split_ee_ea_ae_aa(r_pp,nele)
 			ee_features_=jnp.concatenate([ee,r_ee],axis=-1)
 
 			log_r_ea = jnp.log(1 + r_ea)  
@@ -147,6 +148,6 @@ def split_ee_ea_ae_aa(data, ne):
 	return ee, ea, ae, aa
   
 def reform_ee_ea_ae_aa(ee, ea, ae, aa):
-	ee_ea=jnp.concatenate([ee,ea],axis=-1)
-	ae_aa=jnp.concatenate([ae,aa],axis=-1)
+	ee_ea=jnp.concatenate([ee,ea],axis=1)
+	ae_aa=jnp.concatenate([ae,aa],axis=1)
 	return jnp.concatenate([ee_ea,ae_aa],axis=0)

@@ -117,7 +117,8 @@ class ManyElectronSystem():
     [ae, aa] = jnp.split(split0[1], ea_split, axis=axis[1])  #(na,np,...)->(na,nele,...),(na,na,...)
     return ee, ea, ae, aa
   
-  def reform_ee_ea_ae_aa(self, ee, ea, ae, aa):
-     ee_ea=jnp.concatenate([ee,ea],axis=-1)
-     ae_aa=jnp.concatenate([ae,aa],axis=-1)
-     return jnp.concatenate([ee_ea,ae_aa],axis=0)
+
+def reform_ee_ea_ae_aa(ee, ea, ae, aa):
+    ee_ea=jnp.concatenate([ee,ea],axis=1)
+    ae_aa=jnp.concatenate([ae,aa],axis=1)
+    return jnp.concatenate([ee_ea,ae_aa],axis=0)

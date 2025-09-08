@@ -436,6 +436,7 @@ def get_default_gq_config() -> Dict:
         "rescale_input": "all",
         "RHF": False,
         "activation_type": "tanh",
+        "psiformer_layer": "default", #choices=["default", "new"]
     }
     return gq_config
 
