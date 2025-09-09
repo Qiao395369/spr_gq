@@ -90,8 +90,8 @@ def make_psiformer_features_new(
     return ((natoms+nele) * (ndim + 1), ndim + 1), {}
 
   def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    pp=reform_ee_ea_ae_aa(ee,ae,ae.transpose(1, 0, 2),aa)
-    r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,r_ae.transpose(1, 0, 2),r_aa)
+    pp=reform_ee_ea_ae_aa(ee,ae,-ae.transpose(1, 0, 2),aa)
+    r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,-r_ae.transpose(1, 0, 2),r_aa)
     ne=ae.shape[0]
     np=pp.shape[0]
     if rescale_inputs:
