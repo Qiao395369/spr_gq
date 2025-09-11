@@ -27,7 +27,7 @@ import jax.numpy as jnp
 from typing_extensions import Protocol
 import vmcnet.gaoqiao.dp as dp
 import vmcnet.gaoqiao.sto as sto
-import vmcnet.gaoqiao.gemi as gemi
+# import vmcnet.gaoqiao.gemi as gemi
 import vmcnet.gaoqiao.attn as attn
 import vmcnet.gaoqiao.tri as tri
 from vmcnet.gaoqiao.jastrows import JastrowModel
@@ -805,7 +805,6 @@ def make_fermi_net_model_ef(
     dim_extra_params = 0,
     do_aa : bool=False,
     mes = None,
-    ef_construct_features_type :str= "conv_0",
     # extra parameters
     layer_update_scheme: Optional[dict] = None,
     attn_params: Optional[dict] = None,
@@ -941,33 +940,27 @@ def make_fermi_net_model_ef(
     # projection parameters
     dim_proj_1_in = dims_1_out[:len(dims_2_out)]  #[64,64,64]
     dim_proj_1_out = dims_2_out  # [16,16,16]
-    if ef_construct_features_type == 'conv_0':
-      params['proj'] = []
-      for ii in range(len(params['two'])):
-        if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
-          key, subkey = jax.random.split(key)
-          params['proj'].append(network_blocks.init_linear_layer(subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
-          #[64 , 64 , 64]
-          # |    |    |
-          # |    |    |
-          # V    V    V
-          #[16 , 16 , 16]
-        else:
-          params['proj'].append(None)  # do not project if the input and output dims are the same
-      dim_proj_0_in = hidden_dims[0][0]  #64
-      dim_proj_0_out = hidden_dims[0][1]  #16
-      if dim_proj_0_in != dim_proj_0_out:
+    params['proj'] = []
+    for ii in range(len(params['two'])):
+      if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
         key, subkey = jax.random.split(key)
-        params['proj_0'] = network_blocks.init_linear_layer(subkey, dim_proj_0_in, dim_proj_0_out, )  #64->16
+        params['proj'].append(network_blocks.init_linear_layer(
+          subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
+        #[64 , 64 , 64]
+        # |    |    |
+        # |    |    |
+        # V    V    V
+        #[16 , 16 , 16]
       else:
-        params['proj_0'] = None
-    elif ef_construct_features_type == 'conv_1':
-      params['proj']=[]
-      for ii in range(len(params['two'])):
-        params['proj'].append(None)
-      params['proj_0'] = None
+        params['proj'].append(None)  # do not project if the input and output dims are the same
+    dim_proj_0_in = hidden_dims[0][0]  #64
+    dim_proj_0_out = hidden_dims[0][1]  #16
+    if dim_proj_0_in != dim_proj_0_out:
+      key, subkey = jax.random.split(key)
+      params['proj_0'] = network_blocks.init_linear_layer(
+        subkey, dim_proj_0_in, dim_proj_0_out, )
     else:
-      raise ValueError(f"ef_construct_features_type should be 'conv_0' or 'conv_1', but got {ef_construct_features_type}")
+      params['proj_0'] = None
 
     if do_attn:
       params['attn'] = []
@@ -996,7 +989,7 @@ def make_fermi_net_model_ef(
 
     return params, dims_orbital_in
 
-  def construct_symmetric_features_conv_0(
+  def construct_symmetric_features_conv(
           h1 : jnp.ndarray,
           h2 : jnp.ndarray,
           proj: Optional[Mapping[str,jnp.ndarray]] = None,
@@ -1042,61 +1035,6 @@ def make_fermi_net_model_ef(
         jnp.concatenate([hi] + gi + hij_i + hzi_i, axis=-1),
         jnp.concatenate([hz] + gz + hiz_z + hyz_z, axis=-1),
       ], axis=0)
-  
-  def construct_symmetric_features_conv_1(
-          h1 : jnp.ndarray,
-          h2 : jnp.ndarray,
-          proj: Optional[Mapping[str,jnp.ndarray]] = None,
-  ) -> jnp.ndarray:
-    """
-    hi  : np x nfi
-    hij : np x np x nfij
-    """
-    h2xh1 = h2 
-    hijxhi, hizxhi, hzixhz, hyzxhy = mes.split_ee_ea_ae_aa(h2xh1)
-    hi, hz = mes.split_ea(h1)
-    distinguish_ele = True
-    if distinguish_ele:
-      spin_partitions = network_blocks.array_partitions(nspins)
-      # [nele x nfij, nele x nfij]
-      hij_i = [jnp.mean(h, axis=0) for h in jnp.split(hijxhi, spin_partitions, axis=0) if h.size > 0]
-      # nele x nfiz
-      hzi_i = [jnp.mean(hzixhz, axis=0)]
-      # [nz x nfiz, nz x nfiz]
-      hiz_z = [jnp.mean(h, axis=0) for h in jnp.split(hizxhi, spin_partitions, axis=0) if h.size > 0]
-      # [nz x nfyz]
-      hyz_z = [jnp.mean(hyzxhy, axis=0)] if do_aa else []
-      # 1 x nfiz
-      gz = jnp.mean(hz, axis=0, keepdims=1)
-      # nz x nfiz
-      gz = jnp.tile(gz, [hz.shape[0], 1])
-      # [1 x nfij, 1 x nfij]
-      gi = [jnp.mean(h, axis=0, keepdims=1) for h in jnp.split(hi, spin_partitions, axis=0) if h.size > 0]
-      # [nele x nfij, nele x nfij]
-      gi = [jnp.tile(g, [hi.shape[0], 1]) for g in gi]
-      # nz x nfiz, nz x nfiz
-      gz = [gz, gz] if len(gi) == 2 else [gz]
-      if reduced_h1_size is not None:
-        gi = [jnp.split(ii, [min(reduced_h1_size,ii.shape[-1])], axis=-1)[0] for ii in gi]  
-        gz = [jnp.split(ii, [min(reduced_h1_size,ii.shape[-1])], axis=-1)[0] for ii in gz]
-        #截断，只要前min(reduced_h1_size,ii.shape[-1])的特征
-    return \
-      jnp.concatenate([
-        jnp.concatenate([hi] + gi + hij_i + hzi_i, axis=-1),
-        jnp.concatenate([hz] + gz + hiz_z + hyz_z, axis=-1),
-      ], axis=0)
-  
-  def construct_symmetric_features_conv(
-          h1 : jnp.ndarray,
-          h2 : jnp.ndarray,
-          proj: Optional[Mapping[str,jnp.ndarray]] = None,
-  ) -> jnp.ndarray:
-    if ef_construct_features_type == 'conv_0':
-      return construct_symmetric_features_conv_0(h1, h2, proj)
-    elif ef_construct_features_type == 'conv_1':
-      return construct_symmetric_features_conv_1(h1, h2, proj)
-    else:
-      raise ValueError(f"ef_construct_features should be one of 'conv_0', 'conv_1', but got {ef_construct_features_type}")
 
   def _hi_next(
       hi_in,
@@ -1110,15 +1048,6 @@ def make_fermi_net_model_ef(
   ):
     return jnp.tanh(network_blocks.vmap_linear_layer(hij_in,params['w'],params['b'],))
 
-  def residual(x, y):      
-      if update_alpha is None:
-        if not do_rdt :
-          return (x + y) / jnp.sqrt(2.0)
-        else:
-          return x + y
-      else:
-        return update_alpha * x + jnp.sqrt(1. - update_alpha**2) * y  #平方和为1
-      
   def apply(
       params,
       e2_features,
@@ -1129,7 +1058,16 @@ def make_fermi_net_model_ef(
     a1 = c1
     a2 = c2
     
-    # npart = e2_features.shape[0]
+    def residual(x, y):      
+      if update_alpha is None:
+        if not do_rdt :
+          return (x + y) / jnp.sqrt(2.0)
+        else:
+          return x + y
+      else:
+        return update_alpha * x + jnp.sqrt(1. - update_alpha**2) * y  #平方和为1
+
+    npart = e2_features.shape[0]
     h2 = e2_features
     hee, _, haa = mes.split_ee_ea_aa(h2)
     ha = jnp.mean(haa, axis=0)  #\Sigma_x hxy : (na,na,nf_two)->(na,nf_two)
@@ -1184,6 +1122,7 @@ def make_fermi_net_model_ef(
     return h_to_orbitals, h1
 
   return FerminetModel(init, apply)
+
 
 def make_fermi_net_model_ef_test(
     natom,
@@ -1605,43 +1544,39 @@ def make_fermi_net_model_ef_shrd_sym(
     mes = None,
     activation_fn=jax.nn.relu,
     # extra parameters
-    layer_update_scheme: Optional[dict] = None,
     attn_params: Optional[dict] = None,
-    trimul_params: Optional[dict] = None,
-    reduced_h1_size: Optional[int] = None,
     h1_attn_params: Optional[dict] = None,
 ):
-  del do_aa,
-  # do_aa should always be true
   assert (dim_extra_params==0),"dim_extra_params should be 0 in gq "
-  do_aa = True
+  do_aa = True  # do_aa should always be true
   if mes is None :
     raise RuntimeError('make_fermi_net_model_ef only support equal-footing models')
   
   update_alpha, do_rdt, resd_dt_shift, resd_dt_scale = None, False, None, None
 
   # atten on two particle channel
-  do_attn = False
+  do_attn = attn_params is not None
+  if do_attn:
+    attn_nfeat = hidden_dims[-1][1]
+    attn_init, attn_apply = attn.self_attn(attn_nfeat, attn_nfeat,**attn_params,)
+    # input is npart x npart x nf, vmap along axis==1
+    vmap_attn_apply = jax.vmap(attn_apply, in_axes=(None,1), out_axes=1,)
+
   do_trimul = False
   dh_scale = sum([do_attn, do_trimul])
   if dh_scale != 0:
     dh_scale = 1./float(dh_scale)
-  do_h1_attn = False
 
-  def _init_resd_dt(
-      key,
-      layer_size: list,
-  ):
-    ret = []
-    for ii in layer_size:
-      key, subkey = jax.random.split(key)
-      ret.append(resd_dt_shift + resd_dt_scale * jax.random.normal(subkey, shape=(ii,)))
-    return ret
+  do_h1_attn = h1_attn_params is not None
+  if do_h1_attn:
+    h1_attn_params = dict(h1_attn_params)
+    h1_attn_nfeat = hidden_dims[-1][0]
+    h1_attn_init, h1_attn_apply = attn.self_attn(h1_attn_nfeat, h1_attn_nfeat,**h1_attn_params,)
+
 
   def init(
       key,
   ):    
-
     dim_1_append = mes.get_dim_one_hot()    #3
     dim_2_append = 2*mes.get_dim_one_hot()   #6
 
@@ -1665,13 +1600,9 @@ def make_fermi_net_model_ef_shrd_sym(
         dims_one_out=dims_1_out,  
         dims_two_in=dims_2_in,  
         dims_two_out=dims_2_out)  
-    key, k1, k2 = jax.random.split(key, 3)    
-
-    params['one_dt'] = None
-    params['two_dt'] = None
-
+    dims_orbital_in = hidden_dims[-1][0]
     dim_proj_1_in = dims_1_out[:len(dims_2_out)]  #[64,64,64]
-    dim_proj_1_out = dims_2_out  #[16,16,16]
+    dim_proj_1_out = dims_2_out  # [16,16,16]
     params['proj'] = []
     for ii in range(len(params['two'])):
       if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
@@ -1696,7 +1627,20 @@ def make_fermi_net_model_ef_shrd_sym(
     else:
       params['proj_0'] = None
 
-    dims_orbital_in = hidden_dims[-1][0]
+    if do_attn:
+      params['attn'] = []
+      for i in range(len(params['two'])):
+        key, subkey = jax.random.split(key)
+        params['attn'].append(attn_init(subkey))
+      key, subkey = jax.random.split(key)
+
+    if do_h1_attn:
+      params['h1_attn'] = []
+      for i in range(len(params['one'])):
+        key, subkey = jax.random.split(key)
+        head_scale = 1.0
+        params['h1_attn'].append(h1_attn_init(subkey, head_scale=head_scale))
+      key, subkey = jax.random.split(key)
 
     return params, dims_orbital_in
 
@@ -1742,15 +1686,13 @@ def make_fermi_net_model_ef_shrd_sym(
     return activation_fn(network_blocks.vmap_linear_layer(hij_in,params['w'],params['b'],))
 
   residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y 
-      
+
   def apply(
       params,
       e2_features,
   ):
     c1 = mes.get_part_one_hot()  #(nele+nz,3)
     c2 = mes.get_pair_one_hot()  #(nele+nz,nele+nz,6)
-    
-    # npart = e2_features.shape[0]
     h2 = e2_features
     hee, _, haa = mes.split_ee_ea_aa(h2)
     ha = jnp.mean(haa, axis=0)  #\Sigma_x hxy : (na,na,nf_two)->(na,nf_two)
@@ -1767,10 +1709,21 @@ def make_fermi_net_model_ef_shrd_sym(
       h2_next = _hij_next(h2, params['two'][i])
       h1 = residual(h1, h1_next)
       h2 = residual(h2, h2_next)
+      # h1_attn
+      if do_h1_attn:
+        h1_attn = h1_attn_apply(params['h1_attn'][i], h1)
+        h1 = residual(h1, h1_attn)
+      # h2_attn and h2_trimul
+      if do_attn:
+        h2_attn = dh_scale*vmap_attn_apply(params['attn'][i], h2)
+        h2 = residual(h2, h2_attn)
     if len(params['two']) != len(params['one']):
       h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
       h1_next = _hi_next(h1_in, params['one'][-1])
       h1 = residual(h1, h1_next)
+      if do_h1_attn:
+        h1_attn = h1_attn_apply(params['h1_attn'][i], h1)
+        h1 = residual(h1, h1_attn)
       h_to_orbitals = h1
     else:
       _, h_to_orbitals = construct_symmetric_features_conv(h1, h2, params['proj'][-1])

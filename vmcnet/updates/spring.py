@@ -169,7 +169,7 @@ def get_spring_step_new(
         joint_positions = jnp.reshape(positions, (nchains, *positions.shape[-2:]))
         joint_atoms_positions = jnp.repeat(atoms_positions[:, None, ...], positions.shape[1], axis=1).reshape(nchains, *atoms_positions.shape[-2:])
         joint_x=jnp.concatenate([joint_atoms_positions,joint_positions],axis=-2)
-        print("joint_x:",joint_x.shape)
+        # print("joint_x:",joint_x.shape)
         mu_prev = jax.tree_map(lambda x: mu * x, prev_grad)
         ones = jnp.ones((nchains, 1))
 

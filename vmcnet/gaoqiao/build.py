@@ -6,15 +6,13 @@ import vmcnet.gaoqiao.open_feature_layer as open_feature_layer
 import vmcnet.gaoqiao.jastrows as jastrows
 import jax
 import ml_collections
-
+import logging
 def build_network(
 	n, charges, nspins,
 	key, 
 	ndet, depth, h1, h2, nh, do_complex,
 	gq_type:str= 'ef',
-	ef_construct_features_type:str= 'conv_0',
 	envelope_type:str= 'ds_hz',
-	ef: bool = False,
 	layer_update_scheme: Optional[dict] = None,
 	attn: Optional[dict] = None,
 	trimul: Optional[dict] = None,
@@ -82,6 +80,7 @@ def build_network(
 		raise ValueError("jastrow_type should be in ['mlp','mlp_res','simple_ee']")
 
 	#build ferminet_model : h2(0) features --> h1(L) 
+	logging.info("wfn type: %s ", (gq_type))
 	if gq_type == "ef":
 		ef=True
 		ferminet_model = networks.make_fermi_net_model_ef(  
@@ -94,7 +93,6 @@ def build_network(
 			dim_extra_params=dim_extra_params,
 			do_aa=do_aa,
 			mes=mes,
-			ef_construct_features_type=ef_construct_features_type,
 			layer_update_scheme=layer_update_scheme,
 			attn_params=attn,
 			trimul_params=trimul,
@@ -152,10 +150,7 @@ def build_network(
 			do_aa=do_aa,
 			mes=mes,
 			activation_fn=activation_fn,
-			layer_update_scheme=layer_update_scheme,
 			attn_params=attn,
-			trimul_params=trimul,
-			reduced_h1_size=reduced_h1_size,
 			h1_attn_params=h1_attn,
 		)
 

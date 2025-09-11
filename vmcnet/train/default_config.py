@@ -391,11 +391,6 @@ def get_default_vmc_config() -> Dict:
 def get_default_gq_config() -> Dict:
     """Get a default attention configuration."""
     gq_config = {
-        "wfn_layer_update_alpha": None,
-        "wfn_layer_do_resd_dt": False,
-        "wfn_layer_resd_dt_shift": 1.0,
-        "wfn_layer_resd_dt_scale": 0.1,
-        "ef": True,
         "do_attn": False,
         "attn_nchnl": 16,
         "attn_nhead": 4,
@@ -406,22 +401,15 @@ def get_default_gq_config() -> Dict:
         "h1_attn_nhead": 4,
         "h1_attn_do_gate": False,
         "h1_attn_do_lnorm": False,
-        "h1_resd_mode": "avg", #choices=['dt', 'avg'],residual mode of h1-attention.
         "do_trimul": False,
         "trimul_nchnl": 16,
         "trimul_mode": "both", #choices=["both", "incoming", "outgoing"]
         "det_mode": "det", 
-        "gemi_odim": 32,
-        "gemi_init_style": "normal", #choices=["normal", "invsqrtio", "invsqrti", "invio", "invi"]
-        "gemi_diag_shift": 0.1,
-        "gemi_weight_dim": 0, #choices=[0, 1, 2]
-        "gemi_hiddens": [16,16,16],
         "feat_do_act": False,
         "feat_act_func": 'tanh',
         "feat_numb_divid": 1,
         "scale": 1.0,
         "type":"ef",  #["ef","fermi","shrd","ef_shrd","ef_shrd_sym"]
-        "ef_construct_features_type": "conv_0", #["conv_0","conv_1"]
         "envelope_type": "ds_hz", #["ds_hz","iso"]
         "ndet":16,
         "wfn_depth":4,

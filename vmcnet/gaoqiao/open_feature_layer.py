@@ -21,7 +21,7 @@ with Fermionic Neural Networks. arXiv preprint arXiv:2202.05183.
 
 from typing import Optional,Tuple,Union,List
 import jax.numpy as jnp
-
+import logging
 import vmcnet.gaoqiao.networks as networks
 import vmcnet.gaoqiao.dp as dp
 
@@ -76,7 +76,6 @@ def make_open_features_ef(
 	#由于集合是无序的，为了能对元素进行排序，需要再次将集合转换回列表。
 	#最后，使用sorted函数对去重并转换为列表的结果进行排序。sorted函数返回一个新的列表，其中的元素按升序排列
 	num_scales=len(all_scales)
-	print("num_scales:",num_scales)
 	if act_func=='tanh':
 		act_func=jnp.tanh
 	elif act_func=='tanh2':
@@ -133,7 +132,7 @@ def make_open_features_ef(
 		pp_features_list=[act_func(pp) if do_act else pp for pp in pp_features_list]
 
 		pp_features=jnp.concatenate(pp_features_list,axis=-1)
-
+		logging.info("pp_feature: %s", pp_features.shape)
 		return pp_features
 
 	return networks.FeatureLayer(init=init,apply=apply_)

@@ -1,7 +1,7 @@
 """Core local energy and gradient construction routines."""
 
 from typing import Callable, Optional, Sequence, Tuple, cast
-
+import logging
 import chex
 import jax
 import jax.numpy as jnp
@@ -99,9 +99,8 @@ def initialize_molecular_pos(
     natoms=len(ion_charges)
     walker=ion_pos.shape[0]
     assert ion_pos.shape==(walker,natoms,3)
-    # single_spins=[(5,2),(2,5)]
     assert nelec_total==jnp.sum(single_spins)
-    print(single_spins)
+    # print(single_spins)  # single_spins=[[5,2],[2,5]]
     # Assign each electron to an atom initially.
     ppp=[]
     for k in range(walker):
@@ -118,7 +117,8 @@ def initialize_molecular_pos(
     ppp=ppp[:,None,...]
     key, subkey = jax.random.split(key)
     ppp += jax.random.normal(subkey, shape=(walker,nchains,)+ppp.shape[-2:] , dtype=dtype) * init_width
-    print("xe.shape:",ppp.shape)
+    logging.info("xp.shape: %s", ion_pos.shape)
+    logging.info("xe.shape: %s", ppp.shape)
     return key, ppp
 
 def combine_local_energy_terms(

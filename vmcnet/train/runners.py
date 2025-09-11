@@ -110,7 +110,7 @@ def _get_electron_ion_config_as_arrays(
     single_nspins=jnp.array(config.single_nspins,dtype=int)
     nelec = jnp.array(config.nspins)
     nspins=config.nspins
-    print("ion_pos:",ion_pos)
+    # print("ion_pos:",ion_pos)
     return ion_pos, ion_charges, nelec ,nspins,single_nspins
 
 
@@ -148,14 +148,6 @@ def _get_gaoqiao_model(
     key, subkey = jax.random.split(key)
     # charges=jnp.asarray([7.,7.])
     if wfn_type == "gaoqiao":
-        layer_update_scheme = {
-                                "update_alpha": config_gq.wfn_layer_update_alpha,
-                                "do_resd_dt": config_gq.wfn_layer_do_resd_dt,
-                              }    
-        if config_gq.wfn_layer_resd_dt_shift is not None:
-            layer_update_scheme["resd_dt_shift"] = config_gq.wfn_layer_resd_dt_shift
-        if config_gq.wfn_layer_resd_dt_scale is not None:
-            layer_update_scheme["resd_dt_scale"] = config_gq.wfn_layer_resd_dt_scale
         if config_gq.do_attn:
             attn_params = {
                 'qkdim' : config_gq.attn_nchnl, 
@@ -171,28 +163,10 @@ def _get_gaoqiao_model(
                 'nhead' : config_gq.h1_attn_nhead,
                 'do_gate' : config_gq.h1_attn_do_gate,
                 'do_lnorm' : config_gq.h1_attn_do_lnorm,
-                'resd_mode' : config_gq.h1_resd_mode,
             }
         else:
             h1_attn_params = None
-        if config_gq.do_trimul:
-            trimul_params = {
-                "nchnl" : config_gq.trimul_nchnl, 
-                "mode" : config_gq.trimul_mode,
-            }
-        else:
-            trimul_params = None
-        if config_gq.det_mode == "gemi":
-            gemi_params = {
-                "odim" : config_gq.gemi_odim, 
-                "init_style": config_gq.gemi_init_style, 
-                "diag_shift": config_gq.gemi_diag_shift,
-                "weight_dim": config_gq.gemi_weight_dim,
-                "hiddens": config_gq.gemi_hiddens if config_gq.gemi_hiddens is not None else [],
-            }
-        else:
-            gemi_params = None
-
+        
         feat_params = {
             "do_act": config_gq.feat_do_act,
             "act_func": config_gq.feat_act_func,
@@ -215,16 +189,14 @@ def _get_gaoqiao_model(
             nh=config_gq.nh,
             do_complex=config_gq.do_complex,
             gq_type=config_gq.type,
-            ef_construct_features_type=config_gq.ef_construct_features_type,
             envelope_type=config_gq.envelope_type,
-            ef=config_gq.ef, 
-            layer_update_scheme=layer_update_scheme,
+            layer_update_scheme=None,
             attn=attn_params, 
             h1_attn=h1_attn_params,
-            trimul=trimul_params,
+            trimul=None,
             feat_params=feat_params,
             det_mode=config_gq.det_mode, 
-            gemi_params=gemi_params,
+            gemi_params=None,
             jastrow_type=config_gq.jastrow_type,
             RHF=config_gq.RHF,
             activation_type=config_gq.activation_type,
