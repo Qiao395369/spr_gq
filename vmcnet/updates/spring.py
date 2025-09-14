@@ -24,7 +24,13 @@ from .update_param_fns import (
     update_metrics_with_noclip,
 )
 from .optax_utils import initialize_optax_optimizer
-
+import psutil
+import logging
+# def memory_show():
+#     pid = psutil.Process().pid
+#     memory_info = psutil.Process(pid).memory_info()
+#     logging.info("Memory usage: {:.2f} MB".format(memory_info.rss / (1024 * 1024)))
+#     return 0
 
 def construct_spring_update_param_fn(
     energy_and_statistics_fn,
@@ -165,6 +171,7 @@ def get_spring_step_new(
         atoms_positions: Array,
         positions: Array,
     ) -> Tuple[Array, P]:
+        # memory_show()
         nchains = positions.shape[1]*positions.shape[0]
         joint_positions = jnp.reshape(positions, (nchains, *positions.shape[-2:]))
         joint_atoms_positions = jnp.repeat(atoms_positions[:, None, ...], positions.shape[1], axis=1).reshape(nchains, *atoms_positions.shape[-2:])
@@ -201,7 +208,7 @@ def get_spring_step_new(
         zeta = Tvecs @ jnp.diag(1 / Tvals) @ Tvecs.T @ epsilon_tilde
         zeta_hat = zeta - jnp.mean(zeta)
         dtheta_residual = jax.vjp(joint_log_psi_apply_vmap, params, joint_x)[1](zeta_hat)[0]
-
+        # memory_show()
         return jax.tree_map(
             lambda dt, mup: dt / jnp.sqrt(nchains) + mup, dtheta_residual, mu_prev
         )

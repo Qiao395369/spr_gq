@@ -207,19 +207,21 @@ def _get_gaoqiao_model(
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
         from vmcnet.gaoqiao.fermi_ferminet import psiformer
         envelope = fermi_envelopes.make_isotropic_envelope()
-        # feature_layer = fermi_networks.make_ferminet_features(
-        #     natoms=charges.shape[0],
-        #     nspins=nspins,
-        #     ndim=3,
-        #     rescale_inputs=False,#If true, rescale the inputs so they grow as log(|r|)
-        # )
-        feature_layer = psiformer.make_psiformer_features_new(
+        if config_gq.ferminet_type=="default":
+            feature_layer = fermi_networks.make_ferminet_features(
                 natoms=charges.shape[0],
-                nele=nelec,
                 nspins=nspins,
                 ndim=3,
                 rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
             )
+        elif config_gq.ferminet_type=="multi":
+            feature_layer = fermi_networks.make_ferminet_features_multi(
+                natoms=charges.shape[0],
+                nspins=nspins,
+                ndim=3,
+                rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
+            )
+        
         network = fermi_networks.make_fermi_net(
             nspins=nspins,
             charges=charges,
@@ -233,7 +235,8 @@ def _get_gaoqiao_model(
             full_det=True,
             rescale_inputs=True,
             complex_output=config_gq.do_complex,
-            hidden_dims=tuple([(config_gq.h1,config_gq.h2) for _ in range(config_gq.wfn_depth)])
+            hidden_dims=tuple([(config_gq.h1,config_gq.h2) for _ in range(config_gq.wfn_depth)]),
+            ferminet_type=config_gq.ferminet_type,
         )
         key, subkey = jax.random.split(key)
         params = network.init(subkey)

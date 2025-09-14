@@ -425,6 +425,7 @@ def get_default_gq_config() -> Dict:
         "RHF": False,
         "activation_type": "tanh",
         "psiformer_layer": "default", #choices=["default", "new"]
+        "ferminet_type": "default", #choices=["default", "multi"]
     }
     return gq_config
 

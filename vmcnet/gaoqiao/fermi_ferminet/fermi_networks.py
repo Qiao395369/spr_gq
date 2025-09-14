@@ -15,6 +15,7 @@
 """Implementation of Fermionic Neural Network in JAX."""
 import enum
 from typing import Any, Iterable, Mapping, MutableMapping, Optional, Sequence, Tuple, Union
+from vmcnet.gaoqiao.dp import reform_ee_ea_ae_aa, split_ee_ea_ae_aa_
 
 import attr
 import chex
@@ -293,6 +294,7 @@ class BaseNetworkOptions:
   feature_layer: FeatureLayer = None
   jastrow: jastrows.JastrowType = jastrows.JastrowType.NONE
   complex_output: bool = False
+  ferminet_type: str = 'default'
 
 
 @attr.s(auto_attribs=True, kw_only=True)
@@ -496,23 +498,53 @@ def make_ferminet_features(
     return (natoms * (ndim + 1), ndim + 1), {}
 
   def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    del aa , r_aa
     if rescale_inputs:
-      eps=1e-5
       log_r_ae = jnp.log(1 + r_ae)  # grows as log(r) rather than r
       ae_features = jnp.concatenate((log_r_ae, ae * log_r_ae / r_ae), axis=2)
 
       log_r_ee = jnp.log(1 + r_ee)
-      ee_features = jnp.concatenate((log_r_ee, ee * log_r_ee / r_ee), axis=2)
+      factor=jnp.where(r_ee!=0, log_r_ee / r_ee, 0.0)
+      ee_features = jnp.concatenate((log_r_ee, ee * factor), axis=2)
 
-      log_r_aa = jnp.log(1 + r_aa)
-      aa_features = jnp.concatenate((log_r_aa, aa * log_r_aa / (r_aa+eps)), axis=2)
+      # log_r_ee = jnp.log(1 + r_ee)
+      # ee_features = jnp.concatenate((log_r_ee, ee * log_r_ee / r_ee), axis=2)
 
     else:
       ae_features = jnp.concatenate((r_ae, ae), axis=2)
       ee_features = jnp.concatenate((r_ee, ee), axis=2)
     ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
+    # jax.debug.print(f"ae_features:{ae_features}")
+    # jax.debug.print(f"ee_features:{ee_features}")
+    return ae_features, ee_features
+
+  return FeatureLayer(init=init, apply=apply)
+
+def make_ferminet_features_multi(
+    natoms: int,
+    nspins: Optional[Tuple[int, int]] = None,
+    ndim: int = 3,
+    rescale_inputs: bool = False,
+) -> FeatureLayer:
+  """Returns the init and apply functions for the standard features."""
+  ne = sum(nspins)
+  assert rescale_inputs==True
+  def init() -> Tuple[Tuple[int, int], Param]:
+    return (natoms * (ndim + 1), ndim + 1), {}
+
+  def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    pp=reform_ee_ea_ae_aa(ee,ae,-ae.transpose(1, 0, 2),aa)
+    r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,r_ae.transpose(1, 0, 2),r_aa)
+
+    log_r_pp = jnp.log(1 + r_pp)
+    factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
+    pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
+    _, ae_features, _, aa_features = split_ee_ea_ae_aa_(ne,pp_features)
+
+    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
     aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
-    return ae_features, ee_features, aa_features
+    # print("pp:",pp_features.shape)
+    return jnp.concatenate((ae_features,aa_features),axis=0), pp_features
 
   return FeatureLayer(init=init, apply=apply)
 
@@ -789,7 +821,12 @@ def make_fermi_net_layers(
     nchannels = len([nspin for nspin in nspins if nspin > 0])
 
     def nfeatures(out1, out2, aux):
-      return (nchannels + 2) * out1 + (nchannels+1) * out2 + aux
+      if options.ferminet_type == "default":
+        return (nchannels + 1) * out1 + (nchannels) * out2 + aux
+      elif options.ferminet_type == "multi":
+        return (nchannels + 2) * out1 + (nchannels+1) * out2 + aux
+      else:
+        raise ValueError(f"Unknown ferminet_type: {options.ferminet_type}")
 
     # one-electron stream, per electron:
     #  - one-electron features per atom (default: electron-atom vectors
@@ -1005,7 +1042,7 @@ def make_fermi_net_layers(
     """
     del spins  # Unused.
 
-    ae_features, pp_features, aa_features = options.feature_layer.apply(
+    ae_features, ee_features = options.feature_layer.apply(
         ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, aa=aa, r_aa=r_aa, **params['input']
     )
 
@@ -1016,7 +1053,7 @@ def make_fermi_net_layers(
     else:
       h_elec_ion = None
 
-    h_one = jnp.concatenate((ae_features,aa_features),axis=0)  # single-electron features
+    h_one = ae_features  # single-electron features
 
     if options.separate_spin_channels:
       # Use the same stream for spin-parallel and spin-antiparallel electrons.
@@ -1029,7 +1066,7 @@ def make_fermi_net_layers(
       # Keep as 3D array to make splitting over spin channels in
       # construct_symmetric_features simple.
       # Shape: (nelectron, nelectron, nfeatures)
-      h_two = [pp_features]
+      h_two = [ee_features]
 
     if options.nuclear_embedding_dim:
       nuclear_embedding = fermi_network_blocks.linear_layer(
@@ -1064,7 +1101,7 @@ def make_fermi_net_layers(
       # the output of the one-electron stream to the orbital projection layer.
       h_to_orbitals = h_one
 
-    return h_to_orbitals[:-2]
+    return h_to_orbitals
 
   return init, apply
 
@@ -1201,6 +1238,8 @@ def make_orbitals(
         spins=spins,
         charges=charges,
     )
+    if options.ferminet_type=="multi":
+      h_to_orbitals = h_to_orbitals[:-2]
     if options.envelope.apply_type == fermi_envelopes.EnvelopeType.PRE_ORBITAL:
       envelope_factor = options.envelope.apply(
           ae=ae, r_ae=r_ae, r_ee=r_ee, **params['envelope']
@@ -1403,6 +1442,7 @@ def make_fermi_net(
     electron_nuclear_aux_dims: Tuple[int, ...] = tuple(),
     nuclear_embedding_dim: int = 0,
     schnet_electron_nuclear_convolutions: Tuple[int, ...] = tuple(),
+    ferminet_type: str = "default",
 ) -> Network:
   """Creates functions for initializing parameters and evaluating ferminet.
 
@@ -1485,6 +1525,7 @@ def make_fermi_net(
       nuclear_embedding_dim=nuclear_embedding_dim,
       schnet_electron_nuclear_convolutions=schnet_electron_nuclear_convolutions,
       use_last_layer=use_last_layer,
+      ferminet_type=ferminet_type,
   )
 
   if options.envelope.apply_type == fermi_envelopes.EnvelopeType.PRE_ORBITAL:
