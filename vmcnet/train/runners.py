@@ -198,6 +198,8 @@ def _get_gaoqiao_model(
             det_mode=config_gq.det_mode, 
             gemi_params=None,
             jastrow_type=config_gq.jastrow_type,
+            jastrow_mlp_nlayer=config_gq.jastrow_mlp_nlayer,
+            jastrow_mlp_ndim=config_gq.jastrow_mlp_ndim,
             RHF=config_gq.RHF,
             activation_type=config_gq.activation_type,
         )        

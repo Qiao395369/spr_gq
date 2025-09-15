@@ -24,7 +24,7 @@ from .update_param_fns import (
     update_metrics_with_noclip,
 )
 from .optax_utils import initialize_optax_optimizer
-import psutil
+# import psutil
 import logging
 # def memory_show():
 #     pid = psutil.Process().pid

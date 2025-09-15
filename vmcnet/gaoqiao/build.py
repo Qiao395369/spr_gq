@@ -21,6 +21,8 @@ def build_network(
 	det_mode: str = "det",
 	gemi_params: Optional[dict] = None,
 	jastrow_type: str = "mlp",
+	jastrow_mlp_nlayer: int = 4,
+	jastrow_mlp_ndim: int = 64,
 	RHF: bool = False,
 	activation_type: str = "tanh",
 ):
@@ -43,8 +45,6 @@ def build_network(
 	gemi_params=None
 	full_det=True
 	hf_solution=None
-	hiddenlayers_num=4
-	hiddenlayers_size=64
 	make_envelope_kwargs = {"hiddens": [] if nh==0 else [nh],}
 	mes = dp.ManyElectronSystem(charges, nspins)
 	make_feature_layer_kwargs={}
@@ -67,8 +67,8 @@ def build_network(
 	
 	if jastrow_type in ["mlp","mlp_res"]:
 		jastrow = jastrows.make_mlp_jastrow(
-			hiddenlayers_num=hiddenlayers_num,
-			hiddenlayers_size=hiddenlayers_size,
+			hiddenlayers_num=jastrow_mlp_nlayer,
+			hiddenlayers_size=jastrow_mlp_ndim,
 			activation_fn=activation_fn,
 			residual=True if jastrow_type=="mlp_res" else False,
 			)

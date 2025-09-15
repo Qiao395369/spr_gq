@@ -420,10 +420,12 @@ def get_default_gq_config() -> Dict:
         "density_plot": False,
         "density_plot_filename": NO_PATH,
         "density_plot_nepochs": 0,
-        "jastrow_type": "mlp", #choices=["mlp", "mlp_res", "simple_ee"]
+        "jastrow_type": "mlp", #choices=["mlp", "mlp_res", "simple_ee","none"]
+        "jastrow_mlp_nlayer": 2,
+        "jastrow_mlp_ndim": 32,
         "rescale_input": "all", #choices=["all", "all_eps", "e-a", "None"]
         "RHF": False,
-        "activation_type": "tanh",
+        "activation_type": "tanh", #choices=["tanh", "relu", "silu]
         "psiformer_layer": "default", #choices=["default", "new"]
         "ferminet_type": "default", #choices=["default", "multi"]
     }
