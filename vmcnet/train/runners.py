@@ -157,15 +157,6 @@ def _get_gaoqiao_model(
             }
         else: 
             attn_params = None
-        if config_gq.do_h1_attn:
-            h1_attn_params = {
-                'qkdim' : config_gq.h1_attn_nchnl,
-                'nhead' : config_gq.h1_attn_nhead,
-                'do_gate' : config_gq.h1_attn_do_gate,
-                'do_lnorm' : config_gq.h1_attn_do_lnorm,
-            }
-        else:
-            h1_attn_params = None
         
         feat_params = {
             "do_act": config_gq.feat_do_act,
@@ -192,7 +183,7 @@ def _get_gaoqiao_model(
             envelope_type=config_gq.envelope_type,
             layer_update_scheme=None,
             attn=attn_params, 
-            h1_attn=h1_attn_params,
+            h1_attn=None,
             trimul=None,
             feat_params=feat_params,
             det_mode=config_gq.det_mode, 
@@ -207,21 +198,20 @@ def _get_gaoqiao_model(
     elif wfn_type == "gq_ferminet":
         from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
-        from vmcnet.gaoqiao.fermi_ferminet import psiformer
         envelope = fermi_envelopes.make_isotropic_envelope()
         if config_gq.ferminet_type=="default":
             feature_layer = fermi_networks.make_ferminet_features(
                 natoms=charges.shape[0],
                 nspins=nspins,
                 ndim=3,
-                rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
+                rescale_inputs=True,
             )
         elif config_gq.ferminet_type=="multi":
             feature_layer = fermi_networks.make_ferminet_features_multi(
                 natoms=charges.shape[0],
                 nspins=nspins,
                 ndim=3,
-                rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
+                rescale_inputs=True,
             )
         
         network = fermi_networks.make_fermi_net(
@@ -245,27 +235,28 @@ def _get_gaoqiao_model(
         spins_psi=None
         network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
     elif wfn_type == 'psiformer':
+        from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
         from vmcnet.gaoqiao.fermi_ferminet import psiformer
-
         envelope = fermi_envelopes.make_isotropic_envelope()
-        if config_gq.psiformer_layer=="default":
-            feature_layer = psiformer.make_psiformer_features(
+        if config_gq.psiformer_type == "default":
+            feature_layer = fermi_networks.make_ferminet_features(
                 natoms=charges.shape[0],
                 nspins=nspins,
                 ndim=3,
-                rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
+                rescale_inputs=True,
             )
-        elif config_gq.psiformer_layer=="new":
-            feature_layer = psiformer.make_psiformer_features_new(
+            spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1])])
+        elif config_gq.psiformer_type == "multi":
+            feature_layer = fermi_networks.make_ferminet_features_multi(
                 natoms=charges.shape[0],
-                nele=nelec,
                 nspins=nspins,
                 ndim=3,
-                rescale_inputs=True,#If true, rescale the inputs so they grow as log(|r|)
+                rescale_inputs=True,
             )
+            spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1]),jnp.zeros(charges.shape[0])])
         else:
-            raise ValueError(f"Unknown psiformer layer type: {config_gq.psiformer_layer}")
+            raise ValueError(f"Unknown psiformer layer type: {config_gq.psiformer_type}")
         
         psiformer_config={
               'num_layers': 4,
@@ -286,11 +277,11 @@ def _get_gaoqiao_model(
             bias_orbitals=False,
             rescale_inputs=True,
             complex_output=config_gq.do_complex,
+            psiformer_type=config_gq.psiformer_type,
             **psiformer_config,
         )
         key, subkey = jax.random.split(key)
         params = network.init(subkey)
-        spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1]),jnp.zeros(charges.shape[0])])
         network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
 
     else:

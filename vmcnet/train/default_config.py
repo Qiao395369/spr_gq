@@ -396,11 +396,6 @@ def get_default_gq_config() -> Dict:
         "attn_nhead": 4,
         "attn_do_gate": False,
         "attn_do_lnorm": False,
-        "do_h1_attn": False,
-        "h1_attn_nchnl": 16,
-        "h1_attn_nhead": 4,
-        "h1_attn_do_gate": False,
-        "h1_attn_do_lnorm": False,
         "do_trimul": False,
         "trimul_nchnl": 16,
         "trimul_mode": "both", #choices=["both", "incoming", "outgoing"]
@@ -426,7 +421,7 @@ def get_default_gq_config() -> Dict:
         "rescale_input": "all", #choices=["all", "all_eps", "e-a", "None"]
         "RHF": False,
         "activation_type": "tanh", #choices=["tanh", "relu", "silu]
-        "psiformer_layer": "default", #choices=["default", "new"]
+        "psiformer_type": "default", #choices=["default", "multi"]
         "ferminet_type": "default", #choices=["default", "multi"]
     }
     return gq_config

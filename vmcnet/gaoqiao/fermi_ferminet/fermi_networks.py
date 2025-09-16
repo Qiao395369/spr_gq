@@ -535,12 +535,14 @@ def make_ferminet_features_multi(
   def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
     pp=reform_ee_ea_ae_aa(ee,ae,-ae.transpose(1, 0, 2),aa)
     r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,r_ae.transpose(1, 0, 2),r_aa)
-
-    log_r_pp = jnp.log(1 + r_pp)
-    factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
-    pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
-    _, ae_features, _, aa_features = split_ee_ea_ae_aa_(ne,pp_features)
-
+    if rescale_inputs:
+      log_r_pp = jnp.log(1 + r_pp)
+      factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
+      pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
+      _, ae_features, _, aa_features = split_ee_ea_ae_aa_(ne,pp_features)
+    else:
+      ae_features = jnp.concatenate((r_ae, ae), axis=2)
+      ee_features = jnp.concatenate((r_ee, ee), axis=2)
     ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
     aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
     # print("pp:",pp_features.shape)
@@ -1040,7 +1042,7 @@ def make_fermi_net_layers(
       output_dim, is given by init, and is suitable for projection into orbital
       space.
     """
-    del spins  # Unused.
+    natoms = len(charges)
 
     ae_features, ee_features = options.feature_layer.apply(
         ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, aa=aa, r_aa=r_aa, **params['input']
@@ -1101,6 +1103,8 @@ def make_fermi_net_layers(
       # the output of the one-electron stream to the orbital projection layer.
       h_to_orbitals = h_one
 
+    if options.ferminet_type == "multi":
+      h_to_orbitals = h_to_orbitals[:-natoms]
     return h_to_orbitals
 
   return init, apply
@@ -1163,11 +1167,11 @@ def make_orbitals(
 
     # create envelope params
     natom = charges.shape[0]
-    print(options.envelope.apply_type)
-    print(type(options.envelope.apply_type))  # 打印类型
-    print(options.envelope.apply_type is fermi_envelopes.EnvelopeType.PRE_DETERMINANT)  # 检查是否确实是同一个值
-    print(options.envelope.apply_type.__module__)
-    print(fermi_envelopes.EnvelopeType.PRE_DETERMINANT.__module__)
+    # print(options.envelope.apply_type)
+    # print(type(options.envelope.apply_type))  # 打印类型
+    # print(options.envelope.apply_type is fermi_envelopes.EnvelopeType.PRE_DETERMINANT)  # 检查是否确实是同一个值
+    # print(options.envelope.apply_type.__module__)
+    # print(fermi_envelopes.EnvelopeType.PRE_DETERMINANT.__module__)
 
     if options.envelope.apply_type == fermi_envelopes.EnvelopeType.PRE_ORBITAL:
       # Applied to output from final layer of 1e stream.
@@ -1238,8 +1242,6 @@ def make_orbitals(
         spins=spins,
         charges=charges,
     )
-    if options.ferminet_type=="multi":
-      h_to_orbitals = h_to_orbitals[:-2]
     if options.envelope.apply_type == fermi_envelopes.EnvelopeType.PRE_ORBITAL:
       envelope_factor = options.envelope.apply(
           ae=ae, r_ae=r_ae, r_ee=r_ee, **params['envelope']

@@ -165,7 +165,6 @@ def slogdet(x):
 def logdet_matmul(xs: Sequence[jnp.ndarray],
                   w: Optional[jnp.ndarray] = None,
                   do_complex: bool = False,
-                  jastrow: jnp.ndarray = jnp.array(1.0),
                   ) -> jnp.ndarray:
   """Combines determinants and takes dot product with weights in log-domain.
 
@@ -212,7 +211,6 @@ def logdet_matmul(xs: Sequence[jnp.ndarray],
       result = jnp.sum(det)
     else:
       result = jnp.matmul(det, w)
-  result = result * jastrow
   if not do_complex:
     sign_out = jnp.sign(result)
   else:

@@ -46,75 +46,8 @@ class PsiformerOptions(networks.BaseNetworkOptions):
   heads_dim: int = 64
   mlp_hidden_dims: Tuple[int, ...] = (256,)
   use_layer_norm: bool = False
+  psiformer_type: str = "default"
 
-
-def make_psiformer_features(
-    natoms: int,
-    nspins: Optional[Tuple[int, int]] = None,
-    ndim: int = 3,
-    rescale_inputs: bool = False,
-) -> networks.FeatureLayer:
-  """Returns the init and apply functions for the standard features."""
-  del nspins
-  def init() -> Tuple[Tuple[int, int], networks.Param]:
-    return (natoms * (ndim + 1), ndim + 1), {}
-
-  def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    pp=reform_ee_ea_ae_aa(ee,ae,-ae.transpose(1, 0, 2),aa)
-    r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,r_ae.transpose(1, 0, 2),r_aa)
-    if rescale_inputs:
-      eps=1e-5
-      log_r_pp = jnp.log(1 + r_pp)
-      factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
-      pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
-      log_r_ae = jnp.log(1 + r_ae)  # grows as log(r) rather than r
-      ae_features = jnp.concatenate((log_r_ae, ae * log_r_ae / r_ae), axis=2)
-      log_r_ee = jnp.log(1 + r_ee)
-      ee_features = jnp.concatenate((log_r_ee, ee * log_r_ee / r_ee), axis=2)
-      log_r_aa = jnp.log(1 + r_aa)
-      aa_features = jnp.concatenate((log_r_aa, aa * log_r_aa / (r_aa+eps)), axis=2)
-    else:
-      ae_features = jnp.concatenate((r_ae, ae), axis=2)
-      ee_features = jnp.concatenate((r_ee, ee), axis=2)
-    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
-    aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
-    # print("pp:",pp_features.shape)
-    return ae_features, pp_features, aa_features
-
-  return networks.FeatureLayer(init=init, apply=apply)
-
-def make_psiformer_features_new(
-    natoms: int,
-    nele: int,
-    nspins: Optional[Tuple[int, int]] = None,
-    ndim: int = 3,
-    rescale_inputs: bool = False,
-) -> networks.FeatureLayer:
-  """Returns the init and apply functions for the standard features."""
-  del nspins
-  def init() -> Tuple[Tuple[int, int], networks.Param]:
-    return ((natoms+nele) * (ndim + 1), ndim + 1), {}
-
-  def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    pp=reform_ee_ea_ae_aa(ee,ae,-ae.transpose(1, 0, 2),aa)
-    r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,r_ae.transpose(1, 0, 2),r_aa)
-    ne=ae.shape[0]
-    np=pp.shape[0]
-    if rescale_inputs:
-      log_r_pp = jnp.log(1 + r_pp) 
-      factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
-      pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
-      ae_features = pp_features[:ne, :, :]
-      aa_features = pp_features[ne:, :, :]
-    else:
-      ae_features = jnp.concatenate((r_ae, ae), axis=2)
-      ee_features = jnp.concatenate((r_ee, ee), axis=2)
-      pp_features = None
-    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
-    aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
-    return ae_features, pp_features, aa_features
-
-  return networks.FeatureLayer(init=init, apply=apply)
 
 def make_layer_norm() ->...:
   """Implementation of LayerNorm."""
@@ -292,7 +225,7 @@ def make_self_attention_block(num_layers: int,
       if use_layer_norm:
         x = layer_norm_apply(params['ln'][layer][1], x)
 
-    return x[:-2]
+    return x
 
   return init, apply
 
@@ -373,18 +306,15 @@ def make_psiformer_layers(
       output_dim, is given by init, and is suitable for projection into orbital
       space.
     """
-    del charges  # Unused.
+    natoms = len(charges)
 
     # Only one-electron features are used by the Psiformer.
-    ae_features, _, aa_features = options.feature_layer.apply(
+    ae_features, _ = options.feature_layer.apply(
         ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, aa=aa, r_aa=r_aa,  **params['input']
     )
-    ae_features=jnp.concatenate([ae_features,aa_features],axis=0)
-    
+
     # For the Psiformer, the spin feature is required for correct permutation
     # equivariance.
-    # print("spins:",spins.shape)
-    # print("ae_features:",ae_features.shape)
     ae_features = jnp.concatenate((ae_features, spins[..., None]), axis=-1)
 
     features = ae_features  # Just 1-electron stream for now.
@@ -392,7 +322,12 @@ def make_psiformer_layers(
     # Embed into attention dimension.
     x = jnp.dot(features, params['embed'])
 
-    return self_attn_apply(params, x)
+    h_to_orbitals = self_attn_apply(params, x)
+
+    if options.psiformer_type == "multi":
+      h_to_orbitals = h_to_orbitals[:-natoms]
+
+    return h_to_orbitals
 
   return init, apply
 
@@ -410,6 +345,7 @@ def make_fermi_net(
     complex_output: bool = False,
     bias_orbitals: bool = False,
     rescale_inputs: bool = False,
+    psiformer_type: str = "default",
     # Psiformer-specific kwargs below.
     num_layers: int,
     num_heads: int,
@@ -478,6 +414,7 @@ def make_fermi_net(
       heads_dim=heads_dim,
       mlp_hidden_dims=mlp_hidden_dims,
       use_layer_norm=use_layer_norm,
+      psiformer_type=psiformer_type,
   )  # pytype: disable=wrong-keyword-args
 
   psiformer_layers = make_psiformer_layers(nspins, charges.shape[0], options)

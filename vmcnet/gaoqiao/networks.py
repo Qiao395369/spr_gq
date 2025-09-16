@@ -519,12 +519,16 @@ def init_fermi_net_params(
         bias_orbitals=options.bias_orbitals)
     params['RHF_orbital']=None
   
-  key, subkey = jax.random.split(key, num=2)
-  params['jastrow'] = options.jastrow.init(
-    key=subkey,
-    dims_orbital_in=dims_orbital_in,
-    include_bias=False,
-    )
+  
+  if options.jastrow.init is not None:
+    key, subkey = jax.random.split(key, num=2)
+    params['jastrow'] = options.jastrow.init(
+      key=subkey,
+      dims_orbital_in=dims_orbital_in,
+      include_bias=False,
+      )
+  else:
+    params['jastrow'] = None
 
   if hf_solution is not None:
     params['single'], params['orbital'] = init_to_hf_solution(
@@ -1545,7 +1549,6 @@ def make_fermi_net_model_ef_shrd_sym(
     activation_fn=jax.nn.relu,
     # extra parameters
     attn_params: Optional[dict] = None,
-    h1_attn_params: Optional[dict] = None,
 ):
   assert (dim_extra_params==0),"dim_extra_params should be 0 in gq "
   do_aa = True  # do_aa should always be true
@@ -1566,13 +1569,6 @@ def make_fermi_net_model_ef_shrd_sym(
   dh_scale = sum([do_attn, do_trimul])
   if dh_scale != 0:
     dh_scale = 1./float(dh_scale)
-
-  do_h1_attn = h1_attn_params is not None
-  if do_h1_attn:
-    h1_attn_params = dict(h1_attn_params)
-    h1_attn_nfeat = hidden_dims[-1][0]
-    h1_attn_init, h1_attn_apply = attn.self_attn(h1_attn_nfeat, h1_attn_nfeat,**h1_attn_params,)
-
 
   def init(
       key,
@@ -1634,13 +1630,6 @@ def make_fermi_net_model_ef_shrd_sym(
         params['attn'].append(attn_init(subkey))
       key, subkey = jax.random.split(key)
 
-    if do_h1_attn:
-      params['h1_attn'] = []
-      for i in range(len(params['one'])):
-        key, subkey = jax.random.split(key)
-        head_scale = 1.0
-        params['h1_attn'].append(h1_attn_init(subkey, head_scale=head_scale))
-      key, subkey = jax.random.split(key)
 
     return params, dims_orbital_in
 
@@ -1709,11 +1698,6 @@ def make_fermi_net_model_ef_shrd_sym(
       h2_next = _hij_next(h2, params['two'][i])
       h1 = residual(h1, h1_next)
       h2 = residual(h2, h2_next)
-      # h1_attn
-      if do_h1_attn:
-        h1_attn = h1_attn_apply(params['h1_attn'][i], h1)
-        h1 = residual(h1, h1_attn)
-      # h2_attn and h2_trimul
       if do_attn:
         h2_attn = dh_scale*vmap_attn_apply(params['attn'][i], h2)
         h2 = residual(h2, h2_attn)
@@ -1721,9 +1705,6 @@ def make_fermi_net_model_ef_shrd_sym(
       h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
       h1_next = _hi_next(h1_in, params['one'][-1])
       h1 = residual(h1, h1_next)
-      if do_h1_attn:
-        h1_attn = h1_attn_apply(params['h1_attn'][i], h1)
-        h1 = residual(h1, h1_attn)
       h_to_orbitals = h1
     else:
       _, h_to_orbitals = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
@@ -2376,13 +2357,12 @@ def fermi_net(
   )
   # print("orbitals:",orbitals)
   assert (options.envelope_pw is None),"envelope_pw should be None in gq"
-  jastrow = options.jastrow.apply(params['jastrow'], r_ee, he)
 
-  if params['det'] is not None:
-    w = params['det']
-  else:
-    w = None
-  sign_out, log_out = network_blocks.logdet_matmul(orbitals, w=w, do_complex=options.do_complex, jastrow=jastrow)
+  sign_out, log_out = network_blocks.logdet_matmul(orbitals, w=params['det'], do_complex=options.do_complex)
+
+  if params['jastrow'] is not None:
+    jastrow = options.jastrow.apply(params['jastrow'], r_ee, he)
+    log_out += jastrow
 
   return sign_out, log_out
 

@@ -76,8 +76,10 @@ def build_network(
 		jastrow = jastrows.make_simple_ee_jastrow(
 			nspins = nspins,
 			)
+	elif jastrow_type == "null":
+		jastrow = jastrows.make_null_jastrow()
 	else:
-		raise ValueError("jastrow_type should be in ['mlp','mlp_res','simple_ee']")
+		raise ValueError("jastrow_type should be in ['mlp','mlp_res','simple_ee','null]")
 
 	#build ferminet_model : h2(0) features --> h1(L) 
 	logging.info("wfn type: %s ", (gq_type))
