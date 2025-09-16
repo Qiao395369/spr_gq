@@ -153,7 +153,6 @@ def build_network(
 			mes=mes,
 			activation_fn=activation_fn,
 			attn_params=attn,
-			h1_attn_params=h1_attn,
 		)
 
 	elif gq_type == "fermi":
