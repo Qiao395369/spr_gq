@@ -46,9 +46,9 @@ def construct_spring_update_param_fn(
     def update_param_fn(params, data, optimizer_state, key):
         position = get_position_fn(data)
         atoms_position = data["atoms_position"]
-
+        logging.info("9999")
         energy, local_energies, stats = energy_and_statistics_fn(params, atoms_position, position)
-
+        logging.info("8888")
         params, optimizer_state = optimizer_apply(
             energy,
             local_energies,
@@ -57,7 +57,7 @@ def construct_spring_update_param_fn(
             data,
         )
         data = update_data_fn(data, params)
-
+        logging.info("7777")
         metrics = {"energy": energy, "variance": stats["variance"],
                    "kinetic":stats["kinetic"],
                    "ei_potential":stats["ei_potential"],
@@ -114,6 +114,7 @@ def initialize_spring(
         positions = get_position_fn(data)
 
         centered_local_energies = local_energies - energy
+        logging.info("4444")
         grad = spring_step(
             centered_local_energies,
             params,
@@ -121,17 +122,17 @@ def initialize_spring(
             data["atoms_position"],
             positions,
         )
-
+        logging.info("3333")
         updates, optimizer_state = descent_optimizer.update(
             grad, optimizer_state, params
         )
-
+        logging.info("2222")
         if optimizer_config.constrain_norm:
             updates = constrain_norm(
                 updates,
                 optimizer_config.norm_constraint,
             )
-
+        logging.info("1111")
         params = optax.apply_updates(params, updates)
         return params, optimizer_state
 
