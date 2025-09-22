@@ -30,8 +30,8 @@ def print_memory_usage(message: str):
     # 主机内存
     host_mem = psutil.virtual_memory().used / (1024**3)
     # GPU内存（若使用GPU）
-    gpu_mem = jax.device_get(jax.numpy.array([0])).devices().memory_stats()["bytes_used"] / (1024**3)
-    logging.info(f"[{message}] 主机内存: {host_mem:.2f} GB, GPU内存: {gpu_mem:.2f} GB")
+    # gpu_mem = jax.device_get(jax.numpy.array([0])).devices().memory_stats()["bytes_used"] / (1024**3)
+    logging.info(f"[{message}] 主机内存: {host_mem:.2f} GB")
 
 def construct_spring_update_param_fn(
     energy_and_statistics_fn,
