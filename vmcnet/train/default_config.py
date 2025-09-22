@@ -422,6 +422,10 @@ def get_default_gq_config() -> Dict:
         "RHF": False,
         "activation_type": "tanh", #choices=["tanh", "relu", "silu]
         "psiformer_type": "default", #choices=["default", "multi"]
+        "psiformer_num_layers": "4",
+        "psiformer_num_heads": "4",
+        "psiformer_heads_dim": "64",
+        "psiformer_mlp_hidden_dims": "256",
         "ferminet_type": "default", #choices=["default", "multi"]
     }
     return gq_config

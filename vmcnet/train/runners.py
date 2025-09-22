@@ -259,10 +259,10 @@ def _get_gaoqiao_model(
             raise ValueError(f"Unknown psiformer layer type: {config_gq.psiformer_type}")
         
         psiformer_config={
-              'num_layers': 4,
-              'num_heads': 4,
-              'heads_dim': 64,
-              'mlp_hidden_dims': (256,),
+              'num_layers': config_gq.psiformer_num_layers,
+              'num_heads': config_gq.psiformer_num_heads,
+              'heads_dim': config_gq.psiformer_heads_dim,
+              'mlp_hidden_dims': (config_gq.psiformer_mlp_hidden_dims,),
               'use_layer_norm': True,
               }
         network = psiformer.make_fermi_net(

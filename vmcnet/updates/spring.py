@@ -24,13 +24,14 @@ from .update_param_fns import (
     update_metrics_with_noclip,
 )
 from .optax_utils import initialize_optax_optimizer
-# import psutil
+import psutil
 import logging
-# def memory_show():
-#     pid = psutil.Process().pid
-#     memory_info = psutil.Process(pid).memory_info()
-#     logging.info("Memory usage: {:.2f} MB".format(memory_info.rss / (1024 * 1024)))
-#     return 0
+def print_memory_usage(message: str):
+    # 主机内存
+    host_mem = psutil.virtual_memory().used / (1024**3)
+    # GPU内存（若使用GPU）
+    gpu_mem = jax.device_get(jax.numpy.array([0])).devices().memory_stats()["bytes_used"] / (1024**3)
+    logging.info(f"[{message}] 主机内存: {host_mem:.2f} GB, GPU内存: {gpu_mem:.2f} GB")
 
 def construct_spring_update_param_fn(
     energy_and_statistics_fn,
@@ -171,7 +172,6 @@ def get_spring_step_new(
         atoms_positions: Array,
         positions: Array,
     ) -> Tuple[Array, P]:
-        # memory_show()
         nchains = positions.shape[1]*positions.shape[0]
         joint_positions = jnp.reshape(positions, (nchains, *positions.shape[-2:]))
         joint_atoms_positions = jnp.repeat(atoms_positions[:, None, ...], positions.shape[1], axis=1).reshape(nchains, *atoms_positions.shape[-2:])
@@ -235,25 +235,30 @@ def get_spring_step_old(
         positions: Array,
     ) -> Tuple[Array, P]:
         nchains = positions.shape[1]*positions.shape[0]
-
+        print_memory_usage("开始spring_update_fn")
+        logging.info(f"nchains: {nchains}, positions形状: {positions.shape}")
         prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(prev_grad)
         prev_grad_decayed = mu * prev_grad  #(nparams,)
-
+        print_memory_usage("计算log_psi_grads前")
         log_psi_grads_pre = batch_raveled_log_psi_grad(params,atoms_positions, positions) 
+        logging.info(f"log_psi_grads_pre形状: {log_psi_grads_pre.shape}")
+        print_memory_usage("计算log_psi_grads后")
         W,B,nparams=log_psi_grads_pre.shape
         log_psi_grads=log_psi_grads_pre.reshape((W*B,nparams)) /jnp.sqrt(nchains)  #(W*B,nparams)
-
         Ohat = log_psi_grads - jnp.mean(log_psi_grads, axis=0, keepdims=True)  #(W*B,nparams)
-
+        logging.info(f"Ohat形状: {Ohat.shape}")
+        print_memory_usage("计算Ohat后")
         T = Ohat @ Ohat.T  #(W*B,W*B)
-        print(f"T:{T.shape}")
+        logging.info(f"T矩阵形状: {T.shape}")
+        print_memory_usage("计算T矩阵后")  # 若此处内存骤增到接近总容量，则是溢出点
         ones = jnp.ones((nchains, 1)) #(W*B,1)
         T_reg = T + ones @ ones.T / nchains + damping * jnp.eye(nchains)  #(W*B,W*B)
-
+        logging.info(f"T_reg形状: {T_reg.shape}")
+        print_memory_usage("计算T_reg后")
         epsilon_bar = centered_energies.reshape((-1,)) / jnp.sqrt(nchains) #(W*B,)
         epsion_tilde = epsilon_bar - Ohat @ prev_grad_decayed   #(W*B,)
-
         dtheta_residual = Ohat.T @ jax.scipy.linalg.solve(T_reg, epsion_tilde, assume_a="pos") #(nparams,)
+        print_memory_usage("计算solve后")
         # print(f"dtheta_residual:{dtheta_residual.shape}")   #(nparams,)
         # print(f"prev_grad_decayed:{prev_grad_decayed.shape}")   #(nparams,)
         SR_G = dtheta_residual + prev_grad_decayed
