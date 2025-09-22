@@ -65,13 +65,16 @@ def construct_spring_update_param_fn(
                    "ii_potential":stats["ii_potential"],
                    "multi_energy":stats["multi_energy"],
                    }
+        logging.info("1212")
         metrics = update_metrics_with_noclip(
             stats["energy_noclip"],
             stats["variance_noclip"],
             metrics,
         )
+        logging.info("3322")
         if record_param_l1_norm:
             metrics.update({"param_l1_norm": tree_reduce_l1(params)})
+        logging.info("9898")
         return params, data, optimizer_state, metrics, key
 
     traced_fn = make_traced_fn_with_single_metrics(update_param_fn, apply_pmap)
