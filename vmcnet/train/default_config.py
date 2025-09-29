@@ -427,6 +427,7 @@ def get_default_gq_config() -> Dict:
         "psiformer_heads_dim": 64,
         "psiformer_mlp_hidden_dims": 256,
         "ferminet_type": "default", #choices=["default", "multi"]
+        "lapnet_multi": False,
     }
     return gq_config
 

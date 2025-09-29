@@ -314,6 +314,7 @@ def _get_gaoqiao_model(
             use_layernorm=False,
             jas_w_init=1.0,
             orbitals_spin_split=True,
+            multi=config_gq.lapnet_multi,
             **detnet
             )(nspins, charges, hf_solution=None,)
 

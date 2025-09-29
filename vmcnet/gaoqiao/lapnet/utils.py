@@ -42,14 +42,18 @@ def construct_input_features(
   assert atoms.shape[1] == ndim
   ae = jnp.reshape(pos, [-1, 1, ndim]) - atoms[None, ...]
   ee = jnp.reshape(pos, [1, -1, ndim]) - jnp.reshape(pos, [-1, 1, ndim])
+  aa = jnp.reshape(atoms, [1, -1, ndim]) - jnp.reshape(atoms, [-1, 1, ndim])
 
   r_ae = jnp.linalg.norm(ae, axis=2, keepdims=True)
   # Avoid computing the norm of zero, as is has undefined grad
   n = ee.shape[0]
   r_ee = (
       jnp.linalg.norm(ee + jnp.eye(n)[..., None], axis=-1) * (1.0 - jnp.eye(n)))
+  na = aa.shape[0]
+  r_aa = (
+      jnp.linalg.norm(aa + jnp.eye(na)[..., None], axis=-1) * (1.0 - jnp.eye(na)))
+  return ae, ee, r_ae, r_ee[..., None], aa, r_aa[..., None]
 
-  return ae, ee, r_ae, r_ee[..., None]
 
 def init_jastrow_weights(key: chex.PRNGKey, jas_w_init: float = 0.0) -> Mapping[str, jnp.ndarray]:
   return {

@@ -30,6 +30,7 @@ from .transformer_blocks import (
     MultiheadCrossAttention,
 )
 from .utils import construct_input_features, init_jastrow_weights
+from vmcnet.gaoqiao.dp import reform_ee_ea_ae_aa, split_ee_ea_ae_aa_
 
 
 @attr.s(auto_attribs=True, kw_only=True)
@@ -68,6 +69,7 @@ class LapNetOptions:
   use_layernorm: bool = False
   jas_w_init: float = 0.0
   orbitals_spin_split: bool = True
+  multi: bool = False
 
 
 def get_multihead_list(hidden_dims: LayerArgs,
@@ -225,18 +227,32 @@ def lapnet_orbitals(
       (ae, r_ae, r_ee), representing the atom-electron vectors, distrances and e-e distrances.
 
   """
-  ae, ee, r_ae, r_ee = construct_input_features(pos, atoms)
+  ae, ee, r_ae, r_ee, aa, r_aa= construct_input_features(pos, atoms)
   n_elec = r_ae.shape[0]
 
   # Construct the input of the transformer.
-  scale_r_ae = jnp.log(1.0 + r_ae)
-  input_features = jnp.concatenate((scale_r_ae, ae * scale_r_ae / r_ae), axis = 2).reshape(
-    (n_elec, -1)
-  )
-  # concatenate nspin features
-  input_spin = jnp.concatenate([
-                  jnp.ones((nspins[0], 1)),
-                  -jnp.ones((nspins[1], 1))], axis = 0)
+  if options.multi==True:
+    pp=reform_ee_ea_ae_aa(ee,ae,-ae.transpose(1, 0, 2),aa)
+    r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,r_ae.transpose(1, 0, 2),r_aa)
+
+    log_r_pp = jnp.log(1.0 + r_pp)
+    factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
+    pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
+    _, ae_features, _, aa_features = split_ee_ea_ae_aa_(n_elec,pp_features)
+    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
+    aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
+    input_features=jnp.concatenate((ae_features,aa_features),axis=0)
+    input_spin = jnp.concatenate([
+                    jnp.ones((nspins[0], 1)),
+                    -jnp.ones((nspins[1], 1)),
+                    jnp.zeros((atoms.shape[0], 1))], axis = 0)
+  elif options.multi==False:
+    scale_r_ae = jnp.log(1.0 + r_ae)
+    input_features = jnp.concatenate((scale_r_ae, ae * scale_r_ae / r_ae), axis = 2).reshape((n_elec, -1))
+    input_spin = jnp.concatenate([
+                    jnp.ones((nspins[0], 1)),
+                    -jnp.ones((nspins[1], 1))], axis = 0)
+    
   input_features = jnp.concatenate((input_features, input_spin), axis = -1)
   hs = network_blocks.linear_layer(input_features, **params['input'])
   hd = hs  # deepcopy(hs)
@@ -258,6 +274,8 @@ def lapnet_orbitals(
       hs = hs + jnp.tanh(network_blocks.linear_layer(
                               hs, **param["spars"][i]))
 
+  if options.multi==True:
+    hd=hd[:n_elec]
   if not options.orbitals_spin_split:
     # Construct the orbitals
     orbitals = network_blocks.linear_layer(hd, **params['orbital'])
@@ -420,6 +438,7 @@ def make_lapnet(
     after_determinants: int = 1,
 
     hf_solution=None,
+    multi: bool = False,
 ) -> Tuple[InitNetwork, WaveFuncLike, LapNetOptions]:
   """Creates functions for initializing parameters and evaluating lapnet.
 
@@ -469,6 +488,7 @@ def make_lapnet(
     use_layernorm=use_layernorm,
     jas_w_init=jas_w_init,
     orbitals_spin_split=orbitals_spin_split,
+    multi=multi,
   )
 
   init = functools.partial(
