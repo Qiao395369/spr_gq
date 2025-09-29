@@ -46,9 +46,9 @@ def construct_spring_update_param_fn(
     def update_param_fn(params, data, optimizer_state, key):
         position = get_position_fn(data)
         atoms_position = data["atoms_position"]
-        logging.info("9999")
+        # logging.info("9999")
         energy, local_energies, stats = energy_and_statistics_fn(params, atoms_position, position)
-        logging.info("8888")
+        # logging.info("8888")
         params, optimizer_state = optimizer_apply(
             energy,
             local_energies,
@@ -57,7 +57,7 @@ def construct_spring_update_param_fn(
             data,
         )
         data = update_data_fn(data, params)
-        logging.info("7777")
+        # logging.info("7777")
         metrics = {"energy": energy, "variance": stats["variance"],
                    "kinetic":stats["kinetic"],
                    "ei_potential":stats["ei_potential"],
@@ -65,16 +65,16 @@ def construct_spring_update_param_fn(
                    "ii_potential":stats["ii_potential"],
                    "multi_energy":stats["multi_energy"],
                    }
-        logging.info("1212")
+        # logging.info("1212")
         metrics = update_metrics_with_noclip(
             stats["energy_noclip"],
             stats["variance_noclip"],
             metrics,
         )
-        logging.info("3322")
+        # logging.info("3322")
         if record_param_l1_norm:
             metrics.update({"param_l1_norm": tree_reduce_l1(params)})
-        logging.info("9898")
+        # logging.info("9898")
         return params, data, optimizer_state, metrics, key
 
     traced_fn = make_traced_fn_with_single_metrics(update_param_fn, apply_pmap)
@@ -117,7 +117,7 @@ def initialize_spring(
         positions = get_position_fn(data)
 
         centered_local_energies = local_energies - energy
-        logging.info("4444")
+        # logging.info("4444")
         grad = spring_step(
             centered_local_energies,
             params,
@@ -125,17 +125,17 @@ def initialize_spring(
             data["atoms_position"],
             positions,
         )
-        logging.info("3333")
+        # logging.info("3333")
         updates, optimizer_state = descent_optimizer.update(
             grad, optimizer_state, params
         )
-        logging.info("2222")
+        # logging.info("2222")
         if optimizer_config.constrain_norm:
             updates = constrain_norm(
                 updates,
                 optimizer_config.norm_constraint,
             )
-        logging.info("1111")
+        # logging.info("1111")
         params = optax.apply_updates(params, updates)
         return params, optimizer_state
 
@@ -239,30 +239,30 @@ def get_spring_step_old(
         positions: Array,
     ) -> Tuple[Array, P]:
         nchains = positions.shape[1]*positions.shape[0]
-        print_memory_usage("开始spring_update_fn")
-        logging.info(f"nchains: {nchains}, positions形状: {positions.shape}")
+        # print_memory_usage("开始spring_update_fn")
+        # logging.info(f"nchains: {nchains}, positions形状: {positions.shape}")
         prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(prev_grad)
         prev_grad_decayed = mu * prev_grad  #(nparams,)
-        print_memory_usage("计算log_psi_grads前")
+        # print_memory_usage("计算log_psi_grads前")
         log_psi_grads_pre = batch_raveled_log_psi_grad(params,atoms_positions, positions) 
-        logging.info(f"log_psi_grads_pre形状: {log_psi_grads_pre.shape}")
-        print_memory_usage("计算log_psi_grads后")
+        # logging.info(f"log_psi_grads_pre形状: {log_psi_grads_pre.shape}")
+        # print_memory_usage("计算log_psi_grads后")
         W,B,nparams=log_psi_grads_pre.shape
         log_psi_grads=log_psi_grads_pre.reshape((W*B,nparams)) /jnp.sqrt(nchains)  #(W*B,nparams)
         Ohat = log_psi_grads - jnp.mean(log_psi_grads, axis=0, keepdims=True)  #(W*B,nparams)
-        logging.info(f"Ohat形状: {Ohat.shape}")
-        print_memory_usage("计算Ohat后")
+        # logging.info(f"Ohat形状: {Ohat.shape}")
+        # print_memory_usage("计算Ohat后")
         T = Ohat @ Ohat.T  #(W*B,W*B)
-        logging.info(f"T矩阵形状: {T.shape}")
-        print_memory_usage("计算T矩阵后")  # 若此处内存骤增到接近总容量，则是溢出点
+        # logging.info(f"T矩阵形状: {T.shape}")
+        # print_memory_usage("计算T矩阵后")  # 若此处内存骤增到接近总容量，则是溢出点
         ones = jnp.ones((nchains, 1)) #(W*B,1)
         T_reg = T + ones @ ones.T / nchains + damping * jnp.eye(nchains)  #(W*B,W*B)
-        logging.info(f"T_reg形状: {T_reg.shape}")
-        print_memory_usage("计算T_reg后")
+        # logging.info(f"T_reg形状: {T_reg.shape}")
+        # print_memory_usage("计算T_reg后")
         epsilon_bar = centered_energies.reshape((-1,)) / jnp.sqrt(nchains) #(W*B,)
         epsion_tilde = epsilon_bar - Ohat @ prev_grad_decayed   #(W*B,)
         dtheta_residual = Ohat.T @ jax.scipy.linalg.solve(T_reg, epsion_tilde, assume_a="pos") #(nparams,)
-        print_memory_usage("计算solve后")
+        # print_memory_usage("计算solve后")
         # print(f"dtheta_residual:{dtheta_residual.shape}")   #(nparams,)
         # print(f"prev_grad_decayed:{prev_grad_decayed.shape}")   #(nparams,)
         SR_G = dtheta_residual + prev_grad_decayed

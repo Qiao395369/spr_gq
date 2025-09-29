@@ -41,6 +41,22 @@ from vmcnet.utils.typing import (
 
 FLAGS = flags.FLAGS
 
+import time
+from kfac_jax import utils as kfac_utils
+def get_params_initialization_key(deterministic):
+  '''
+  The key point here is to make sure different hosts uses the same RNG key
+  to initialize network parameters.
+  '''
+  if deterministic:
+    seed = 888
+  else:
+    # We make sure different hosts get the same seed.
+    local_seed = time.time()
+    float_seed = kfac_utils.compute_mean(jnp.ones(jax.local_device_count()) * local_seed)[0]
+    seed = int(1e6 * float_seed)
+  print(f'params initialization seed: {seed}')
+  return jax.random.PRNGKey(seed)
 
 def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict,infer:bool) -> str:
     if infer:
@@ -284,6 +300,31 @@ def _get_gaoqiao_model(
         params = network.init(subkey)
         network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
 
+    elif wfn_type == 'lapnet':
+        from vmcnet.gaoqiao.lapnet import lapnet
+        detnet = {
+              'hidden_dims': ((256, 4), (256, 4), (256, 4), (256, 4)),
+              'determinants': 16,
+              'after_determinants': (1,),
+              }
+        (network_init, signed_network,network_options, network_each_det) = functools.partial(
+            lapnet.make_lapnet,
+            envelope='abs-isotropic',
+            bias_orbitals=False,
+            use_layernorm=False,
+            jas_w_init=1.0,
+            orbitals_spin_split=True,
+            **detnet
+            )(nspins, charges, hf_solution=None,)
+
+
+        # params_initialization_key = get_params_initialization_key(True)
+        key, subkey = jax.random.split(key)
+        params = network_init(subkey)
+        # params = kfac_utils.replicate_all_local_devices(params)
+        # Often just need log|psi(x)|.
+        network_wfn = lambda *args, **kwargs: signed_network(*args, **kwargs)  # type: networks.LogWaveFuncLike
+
     else:
         raise ValueError(f"Unknown electron wavefunction type: {wfn_type}")
     
@@ -302,7 +343,7 @@ def _get_gaoqiao_model(
 
     @jax.jit
     def log_psi_apply_novmap(params,xp,xe):
-        phase, logabsdet = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
+        _, logabsdet = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
         return logabsdet
 
     @jax.jit
@@ -524,7 +565,7 @@ def _setup_vmc(
     )   #init_pos:(W,B,ne,dim)
 
     # Make the model
-    if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer"]:
+    if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer","lapnet"]:
         log_psi_apply_vmap, log_psi_apply,params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
