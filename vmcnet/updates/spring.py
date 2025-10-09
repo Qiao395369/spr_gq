@@ -27,8 +27,6 @@ from .optax_utils import initialize_optax_optimizer
 import psutil
 import logging
 
-# 定义空标记（例如 1e30，确保不会与真实能量值冲突）
-EMPTY_MARKER = jnp.array(1e30, dtype=jnp.float32)
 
 def print_memory_usage(message: str):
     # 主机内存
@@ -74,7 +72,7 @@ def construct_spring_update_param_fn(
         )
         if record_param_l1_norm:
             metrics.update({"param_l1_norm": tree_reduce_l1(params)})
-        return params, data, optimizer_state, metrics, key
+        return params, data, optimizer_state, metrics, key, True
 
     traced_fn = make_traced_fn_with_single_metrics(update_param_fn, apply_pmap)
 
@@ -328,7 +326,6 @@ def construct_spring_update_param_fn_with_accum(
     def update_param_fn(params, data, optimizer_state, key):
         position = get_position_fn(data)
         atoms_position = data["atoms_position"]
-        nwalker = atoms_position.shape[0]
         energy, local_energies, stats = energy_and_statistics_fn(params, atoms_position, position)
 
         params, optimizer_state, is_updated = optimizer_apply(
@@ -386,7 +383,7 @@ def construct_spring_update_param_fn_with_accum(
 
         def create_empty_metrics(_):
             empty_metrics = {
-                "energy": EMPTY_MARKER,
+                "energy": jnp.nan,
                 "variance": jnp.nan,
                 "kinetic": jnp.nan,
                 "ei_potential": jnp.nan,
@@ -409,7 +406,7 @@ def construct_spring_update_param_fn_with_accum(
             operand=None,
         )
 
-        return params, data, optimizer_state, metrics, key
+        return params, data, optimizer_state, metrics, key, is_updated
 
     traced_fn = make_traced_fn_with_single_metrics(update_param_fn, apply_pmap)
 

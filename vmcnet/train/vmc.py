@@ -12,7 +12,7 @@ from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
 import vmcnet.utils as utils
 from vmcnet.utils.typing import D, GetAmplitudeFromData, P, PRNGKey, S
 from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data
-from vmcnet.updates.spring import EMPTY_MARKER
+
 def vmc_loop(
     params: P,
     optimizer_state: S,
@@ -138,17 +138,14 @@ def vmc_loop(
             if down_sample :
                 data, rest_data, idx, key = down_sample_data(key, data, down_sample_num)
                 accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics, key = update_param_fn(params, data, optimizer_state, key)
+                params, data, optimizer_state, metrics, key , is_updated = update_param_fn(params, data, optimizer_state, key)
                 data, metrics = reform_data(data, rest_data, metrics, idx)
             else:
                 accept_ratio, data, key = walker_fn(params, data, key)
-
-                params, data, optimizer_state, metrics, key = update_param_fn(
-                    params, data, optimizer_state, key
-                )
+                params, data, optimizer_state, metrics, key , is_updated = update_param_fn(params, data, optimizer_state, key)
 
             # Don't checkpoint if no metrics to checkpoint
-            if metrics is None or metrics["energy"] == EMPTY_MARKER :
+            if metrics is None or not is_updated :
                 continue
             
             true_epoch = int(epoch / acc_steps) if acc_steps > 0 else epoch
