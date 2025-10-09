@@ -461,8 +461,8 @@ def initialize_spring_with_accum(
             positions,
         )
 
-        # if grad_acc is None:
-            # grad_acc = jax.tree_map(lambda x: jnp.zeros_like(x), current_grad)
+        if grad_acc is None:
+            grad_acc = jax.tree_map(lambda x: jnp.zeros_like(x, dtype=x.dtype), current_grad)
 
         grad_acc = jax.tree_map(lambda acc, g: acc + g, grad_acc, current_grad)
         acc_count = jnp.add(acc_count, 1)
@@ -479,9 +479,9 @@ def initialize_spring_with_accum(
                 )
             new_params = optax.apply_updates(params, updates)
             # 重置累积器
-            new_grad_acc = jax.tree_map(lambda x: jnp.zeros_like(x), avg_grad)
-            new_acc_count = 0
-            is_updated = jnp.array(True)  # 用JAX布尔数组替代Python布尔值
+            new_grad_acc = jax.tree_map(lambda x: jnp.zeros_like(x, dtype=x.dtype), avg_grad)
+            new_acc_count = jnp.array(0, dtype=jnp.int32)
+            is_updated = jnp.array(True, dtype=jnp.bool_)  # 用JAX布尔数组替代Python布尔值
             return new_params, new_opt_state, new_grad_acc, new_acc_count, is_updated
 
         def false_branch(_):
@@ -489,7 +489,7 @@ def initialize_spring_with_accum(
             new_opt_state = opt_state
             new_grad_acc = grad_acc
             new_acc_count = acc_count
-            is_updated = jnp.array(False)  # 用JAX布尔数组替代Python布尔值
+            is_updated = jnp.array(False, dtype=jnp.bool_)  # 用JAX布尔数组替代Python布尔值
             return new_params, new_opt_state, new_grad_acc, new_acc_count, is_updated
 
         # 用jax.lax.cond判断条件，执行对应分支
@@ -519,7 +519,7 @@ def initialize_spring_with_accum(
         descent_optimizer, params, apply_pmap=apply_pmap
     )
     optimizer_state = (optimizer_state, 
-                        jax.tree_map(lambda x: jnp.zeros_like(x),prev_update(optimizer_state)), 
+                        None, 
                         jnp.array(0, dtype=jnp.int32)
                         )
     # if apply_pmap:
