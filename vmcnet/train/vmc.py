@@ -12,7 +12,7 @@ from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
 import vmcnet.utils as utils
 from vmcnet.utils.typing import D, GetAmplitudeFromData, P, PRNGKey, S
 from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data
-
+from vmcnet.updates.spring import EMPTY_MARKER
 def vmc_loop(
     params: P,
     optimizer_state: S,
@@ -34,6 +34,7 @@ def vmc_loop(
     is_pmapped=True,
     start_epoch: int = 0,
     down_sample_num: int = None,
+    acc_steps: int = 0,
     is_eval: bool = False,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     """Main Variational Monte Carlo loop routine.
@@ -111,8 +112,8 @@ def vmc_loop(
     with CheckpointWriter(
         is_pmapped
     ) as checkpoint_writer, MetricsWriter() as metrics_writer:
-        for epoch in range(start_epoch, nepochs):
-            start_time=time.time()
+        start_time=time.time()
+        for epoch in range(start_epoch, nepochs) if acc_steps == 0 else range(start_epoch * acc_steps, nepochs * acc_steps):
             # Save state for checkpointing at the start of the epoch for two reasons:
             # 1. To save the model that generates the best energy and variance metrics,
             # rather than the model one parameter UPDATE after the best metrics.
@@ -120,7 +121,17 @@ def vmc_loop(
             # the exact subsequent behavior can be reproduced (if run on same machine).
             # NOTE: jax deletes the old arrays if we don't make copies.
             old_params = jax.tree_util.tree_map(lambda x: x.copy(), params)
-            old_state = jax.tree_util.tree_map(lambda x: x.copy(), optimizer_state)
+            
+            if acc_steps == 0:
+                old_state = jax.tree_util.tree_map(lambda x: x.copy(), optimizer_state)
+            else:
+                opt_state, grad_acc, acc_count = optimizer_state
+                copied_opt_state = jax.tree_util.tree_map(lambda x: x.copy(), opt_state)
+                if grad_acc is None:
+                    copied_grad_acc = None
+                else:
+                    copied_grad_acc = jax.tree_util.tree_map(lambda x: x.copy() ,grad_acc)
+                old_state = (copied_opt_state, copied_grad_acc, acc_count)
             old_data = data.copy()
             old_key = key.copy()
 
@@ -137,9 +148,10 @@ def vmc_loop(
                 )
 
             # Don't checkpoint if no metrics to checkpoint
-            if metrics is None:
+            if metrics is None or metrics["energy"] == EMPTY_MARKER :
                 continue
-
+            
+            true_epoch = int(epoch / acc_steps) if acc_steps > 0 else epoch
             metrics["accept_ratio"] = accept_ratio
 
             (
@@ -148,7 +160,7 @@ def vmc_loop(
                 best_checkpoint_data,
                 nans_detected,
             ) = utils.checkpoint.save_metrics_and_handle_checkpoints(
-                epoch,
+                true_epoch,
                 old_params,
                 params,
                 old_state,
@@ -174,8 +186,8 @@ def vmc_loop(
             current_time = time.time()
             elapsed_time = current_time - start_time  # 已用时间（秒）
             epochs_per_hour = int((1 / elapsed_time) * 3600)  if elapsed_time > 0 else None
-            utils.checkpoint.log_vmc_loop_state(epoch, metrics, checkpoint_str,str(epochs_per_hour))
-
+            utils.checkpoint.log_vmc_loop_state(true_epoch, metrics, checkpoint_str,str(epochs_per_hour))
+            start_time=time.time()
             # if epoch % wandb_freq == 0:
             #     wandb.log(metrics, step=epoch)
 

@@ -22,7 +22,7 @@ from .optax_utils import (
     initialize_adam,
     initialize_sgd,
 )
-from .spring import initialize_spring
+from .spring import initialize_spring, initialize_spring_with_accum
 from .kfac import initialize_kfac
 from .gauss_newton import initialize_gauss_newton
 
@@ -138,21 +138,35 @@ def initialize_optimizer(
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
         )
-
-        (
-            update_param_fn,
-            optimizer_state,
-        ) = initialize_spring(
-            log_psi_apply,
-            energy_and_statistics_fn,
-            params,
-            get_position_fn,
-            update_data_fn,
-            learning_rate_schedule,
-            vmc_config.optimizer.spring,
-            vmc_config.record_param_l1_norm,
-            apply_pmap=apply_pmap,
-        )
+        if vmc_config.acc_steps == 0:
+            (   update_param_fn,
+                optimizer_state,
+            ) = initialize_spring(
+                log_psi_apply,
+                energy_and_statistics_fn,
+                params,
+                get_position_fn,
+                update_data_fn,
+                learning_rate_schedule,
+                vmc_config.optimizer.spring,
+                vmc_config.record_param_l1_norm,
+                apply_pmap=apply_pmap,
+            )
+        else:
+            (   update_param_fn,
+                optimizer_state,
+            ) = initialize_spring_with_accum(
+                log_psi_apply,
+                energy_and_statistics_fn,
+                params,
+                get_position_fn,
+                update_data_fn,
+                learning_rate_schedule,
+                vmc_config.optimizer.spring,
+                vmc_config.acc_steps,
+                vmc_config.record_param_l1_norm,
+                apply_pmap=apply_pmap,
+            )
         return update_param_fn, optimizer_state, key
     elif vmc_config.optimizer_type == "gauss_newton":
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(

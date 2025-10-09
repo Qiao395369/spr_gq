@@ -1,6 +1,6 @@
 """SPRING implementation, see https://doi.org/10.1016/j.jcp.2024.113351."""
 
-from typing import Callable, Dict
+from typing import Callable, Dict, Tuple, Any
 import jax
 import jax.flatten_util
 import jax.numpy as jnp
@@ -26,6 +26,10 @@ from .update_param_fns import (
 from .optax_utils import initialize_optax_optimizer
 import psutil
 import logging
+
+# 定义空标记（例如 1e30，确保不会与真实能量值冲突）
+EMPTY_MARKER = jnp.array(1e30, dtype=jnp.float32)
+
 def print_memory_usage(message: str):
     # 主机内存
     host_mem = psutil.virtual_memory().used / (1024**3)
@@ -46,9 +50,7 @@ def construct_spring_update_param_fn(
     def update_param_fn(params, data, optimizer_state, key):
         position = get_position_fn(data)
         atoms_position = data["atoms_position"]
-        # logging.info("9999")
         energy, local_energies, stats = energy_and_statistics_fn(params, atoms_position, position)
-        # logging.info("8888")
         params, optimizer_state = optimizer_apply(
             energy,
             local_energies,
@@ -57,24 +59,21 @@ def construct_spring_update_param_fn(
             data,
         )
         data = update_data_fn(data, params)
-        # logging.info("7777")
-        metrics = {"energy": energy, "variance": stats["variance"],
-                   "kinetic":stats["kinetic"],
-                   "ei_potential":stats["ei_potential"],
-                   "ee_potential":stats["ee_potential"],
-                   "ii_potential":stats["ii_potential"],
-                   "multi_energy":stats["multi_energy"],
-                   }
-        # logging.info("1212")
+        metrics = {
+                    "energy": energy, "variance": stats["variance"],
+                    "kinetic": stats["kinetic"],
+                    "ei_potential": stats["ei_potential"],
+                    "ee_potential": stats["ee_potential"],
+                    "ii_potential": stats["ii_potential"],
+                    "multi_energy": stats["multi_energy"],
+            }
         metrics = update_metrics_with_noclip(
             stats["energy_noclip"],
             stats["variance_noclip"],
             metrics,
         )
-        # logging.info("3322")
         if record_param_l1_norm:
             metrics.update({"param_l1_norm": tree_reduce_l1(params)})
-        # logging.info("9898")
         return params, data, optimizer_state, metrics, key
 
     traced_fn = make_traced_fn_with_single_metrics(update_param_fn, apply_pmap)
@@ -94,10 +93,10 @@ def initialize_spring(
     apply_pmap: bool = True,
 ) -> Tuple[UpdateParamFn[P, D, optax.OptState], optax.OptState]:
     """Get an update param function and initial state for SPRING."""
-    if optimizer_config.type=="old":
-        get_spring_step=get_spring_step_old
-    elif optimizer_config.type=="new":
-        get_spring_step=get_spring_step_new
+    if optimizer_config.type == "old":
+        get_spring_step = get_spring_step_old
+    elif optimizer_config.type == "new":
+        get_spring_step = get_spring_step_new
     else:
         raise ValueError("optimizer_config.type should be 'old' or 'new'")
     spring_step = get_spring_step(
@@ -117,7 +116,6 @@ def initialize_spring(
         positions = get_position_fn(data)
 
         centered_local_energies = local_energies - energy
-        # logging.info("4444")
         grad = spring_step(
             centered_local_energies,
             params,
@@ -125,20 +123,16 @@ def initialize_spring(
             data["atoms_position"],
             positions,
         )
-        # logging.info("3333")
         updates, optimizer_state = descent_optimizer.update(
             grad, optimizer_state, params
         )
-        # logging.info("2222")
         if optimizer_config.constrain_norm:
             updates = constrain_norm(
                 updates,
                 optimizer_config.norm_constraint,
             )
-        # logging.info("1111")
         params = optax.apply_updates(params, updates)
         return params, optimizer_state
-
     update_param_fn = construct_spring_update_param_fn(
         energy_and_statistics_fn,
         optimizer_apply,
@@ -287,3 +281,248 @@ def constrain_norm(
     constrained_grads = multiply_tree_by_scalar(grad, coefficient)
 
     return constrained_grads
+
+
+def raveled_log_psi_grad(params: P, ion_pos: Array, positions: Array) -> Array:
+    # 原单个chain的梯度计算（不变）
+    log_grads = jax.grad(log_psi_apply)(params, ion_pos, positions)
+    return jax.flatten_util.ravel_pytree(log_grads)[0]
+
+# 单批梯度计算：处理一批positions（形状(W, batch_size, N, 3)）
+def process_batch(params, atoms_pos, positions_batch):
+    # 对单批内的chain用vmap计算梯度（仅对batch_size维度vmap）
+    batch_grads = jax.vmap(jax.vmap(raveled_log_psi_grad, in_axes=(None, None, 0)),in_axes=(None, 0, 0)
+    )(params, atoms_pos, positions_batch)  # 输出形状(W, batch_size, nparams)
+    return batch_grads.reshape(-1, batch_grads.shape[-1])  # 合并为(512, nparams)
+
+# 用scan分批次计算并合并结果
+def batch_raveled_log_psi_grad_split(params, atoms_pos, positions, batch_size=128):
+    # 拆分输入为批次列表
+    positions_batches = jnp.split(positions, indices_or_sections=positions.shape[1]//batch_size, axis=1)
+    
+    # 用scan循环处理所有批次，累积结果
+    def scan_fn(acc, batch):
+        # 计算当前批次的梯度
+        batch_grads = process_batch(params, atoms_pos, batch)
+        # 拼接当前批次结果到累积器
+        return jnp.concatenate([acc, batch_grads], axis=0), None
+    
+    # 初始化累积器（空数组），开始scan
+    total_grads, _ = jax.lax.scan(
+        scan_fn,
+        init=jnp.empty((0, 1961218), dtype=jnp.float64),  # 与nparams匹配的空数组
+        xs=positions_batches
+    )
+    return total_grads  # 最终形状(2048, 1961218)，与原结果一致
+
+
+def construct_spring_update_param_fn_with_accum(
+    energy_and_statistics_fn,
+    optimizer_apply,
+    get_position_fn: GetPositionFromData[D],
+    update_data_fn: UpdateDataFn[D, P],
+    acc_steps: int = 4,  # 梯度累积步数
+    apply_pmap: bool = True,
+    record_param_l1_norm: bool = False,
+) -> UpdateParamFn[P, D, S]:
+    def update_param_fn(params, data, optimizer_state, key):
+        position = get_position_fn(data)
+        atoms_position = data["atoms_position"]
+        nwalker = atoms_position.shape[0]
+        energy, local_energies, stats = energy_and_statistics_fn(params, atoms_position, position)
+
+        params, optimizer_state, is_updated = optimizer_apply(
+            energy,
+            local_energies,
+            params,
+            optimizer_state,
+            data,
+            acc_steps
+        )
+
+        def update(_):
+            return update_data_fn(data, params)
+        
+        def no_update(_):
+            return data
+        
+        data = jax.lax.cond(
+            is_updated,  # 条件：JAX布尔数组
+            update,  
+            no_update,  
+            operand=None  
+        )
+        # metrics = {
+        #         "energy": energy, 
+        #         "variance": stats["variance"],
+        #         "kinetic": stats["kinetic"],
+        #         "ei_potential": stats["ei_potential"],
+        #         "ee_potential": stats["ee_potential"],
+        #         "ii_potential": stats["ii_potential"],
+        #         "multi_energy": stats["multi_energy"],
+        #     }
+        # metrics = update_metrics_with_noclip(
+        #         stats["energy_noclip"],
+        #         stats["variance_noclip"],
+        #         metrics,
+        #     )
+        # if record_param_l1_norm:
+        #     metrics["param_l1_norm"] = tree_reduce_l1(params)
+
+        def create_valid_metrics(_):
+            metrics = {
+                "energy": energy, 
+                "variance": stats["variance"],
+                "kinetic": stats["kinetic"],
+                "ei_potential": stats["ei_potential"],
+                "ee_potential": stats["ee_potential"],
+                "ii_potential": stats["ii_potential"],
+                "multi_energy": stats["multi_energy"],
+            }
+            metrics = update_metrics_with_noclip(stats["energy_noclip"], stats["variance_noclip"], metrics)
+            if record_param_l1_norm:
+                metrics["param_l1_norm"] = tree_reduce_l1(params)
+            return metrics
+
+        def create_empty_metrics(_):
+            empty_metrics = {
+                "energy": EMPTY_MARKER,
+                "variance": jnp.nan,
+                "kinetic": jnp.nan,
+                "ei_potential": jnp.nan,
+                "ee_potential": jnp.nan,
+                "ii_potential": jnp.nan,
+                "multi_energy": jnp.full(shape=stats["multi_energy"].shape, fill_value=jnp.nan, dtype=stats["multi_energy"].dtype),
+                "energy_noclip": jnp.nan,
+                "variance_noclip": jnp.nan,
+            }
+            if record_param_l1_norm:
+                metrics["param_l1_norm"] = jnp.nan
+            return empty_metrics
+
+
+        operand = (energy, stats, record_param_l1_norm, params)
+        metrics = jax.lax.cond(
+            is_updated,
+            create_valid_metrics,  # 真分支：有效metrics
+            create_empty_metrics,  # 假分支：空metrics
+            operand=None,
+        )
+
+        return params, data, optimizer_state, metrics, key
+
+    traced_fn = make_traced_fn_with_single_metrics(update_param_fn, apply_pmap)
+
+    return traced_fn
+
+
+def initialize_spring_with_accum(
+    log_psi_apply: ModelApply[P],
+    energy_and_statistics_fn,
+    params: P,
+    get_position_fn: GetPositionFromData[D],
+    update_data_fn: UpdateDataFn[D, P],
+    learning_rate_schedule: LearningRateSchedule,
+    optimizer_config: ConfigDict,
+    acc_steps: int = 4,  # 梯度累积步数
+    record_param_l1_norm: bool = False,
+    apply_pmap: bool = True,
+) -> Tuple[Callable, Tuple[optax.OptState, P, int]]:
+    """初始化带梯度累积的SPRING优化器"""
+    if optimizer_config.type == "old":
+        get_spring_step = get_spring_step_old
+    elif optimizer_config.type == "new":
+        get_spring_step = get_spring_step_new
+    else:
+        raise ValueError("optimizer_config.type should be 'old' or 'new'")
+    spring_step = get_spring_step(
+        log_psi_apply,
+        optimizer_config.damping,
+        optimizer_config.mu,
+    )
+
+    descent_optimizer = optax.sgd(
+        learning_rate=learning_rate_schedule, momentum=0, nesterov=False
+    )
+
+    def prev_update(optimizer_state):
+        return optimizer_state[0].trace
+
+    def optimizer_apply(energy, local_energies, params, optimizer_state, data, acc_steps):
+        opt_state, grad_acc, acc_count = optimizer_state
+        positions = get_position_fn(data)
+
+        centered_local_energies = local_energies - energy
+        current_grad = spring_step(
+            centered_local_energies,
+            params,
+            prev_update(opt_state),
+            data["atoms_position"],
+            positions,
+        )
+
+        # if grad_acc is None:
+            # grad_acc = jax.tree_map(lambda x: jnp.zeros_like(x), current_grad)
+
+        grad_acc = jax.tree_map(lambda acc, g: acc + g, grad_acc, current_grad)
+        acc_count = jnp.add(acc_count, 1)
+
+        def true_branch(_):
+            avg_grad = jax.tree_map(lambda g: g / float(acc_steps), grad_acc)
+            updates, new_opt_state = descent_optimizer.update(
+                avg_grad, opt_state, params
+            )
+            if optimizer_config.constrain_norm:
+                updates = constrain_norm(
+                    updates,
+                    optimizer_config.norm_constraint,
+                )
+            new_params = optax.apply_updates(params, updates)
+            # 重置累积器
+            new_grad_acc = jax.tree_map(lambda x: jnp.zeros_like(x), avg_grad)
+            new_acc_count = 0
+            is_updated = jnp.array(True)  # 用JAX布尔数组替代Python布尔值
+            return new_params, new_opt_state, new_grad_acc, new_acc_count, is_updated
+
+        def false_branch(_):
+            new_params = params
+            new_opt_state = opt_state
+            new_grad_acc = grad_acc
+            new_acc_count = acc_count
+            is_updated = jnp.array(False)  # 用JAX布尔数组替代Python布尔值
+            return new_params, new_opt_state, new_grad_acc, new_acc_count, is_updated
+
+        # 用jax.lax.cond判断条件，执行对应分支
+        # 条件：acc_count >= acc_steps（用JAX函数比较，确保追踪兼容性）
+        new_params, new_opt_state, new_grad_acc, new_acc_count, is_updated = jax.lax.cond(
+            jnp.greater_equal(acc_count, acc_steps),  # 条件（JAX数组布尔值）
+            true_branch,  # 条件为真时执行
+            false_branch,  # 条件为假时执行
+            operand=None  # 传给分支函数的额外参数（这里不需要）
+        )
+
+        # 更新优化器状态
+        new_optimizer_state = (new_opt_state, new_grad_acc, new_acc_count)
+        return new_params, new_optimizer_state, is_updated
+
+    # 构造带梯度累积的参数更新函数
+    update_param_fn = construct_spring_update_param_fn_with_accum(
+        energy_and_statistics_fn,
+        optimizer_apply,
+        get_position_fn=get_position_fn,
+        update_data_fn=update_data_fn,
+        acc_steps=acc_steps,
+        record_param_l1_norm=record_param_l1_norm,
+        apply_pmap=apply_pmap,
+    )
+    optimizer_state = initialize_optax_optimizer(
+        descent_optimizer, params, apply_pmap=apply_pmap
+    )
+    optimizer_state = (optimizer_state, 
+                        jax.tree_map(lambda x: jnp.zeros_like(x),prev_update(optimizer_state)), 
+                        jnp.array(0, dtype=jnp.int32)
+                        )
+    # if apply_pmap:
+    #     optimizer_state = jax.pmap(lambda _: optimizer_state)(jax.arange(jax.device_count()))
+
+    return update_param_fn, optimizer_state

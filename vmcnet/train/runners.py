@@ -787,6 +787,7 @@ def _burn_and_run_vmc(
         is_pmapped=is_pmapped,
         start_epoch=start_epoch,
         down_sample_num=(None if is_eval else run_config.down_sample_num),
+        acc_steps=run_config.acc_steps,
         is_eval=is_eval,
     )
 
