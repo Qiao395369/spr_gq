@@ -331,6 +331,7 @@ def get_default_vmc_config() -> Dict:
         "nan_safe": True,
         "optimizer_type": "spring",
         "acc_steps": 0,
+        "acc_grad": 0,
         "optimizer": {
             "kfac": {
                 "l2_reg": 0.0,

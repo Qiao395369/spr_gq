@@ -151,6 +151,7 @@ def initialize_optimizer(
                 vmc_config.optimizer.spring,
                 vmc_config.record_param_l1_norm,
                 apply_pmap=apply_pmap,
+                acc_grad=vmc_config.acc_grad,
             )
         else:
             (   update_param_fn,

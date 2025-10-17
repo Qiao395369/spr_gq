@@ -89,6 +89,7 @@ def initialize_spring(
     optimizer_config: ConfigDict,
     record_param_l1_norm: bool = False,
     apply_pmap: bool = True,
+    acc_grad: int = 0,
 ) -> Tuple[UpdateParamFn[P, D, optax.OptState], optax.OptState]:
     """Get an update param function and initial state for SPRING."""
     if optimizer_config.type == "old":
@@ -102,6 +103,26 @@ def initialize_spring(
         optimizer_config.damping,
         optimizer_config.mu,
     )
+    if acc_grad > 0:
+        def compute_grad(centered_local_energies, params, prev_optimizer_state, atoms_position, positions):
+            cle_splits = jnp.stack(jnp.split(centered_local_energies, acc_grad, axis=1), axis=0)
+            pos_splits = jnp.stack(jnp.split(positions, acc_grad, axis=1), axis=0)
+            
+            def single_split_grad(cle_split, pos_split):
+                return spring_step(
+                    cle_split,  
+                    params,
+                    prev_optimizer_state,
+                    atoms_position,
+                    pos_split  # 单分片的 positions
+                )
+            grads = jax.vmap(single_split_grad)(cle_splits, pos_splits)
+            avg_grad = jax.tree_util.tree_map(lambda arr: jnp.mean(arr, axis=0), grads)
+            return avg_grad
+    elif acc_grad == 0:
+        compute_grad = spring_step
+    else:
+        raise ValueError("acc_grad should be int and >=0 ")
 
     descent_optimizer = optax.sgd(
         learning_rate=learning_rate_schedule, momentum=0, nesterov=False
@@ -114,7 +135,7 @@ def initialize_spring(
         positions = get_position_fn(data)
 
         centered_local_energies = local_energies - energy
-        grad = spring_step(
+        grad = compute_grad(
             centered_local_energies,
             params,
             prev_update(optimizer_state),
