@@ -103,31 +103,40 @@ def initialize_spring(
         optimizer_config.damping,
         optimizer_config.mu,
     )
-    if acc_grad > 0:
-        def compute_grad(centered_local_energies, params, prev_optimizer_state, atoms_position, positions):
-            # 先把要分片的维度切开，然后在新的首维 axis=0 上堆叠
-            cle_splits = jnp.stack(jnp.split(centered_local_energies, acc_grad, axis=1), axis=0)
-            pos_splits = jnp.stack(jnp.split(positions,               acc_grad, axis=1), axis=0)
+    def compute_grad(centered_local_energies, params, prev_optimizer_state, atoms_position, positions):
+        # centered_local_energies: (W, B)
+        # positions:               (W, B, ...)
 
-            step = jax.checkpoint(spring_step)  # 可选：降低显存
+        if acc_grad <= 1:
+            return spring_step(centered_local_energies, params, prev_optimizer_state, atoms_position, positions)
 
-            # 用首个 split 计算一个“零梯度”的模版
-            g0 = step(cle_splits[0], params, prev_optimizer_state, atoms_position, pos_splits[0])
-            accum0 = jax.tree_util.tree_map(jnp.zeros_like, g0)
+        logging.info(f"acc_grad: {acc_grad} ")
+        W, B = centered_local_energies.shape
+        chunk = B // acc_grad  # 确保可整除；若不能，最后一块用剩余长度动态处理
 
-            def body(accum, xs):
-                cle_split, pos_split = xs              # xs 是 (cle_t, pos_t) 的“时间步”切片
-                g = step(cle_split, params, prev_optimizer_state, atoms_position, pos_split)
-                accum = jax.tree_util.tree_map(lambda a, b: a + b, accum, g)
-                return accum, None
+        step = jax.checkpoint(spring_step)
 
-            accum, _ = jax.lax.scan(body, accum0, (cle_splits, pos_splits))
-            avg_grad = jax.tree_util.tree_map(lambda x: x / acc_grad, accum)
-            return avg_grad
-    elif acc_grad == 0:
-        compute_grad = spring_step
-    else:
-        raise ValueError("acc_grad should be int and >=0 ")
+        def slice_B(x, start, size):
+            return jax.lax.dynamic_slice_in_dim(x, start, size, axis=1)
+
+        # 用第一块跑一次拿到梯度模板（只占一个块的显存）
+        cle0 = slice_B(centered_local_energies, 0, chunk)
+        pos0 = slice_B(positions,               0, chunk)
+        g0   = step(cle0, params, prev_optimizer_state, atoms_position, pos0)
+        accum0 = jax.tree_map(jnp.zeros_like, g0)
+
+        def body(accum, i):
+            start = i * chunk
+            cle_i = slice_B(centered_local_energies, start, chunk)
+            pos_i = slice_B(positions,               start, chunk)
+            gi    = step(cle_i, params, prev_optimizer_state, atoms_position, pos_i)
+            return jax.tree_map(lambda a, b: a + b, accum, gi), None
+
+        # 强制不要unroll，降低峰值显存
+        idxs = jnp.arange(acc_grad)
+        accum, _ = jax.lax.scan(body, accum0, idxs, unroll=1)
+        return jax.tree_map(lambda x: x / acc_grad, accum)
+
 
     descent_optimizer = optax.sgd(
         learning_rate=learning_rate_schedule, momentum=0, nesterov=False
