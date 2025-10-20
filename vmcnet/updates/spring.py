@@ -105,19 +105,24 @@ def initialize_spring(
     )
     if acc_grad > 0:
         def compute_grad(centered_local_energies, params, prev_optimizer_state, atoms_position, positions):
+            # 先把要分片的维度切开，然后在新的首维 axis=0 上堆叠
             cle_splits = jnp.stack(jnp.split(centered_local_energies, acc_grad, axis=1), axis=0)
-            pos_splits = jnp.stack(jnp.split(positions, acc_grad, axis=1), axis=0)
-            
-            def single_split_grad(cle_split, pos_split):
-                return spring_step(
-                    cle_split,  
-                    params,
-                    prev_optimizer_state,
-                    atoms_position,
-                    pos_split  # 单分片的 positions
-                )
-            grads = jax.vmap(single_split_grad)(cle_splits, pos_splits)
-            avg_grad = jax.tree_util.tree_map(lambda arr: jnp.mean(arr, axis=0), grads)
+            pos_splits = jnp.stack(jnp.split(positions,               acc_grad, axis=1), axis=0)
+
+            step = jax.checkpoint(spring_step)  # 可选：降低显存
+
+            # 用首个 split 计算一个“零梯度”的模版
+            g0 = step(cle_splits[0], params, prev_optimizer_state, atoms_position, pos_splits[0])
+            accum0 = jax.tree_util.tree_map(jnp.zeros_like, g0)
+
+            def body(accum, xs):
+                cle_split, pos_split = xs              # xs 是 (cle_t, pos_t) 的“时间步”切片
+                g = step(cle_split, params, prev_optimizer_state, atoms_position, pos_split)
+                accum = jax.tree_util.tree_map(lambda a, b: a + b, accum, g)
+                return accum, None
+
+            accum, _ = jax.lax.scan(body, accum0, (cle_splits, pos_splits))
+            avg_grad = jax.tree_util.tree_map(lambda x: x / acc_grad, accum)
             return avg_grad
     elif acc_grad == 0:
         compute_grad = spring_step
