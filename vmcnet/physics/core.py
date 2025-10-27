@@ -144,9 +144,21 @@ def combine_local_energy_terms(
 
     return local_energy_fn
 
+def get_statistics_from_other_energy(
+    energy1: Array, energy2: Array, energy3: Array, energy4: Array, nan_safe: bool = True
+) -> Tuple[Array, Array]:
+    if nan_safe:
+        allreduce_mean = utils.distribute.nanmean_all_local_devices
+    else:
+        allreduce_mean = utils.distribute.mean_all_local_devices
+    energy1 = allreduce_mean(energy1,axis=(0,1))
+    energy2 = allreduce_mean(energy2,axis=(0,1))
+    energy3 = allreduce_mean(energy3,axis=(0,1))
+    energy4 = allreduce_mean(energy4,axis=(0,1))
+    return energy1,energy2,energy3,energy4
 
 def get_statistics_from_local_energy(
-    local_energies: Array, nchains: int, nan_safe: bool = True
+    local_energies: Array, nan_safe: bool = True
 ) -> Tuple[Array, Array]:
     """Collectively reduce local energies to an average energy and variance.
 
@@ -166,54 +178,40 @@ def get_statistics_from_local_energy(
     # TODO(Jeffmin) might be worth investigating the numerical stability of the XLA
     # compiled version of these two computations, since the quality of the gradients
     # is fairly crucial to the success of the algorithm
-    assert len(local_energies.shape)==2
+    assert len(local_energies.shape) == 2  # local_energies:(W,B)
+    W, B = local_energies.shape
     if nan_safe:
         allreduce_mean = utils.distribute.nanmean_all_local_devices
+        w_mean = jnp.nanmean
     else:
         allreduce_mean = utils.distribute.mean_all_local_devices
-    energy = allreduce_mean(local_energies,axis=1)[:,None]       #(W,1)
-    #nchains=W*B
-    variance = (
-        allreduce_mean(jnp.square(local_energies - energy),axis=(0,1)) * nchains / (nchains - 1)
-    )  # adjust by n / (n - 1) to get an unbiased estimator
-    return energy, variance
+        w_mean = jnp.mean
 
-def get_statistics_from_other_energy(
-    energy1: Array, energy2: Array, energy3: Array, energy4: Array, nan_safe: bool = True
-) -> Tuple[Array, Array]:
-    if nan_safe:
-        allreduce_mean = utils.distribute.nanmean_all_local_devices
-    else:
-        allreduce_mean = utils.distribute.mean_all_local_devices
-    energy1 = allreduce_mean(energy1,axis=(0,1))
-    energy2 = allreduce_mean(energy2,axis=(0,1))
-    energy3 = allreduce_mean(energy3,axis=(0,1))
-    energy4 = allreduce_mean(energy4,axis=(0,1))
-    return energy1,energy2,energy3,energy4
+    energy_per_w = w_mean(local_energies, axis=1, keepdims=True)  # (W,1)
+    var_per_w = jnp.sum(jnp.square(local_energies - energy_per_w), axis=1) / jnp.maximum(B - 1, 1)  # (W,)
+
+    variance = allreduce_mean(var_per_w, axis=0)  # ()
+
+    return energy_per_w, variance    
+
 
 def get_clipped_energies_and_stats(
     local_energies_noclip: Array,
-    nchains: int,
     clipping_fn: Optional[ClippingFn],
     nan_safe: bool,
 ) -> Tuple[Array, Array, EnergyAuxData]:
     """Clip local energies if requested and return auxiliary data."""
-    energy_noclip, variance_noclip = get_statistics_from_local_energy(
-        local_energies_noclip, nchains, nan_safe=False
-    )
+    energy_noclip, variance_noclip = get_statistics_from_local_energy(local_energies_noclip, nan_safe=False)
 
     if clipping_fn is not None:
-        local_energies = clipping_fn(local_energies_noclip, energy_noclip)  #local_energies:(W,B)
+        local_energies = clipping_fn(local_energies_noclip, energy_noclip)  #local_energies_noclip:(W,B)， energy_noclip:(W,1)-->local_energies: (W,B)
+        energy, variance = get_statistics_from_local_energy(local_energies, nan_safe=nan_safe)  #energy: (W,1)  variance:(1,)
     else:
-        local_energies = local_energies_noclip
-
-    energy, variance = get_statistics_from_local_energy(
-        local_energies, nchains, nan_safe=nan_safe
-    )
-
+        local_energies, energy, variance= local_energies_noclip, energy_noclip, variance_noclip
+    
     energy_stats = dict(
         variance=variance,  #()
-        energy_noclip=utils.distribute.nanmean_all_local_devices(energy_noclip,axis=(0,1)),  #(W,1)
+        energy_noclip=utils.distribute.nanmean_all_local_devices(energy_noclip,axis=(0,1)),  #(1,)
         variance_noclip=variance_noclip,  #()
     )
 
@@ -296,7 +294,7 @@ def create_value_and_grad_energy_fn(
         positions(W,B,nele,dim)
         '''
         energy, local_energies, stats = get_clipped_energies_and_stats(
-            local_energies_noclip, nchains, clipping_fn, nan_safe
+            local_energies_noclip, clipping_fn, nan_safe
         )  # energy:(W,1), local_energies:(W,B)
         centered_local_energies = local_energies - energy  #(W,B)
         grad_E = jax.grad(standard_estimator_forward, argnums=0)(
@@ -334,32 +332,6 @@ def create_energy_and_statistics_fn(
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
 ) -> ValueGradEnergyFn[P]:
-    """Create a function which computes energies and associated statistics.
-
-    Args:
-        log_psi_apply (Callable): computes log|psi(x)|, where the signature of this
-            function is (params, x) -> log|psi(x)|
-        local_energy_fn (Callable): computes local energies Hpsi / psi. Has signature
-            (params, x) -> (Hpsi / psi)(x)
-        nchains (int): total number of chains across all devices, used to compute a
-            sample variance estimate of the local energy
-        clipping_fn (Callable, optional): post-processing function on the local energy,
-            e.g. a function which clips the values to be within some multiple of the
-            total variation from the median. The post-processed values are used for
-            the gradient calculation, if available. Defaults to None.
-        nan_safe (bool, optional): flag which controls if jnp.nanmean and jnp.nansum are
-            used instead of jnp.mean and jnp.sum for the terms in the gradient
-            calculation. Can be set to False when debugging if trying to find the source
-            of unexpected nans. Defaults to True.
-
-    Returns:
-        Callable: function which computes the clipped energy and associated statistics.
-        Has the signature
-            (params, positions)
-            -> (expected_energy, auxiliary_energy_data)
-        where auxiliary_energy_data is the tuple
-        (expected_variance, local_energies, unclipped_energy, unclipped_variance, centered_local_energies)
-    """
 
     def energy_and_statistics(params,atoms_positions, positions):
         '''
@@ -375,12 +347,12 @@ def create_energy_and_statistics_fn(
         kinetic,ei_potential,ee_potential,ii_potential = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
 
 
-        energy, local_energies, stats = get_clipped_energies_and_stats(
-            local_energies_noclip, nchains, clipping_fn, nan_safe
+        energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
+            local_energies_noclip, clipping_fn, nan_safe
         )
-        multi_energy=energy.reshape((-1))
+        multi_energy=jnp.squeeze(energy_per_w)
         stats.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential,"multi_energy":multi_energy})
 
-        return utils.distribute.nanmean_all_local_devices(energy,axis=(0,1)), local_energies, stats
+        return energy_per_w, E_loc, stats
 
     return energy_and_statistics

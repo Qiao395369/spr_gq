@@ -56,7 +56,7 @@ def make_metropolis_step(
         """Take a single metropolis step."""
         key, subkey = jax.random.split(key)
         proposed_data, key = proposal_fn(params, data, key)
-        accept_prob = acceptance_fn(params, data, proposed_data)
+        accept_prob = acceptance_fn(params, data, proposed_data)  #accept_prob:(W,B)
         move_mask = cast(
             Array,
             jax.random.uniform(subkey, shape=accept_prob.shape) < accept_prob,
@@ -189,14 +189,15 @@ def make_jitted_walker_fn(
 
     pmapped_walker_fn = utils.distribute.pmap(walker_fn)
 
-    def pmapped_walker_fn_with_single_accept_ratio(
-        params: P, data: D, key: PRNGKey
-    ) -> Tuple[chex.Numeric, D, PRNGKey]:
-        accept_ratio, data, key = pmapped_walker_fn(params, data, key)
-        accept_ratio = utils.distribute.get_first(accept_ratio)
-        return accept_ratio, data, key
+    return pmapped_walker_fn
+    # def pmapped_walker_fn_with_single_accept_ratio(  #后面会统一get_first的
+    #     params: P, data: D, key: PRNGKey
+    # ) -> Tuple[chex.Numeric, D, PRNGKey]:
+    #     accept_ratio, data, key = pmapped_walker_fn(params, data, key)
+    #     accept_ratio = utils.distribute.get_first(accept_ratio)
+    #     return accept_ratio, data, key
 
-    return pmapped_walker_fn_with_single_accept_ratio
+    # return pmapped_walker_fn_with_single_accept_ratio
 
 
 def burn_data(

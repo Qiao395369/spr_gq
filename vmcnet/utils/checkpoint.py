@@ -17,7 +17,7 @@ from typing import Dict, Generic, NamedTuple, Optional, Tuple, TypeVar
 import chex
 import jax
 import jax.numpy as jnp
-
+import time
 import vmcnet.utils.io as io
 from vmcnet.utils.typing import (
     CheckpointData,
@@ -315,6 +315,7 @@ def _check_for_nans(metrics: Dict, new_params: P) -> chex.Numeric:
 # TODO (ggoldsh): encapsulate the numerous settings passed into this function into some
 # sort of checkpointing/logging object.
 def save_metrics_and_handle_checkpoints(
+    time_mark: float,
     epoch: int,
     old_params: P,
     new_params: P,
@@ -450,11 +451,16 @@ def save_metrics_and_handle_checkpoints(
         best_checkpoint_every,
         best_checkpoint_data,
     )
+    current_time = time.time()
+    elapsed_time = current_time - time_mark  # 已用时间（秒）
+    epochs_per_hour = int((1 / elapsed_time) * 3600)  if elapsed_time > 0 else None
+    log_vmc_loop_state(epoch, metrics, checkpoint_str, str(epochs_per_hour))
+    time_mark=time.time()
 
     return (
         jnp.minimum(error_adjusted_running_avg, checkpoint_metric),
-        checkpoint_str,
         new_best_checkpoint_data,
+        time_mark,
         nans_detected,
     )
 
@@ -629,16 +635,16 @@ def save_metrics_and_regular_checkpoint(
 
 def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str, rate :str) -> None:
     """Log current energy, variance, and accept ratio, w/ optional unclipped values."""
-    epoch_str = "Epoch %(epoch)5d"
+    epoch_str = "i: %(epoch)5d"
     energy_str = "E: %(energy).5e"
     variance_str = "Var: %(variance).5e"
     accept_ratio_str = "Acc_r: %(accept_ratio).5f"
     # amplitude_str = ""
-    kinetic="kinetic:%(kinetic).5e"
+    kinetic="k:%(kinetic).5e"
     ei_potential="ei:%(ei_potential).5e"
     ee_potential="ee:%(ee_potential).5e"
     ii_potential="ii:%(ii_potential).5e"
-    rate_str="rate:%s epochs/h"%rate
+    rate_str="r:%s i/h"%rate
 
     # if "energy_noclip" in metrics:
     #     energy_str = energy_str + " (%(energy_noclip).5e)"

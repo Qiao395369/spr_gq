@@ -7,7 +7,7 @@ import logging
 import os
 import subprocess
 from typing import Any, Optional, Tuple, Union
-
+import math
 import chex
 import flax
 import jax
@@ -340,14 +340,14 @@ def _get_gaoqiao_model(
     print("#parameters in the wavefunction model: %d" % raveled_params.size)
 
     if apply_pmap:
-            params = utils.distribute.replicate_all_local_devices(params)
+        params = utils.distribute.replicate_all_local_devices(params)
 
-    @jax.jit
+    # @jax.jit
     def log_psi_apply_novmap(params,xp,xe):
         _, logabsdet = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
         return logabsdet
 
-    @jax.jit
+    # @jax.jit
     def log_psi_apply(params, xp, xe):
         return jax.vmap(jax.vmap(log_psi_apply_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, xp, xe)
         
@@ -377,14 +377,16 @@ def _get_gaoqiao_model(
 def _make_initial_distributed_data(
     distributed_log_psi_apply: ModelApply[P],
     run_config: ConfigDict,
+    ion_pos: Array,
     init_pos: Array,
     params: P,
     dtype=jnp.float32,
 ) -> dwpa.DWPAData:
     # Need to use distributed_log_psi_apply here, in the case where there is not enough
     # memory to form the initial amplitudes on a single device
+    sharded_ion_pos = utils.distribute.default_distribute_data(ion_pos)
     sharded_init_pos = utils.distribute.default_distribute_data(init_pos)
-    sharded_amplitudes = distributed_log_psi_apply(params, sharded_init_pos)
+    sharded_amplitudes = distributed_log_psi_apply(params,sharded_ion_pos, sharded_init_pos)
     move_metadata = utils.distribute.replicate_all_local_devices(
         dwpa.MoveMetadata(
             std_move=run_config.std_move,
@@ -393,7 +395,7 @@ def _make_initial_distributed_data(
         )
     )
     return pacore.make_position_amplitude_data(
-        sharded_init_pos, sharded_amplitudes, move_metadata
+        sharded_ion_pos, sharded_init_pos, sharded_amplitudes, move_metadata
     )
 
 
@@ -427,7 +429,7 @@ def _make_initial_data(
 ) -> dwpa.DWPAData:
     if apply_pmap:
         return _make_initial_distributed_data(
-            utils.distribute.pmap(log_psi_apply), run_config, init_pos, params, dtype
+            utils.distribute.pmap(log_psi_apply), run_config, ion_pos, init_pos, params, dtype
         )
     else:
         return _make_initial_single_device_data(
@@ -498,13 +500,13 @@ def total_variation_clipping_fn(
     if clip_center == "mean":
         center = energy_noclip
     elif clip_center == "median":
-        center = jnp.nanmedian(local_energies)
+        center = jnp.nanmedian(local_energies, axis=-1, keepdims=True)
     else:
         raise ValueError(
             "Only mean and median are supported clipping centers, but {} was "
             "requested".format(clip_center)
         )
-    total_variation = jnp.nanmean(jnp.abs(local_energies - center))
+    total_variation = jnp.nanmean(jnp.abs(local_energies - center), axis=-1, keepdims=True)
     clipped_local_e = jnp.clip(
         local_energies,
         center - threshold * total_variation,
@@ -594,6 +596,7 @@ def _setup_vmc(
     data = _make_initial_data(
         log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
     )
+    # print("data:",data)
     get_amplitude_fn = pacore.get_amplitude_from_data
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
 
@@ -616,8 +619,8 @@ def _setup_vmc(
     # Setup parameter updates
     if apply_pmap:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
-    (
-        update_param_fn,
+
+    (   update_param_fn,
         optimizer_state,
         key,
     ) = updates.parse_optimizer_config.initialize_optimizer(
@@ -766,11 +769,13 @@ def _burn_and_run_vmc(
         data, key = mcmc.metropolis.burn_data(
             burning_step, run_config.nburn, params, data, key
         )
+    nchains = math.prod(data["atoms_position"].shape[:-2])
+    
     return train.vmc.vmc_loop(
         params,
         optimizer_state,
         data,
-        run_config.nchains,
+        nchains,
         run_config.nepochs,
         walker_fn,
         update_param_fn,

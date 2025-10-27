@@ -16,16 +16,20 @@ from vmcnet.utils.typing import (
     PRNGKey,
     UpdateDataFn,
 )
-
+import vmcnet.utils as utils
 from .update_param_fns import UpdateParamFn
 from .optax_utils import (
     initialize_adam,
     initialize_sgd,
 )
-from .spring import initialize_spring, initialize_spring_with_accum
+from .spring import spring_wrapper, Spring
 from .kfac import initialize_kfac
 from .gauss_newton import initialize_gauss_newton
-
+from vmcnet.updates.loss import flat_ansatz_call, make_loss
+import jax, kfac_jax
+from functools import partial
+from vmcnet.updates.kfac_multi import kfac_wrapper
+from vmcnet.updates.kfacext import make_graph_patterns
 
 def _get_learning_rate_schedule(
     optimizer_config: ConfigDict,
@@ -51,9 +55,33 @@ def _get_learning_rate_schedule(
 
     return learning_rate_schedule
 
+def _get_damping_rate_schedule(
+    vmc_config: ConfigDict,
+) -> LearningRateSchedule:
+    optimizer_config = vmc_config.optimizer[vmc_config.optimizer_type]
+    if optimizer_config.damp_schedule_type == "constant":
+
+        return lambda t : optimizer_config.damping
+
+    elif optimizer_config.damp_schedule_type == "inverse_time":
+
+        return _get_InverseSchedule(
+            optimizer_config.damping, vmc_config.nepochs // 100, optimizer_config.damping / 1000
+            )
+
+    else:
+        raise ValueError(
+            "damping rate schedule type not supported; {} was requested".format(
+                optimizer_config.damp_schedule_type
+            )
+        )
+
+
+def _get_InverseSchedule(init_value, decay_rate, offset=0.0):
+        return lambda n: (init_value - offset) / (1 + n / decay_rate) + offset
 
 def initialize_optimizer(
-    log_psi_apply: ModelApply[P],
+    log_psi_apply_novmap: ModelApply[P],
     kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
     clipping_fn: Optional[ClippingFn],
     vmc_config: ConfigDict,
@@ -68,10 +96,11 @@ def initialize_optimizer(
     learning_rate_schedule = _get_learning_rate_schedule(
         vmc_config.optimizer[vmc_config.optimizer_type]
     )
+    optimizer_config=vmc_config.optimizer[vmc_config.optimizer_type]
 
     if vmc_config.optimizer_type == "kfac":
         energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
-            log_psi_apply,
+            log_psi_apply_novmap,
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
             vmc_config.nchains,
             clipping_fn,
@@ -89,9 +118,54 @@ def initialize_optimizer(
             vmc_config.record_param_l1_norm,
             apply_pmap=apply_pmap,
         )
+    elif vmc_config.optimizer_type == "kfac_multi":
+        opt_kwargs={}
+        opt_kwargs["norm_constraint"] = optimizer_config.norm_constraint
+        opt_kwargs["learning_rate_schedule"] = learning_rate_schedule
+        opt_kwargs["damping_schedule"] = lambda n: optimizer_config.damping
+
+        kfac_defaults = {
+            "l2_reg": optimizer_config.l2_reg,
+            "value_func_has_aux": True,
+            "value_func_has_rng": True,
+            "auto_register_kwargs": {"graph_patterns": make_graph_patterns()},
+            "include_norms_in_stats": True,
+            "estimation_mode": optimizer_config.estimation_mode,
+            "num_burnin_steps": 0,
+            "min_damping": optimizer_config.min_damping,
+            "inverse_update_period": optimizer_config.inverse_update_period,
+            "pmap_axis_name": utils.distribute.PMAP_AXIS_NAME,
+            # KFAC will be flatbatched to combine leading two dims
+            "batch_size_extractor": lambda batch, *_: batch[1].coords.shape[0]
+            * batch[1].coords.shape[1],
+            "multi_device": True,
+        }
+        energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
+            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
+        )
+        loss_fn = make_loss(
+            log_psi_apply_novmap,
+            energy_and_statistics_fn,
+            vmc_config.repeat_single_mol,
+            utils.distribute.PMAP_AXIS_NAME,
+            flat_ansatz_call,
+            det_dist_weight=vmc_config.det_penalty_weight,
+        )
+        value_and_grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+
+        opt = kfac_wrapper(
+            kfac_jax.Optimizer(value_and_grad_func=value_and_grad_fn,**{**kfac_defaults, **opt_kwargs}),
+            update_data_fn
+        )
+        key, subkey = utils.distribute.split_or_psplit_key(key, apply_pmap)
+
+        optimizer_state = opt.init(subkey,params,data)
+        update_param_fn = opt.step
+        return update_param_fn, optimizer_state, key
+
     elif vmc_config.optimizer_type == "sgd":
         energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
-            log_psi_apply,
+            log_psi_apply_novmap,
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
             vmc_config.nchains,
             clipping_fn,
@@ -111,9 +185,10 @@ def initialize_optimizer(
             apply_pmap=apply_pmap,
         )
         return update_param_fn, optimizer_state, key
+    
     elif vmc_config.optimizer_type == "adam":
         energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
-            log_psi_apply,
+            log_psi_apply_novmap,
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
             vmc_config.nchains,
             clipping_fn,
@@ -135,40 +210,21 @@ def initialize_optimizer(
         return update_param_fn, optimizer_state, key
 
     elif vmc_config.optimizer_type == "spring":
+        damping_rate_schedule = _get_damping_rate_schedule(vmc_config)
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
         )
-        if vmc_config.acc_steps == 0:
-            (   update_param_fn,
-                optimizer_state,
-            ) = initialize_spring(
-                log_psi_apply,
-                energy_and_statistics_fn,
-                params,
-                get_position_fn,
-                update_data_fn,
-                learning_rate_schedule,
-                vmc_config.optimizer.spring,
-                vmc_config.record_param_l1_norm,
-                apply_pmap=apply_pmap,
-                acc_grad=vmc_config.acc_grad,
-            )
-        else:
-            (   update_param_fn,
-                optimizer_state,
-            ) = initialize_spring_with_accum(
-                log_psi_apply,
-                energy_and_statistics_fn,
-                params,
-                get_position_fn,
-                update_data_fn,
-                learning_rate_schedule,
-                vmc_config.optimizer.spring,
-                vmc_config.acc_steps,
-                vmc_config.record_param_l1_norm,
-                apply_pmap=apply_pmap,
-            )
+        opt_kwargs = {}
+        opt_kwargs["mu"] = optimizer_config.mu
+        opt_kwargs["norm_constraint"] = optimizer_config.norm_constraint
+        opt_kwargs["learning_rate_schedule"] = learning_rate_schedule
+        opt_kwargs["damping_schedule"] = damping_rate_schedule
+        opt_kwargs["repeat_single_mol"] = vmc_config.repeat_single_mol
+        opt = spring_wrapper(Spring(**opt_kwargs), log_psi_apply_novmap, update_data_fn, energy_and_statistics_fn)
+        optimizer_state = opt.init(params)
+        update_param_fn = opt.step
         return update_param_fn, optimizer_state, key
+    
     elif vmc_config.optimizer_type == "gauss_newton":
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
@@ -178,7 +234,7 @@ def initialize_optimizer(
             optimizer_state,
         ) = initialize_gauss_newton(
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-            log_psi_apply,
+            log_psi_apply_novmap,
             energy_and_statistics_fn,
             params,
             get_position_fn,

@@ -311,9 +311,11 @@ def get_default_vmc_config() -> Dict:
     """Get a default VMC training configuration."""
     vmc_config = {
         "nchains": 1000,
+        "repeat_single_mol": False,
         "down_sample_num": 6,
         "nepochs": 200000,
         "nburn": 5000,
+        "det_penalty_weight": 1.0,
         "nsteps_per_param_update": 10,
         "nmoves_per_width_update": 100,
         "std_move": 0.25,
@@ -334,6 +336,19 @@ def get_default_vmc_config() -> Dict:
         "acc_grad": 0,
         "optimizer": {
             "kfac": {
+                "l2_reg": 0.0,
+                "norm_constraint": 0.001,
+                "curvature_ema": 0.95,
+                "inverse_update_period": 1,
+                "min_damping": 1e-4,
+                "register_only_generic": False,
+                "estimation_mode": "fisher_exact",
+                "damping": 0.001,
+                "schedule_type": "inverse_time",  # constant or inverse_time
+                "learning_rate": 5e-2,
+                "learning_decay_rate": 1e-4,
+            },
+            "kfac_multi": {
                 "l2_reg": 0.0,
                 "norm_constraint": 0.001,
                 "curvature_ema": 0.95,
@@ -369,10 +384,10 @@ def get_default_vmc_config() -> Dict:
                 "learning_decay_rate": 1e-4,
                 # SPRING hyperparams
                 "mu": 0.99,
+                "damp_schedule_type": "inverse_time",  # constant or inverse_time
                 "damping": 0.001,
                 "constrain_norm": True,
                 "norm_constraint": 0.001,
-                "type": "old",
             },
             "gauss_newton": {
                 # Learning rate settings

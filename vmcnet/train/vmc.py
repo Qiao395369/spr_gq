@@ -12,7 +12,7 @@ from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
 import vmcnet.utils as utils
 from vmcnet.utils.typing import D, GetAmplitudeFromData, P, PRNGKey, S
 from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data
-
+import logging
 def vmc_loop(
     params: P,
     optimizer_state: S,
@@ -106,14 +106,9 @@ def vmc_loop(
     nans_detected = False
     down_sample=(not is_eval and down_sample_num != 0)
 
-    # MAX_WANDB_LOGS = 10000
-    # wandb_freq = nepochs // min(max(nepochs, 1), MAX_WANDB_LOGS)
-
-    with CheckpointWriter(
-        is_pmapped
-    ) as checkpoint_writer, MetricsWriter() as metrics_writer:
-        start_time=time.time()
-        for epoch in range(start_epoch, nepochs) if acc_steps == 0 else range(start_epoch * acc_steps, nepochs * acc_steps):
+    with CheckpointWriter(is_pmapped) as checkpoint_writer, MetricsWriter() as metrics_writer:
+        time_mark=time.time()
+        for epoch in range(start_epoch, nepochs):
             # Save state for checkpointing at the start of the epoch for two reasons:
             # 1. To save the model that generates the best energy and variance metrics,
             # rather than the model one parameter UPDATE after the best metrics.
@@ -121,43 +116,37 @@ def vmc_loop(
             # the exact subsequent behavior can be reproduced (if run on same machine).
             # NOTE: jax deletes the old arrays if we don't make copies.
             old_params = jax.tree_util.tree_map(lambda x: x.copy(), params)
-            
-            if acc_steps == 0:
-                old_state = jax.tree_util.tree_map(lambda x: x.copy(), optimizer_state)
-            else:
-                opt_state, grad_acc, acc_count = optimizer_state
-                copied_opt_state = jax.tree_util.tree_map(lambda x: x.copy(), opt_state)
-                if grad_acc is None:
-                    copied_grad_acc = None
-                else:
-                    copied_grad_acc = jax.tree_util.tree_map(lambda x: x.copy() ,grad_acc)
-                old_state = (copied_opt_state, copied_grad_acc, acc_count)
+            old_state = jax.tree_util.tree_map(lambda x: x.copy(), optimizer_state)
             old_data = data.copy()
             old_key = key.copy()
 
             if down_sample :
                 data, rest_data, idx, key = down_sample_data(key, data, down_sample_num)
                 accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics, key , is_updated = update_param_fn(params, data, optimizer_state, key)
+                params, data, optimizer_state, metrics  = update_param_fn(params, optimizer_state, data)
                 data, metrics = reform_data(data, rest_data, metrics, idx)
             else:
                 accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics, key , is_updated = update_param_fn(params, data, optimizer_state, key)
+                params, data, optimizer_state, metrics  = update_param_fn(params, optimizer_state, data)
 
             # Don't checkpoint if no metrics to checkpoint
-            if metrics is None or not is_updated :
+            if metrics is None :
                 continue
             
-            true_epoch = int(epoch / acc_steps) if acc_steps > 0 else epoch
             metrics["accept_ratio"] = accept_ratio
+            
+            if is_pmapped:
+                metrics = jax.tree_map(lambda x: x[0], metrics)
+                metrics = jax.device_put(metrics, jax.devices("cpu")[0])
 
             (
                 checkpoint_metric,
-                checkpoint_str,
                 best_checkpoint_data,
+                time_mark,
                 nans_detected,
             ) = utils.checkpoint.save_metrics_and_handle_checkpoints(
-                true_epoch,
+                time_mark,
+                epoch,
                 old_params,
                 params,
                 old_state,
@@ -180,13 +169,6 @@ def vmc_loop(
                 record_amplitudes=record_amplitudes,
                 get_amplitude_fn=get_amplitude_fn,
             )
-            current_time = time.time()
-            elapsed_time = current_time - start_time  # 已用时间（秒）
-            epochs_per_hour = int((1 / elapsed_time) * 3600)  if elapsed_time > 0 else None
-            utils.checkpoint.log_vmc_loop_state(true_epoch, metrics, checkpoint_str,str(epochs_per_hour))
-            start_time=time.time()
-            # if epoch % wandb_freq == 0:
-            #     wandb.log(metrics, step=epoch)
 
             if nans_detected:
                 break

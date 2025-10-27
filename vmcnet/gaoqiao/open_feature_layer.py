@@ -132,7 +132,7 @@ def make_open_features_ef(
 		pp_features_list=[act_func(pp) if do_act else pp for pp in pp_features_list]
 
 		pp_features=jnp.concatenate(pp_features_list,axis=-1)
-		logging.info("pp_feature: %s", pp_features.shape)
+		# logging.info("pp_feature: %s", pp_features.shape)
 		return pp_features
 
 	return networks.FeatureLayer(init=init,apply=apply_)
