@@ -127,7 +127,7 @@ def vmc_loop(
                 data, metrics = reform_data(data, rest_data, metrics, idx)
             else:
                 accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics  = update_param_fn(params, optimizer_state, data)
+                params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
 
             # Don't checkpoint if no metrics to checkpoint
             if metrics is None :

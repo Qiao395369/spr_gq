@@ -287,7 +287,7 @@ def create_value_and_grad_energy_fn(
             * mean_grad_fn(centered_local_energies * log_psi)
         )  # shape:()
 
-    def get_standard_contribution(local_energies_noclip, params, atoms_positions,positions):
+    def get_standard_contribution(local_energies_noclip, params, atoms_positions, positions):
         '''
         local_energies_noclip:(W,B)
         atoms_position:(W,natom,dim)
@@ -332,6 +332,32 @@ def create_energy_and_statistics_fn(
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
 ) -> ValueGradEnergyFn[P]:
+    """Create a function which computes energies and associated statistics.
+
+    Args:
+        log_psi_apply (Callable): computes log|psi(x)|, where the signature of this
+            function is (params, x) -> log|psi(x)|
+        local_energy_fn (Callable): computes local energies Hpsi / psi. Has signature
+            (params, x) -> (Hpsi / psi)(x)
+        nchains (int): total number of chains across all devices, used to compute a
+            sample variance estimate of the local energy
+        clipping_fn (Callable, optional): post-processing function on the local energy,
+            e.g. a function which clips the values to be within some multiple of the
+            total variation from the median. The post-processed values are used for
+            the gradient calculation, if available. Defaults to None.
+        nan_safe (bool, optional): flag which controls if jnp.nanmean and jnp.nansum are
+            used instead of jnp.mean and jnp.sum for the terms in the gradient
+            calculation. Can be set to False when debugging if trying to find the source
+            of unexpected nans. Defaults to True.
+
+    Returns:
+        Callable: function which computes the clipped energy and associated statistics.
+        Has the signature
+            (params, positions)
+            -> (expected_energy, auxiliary_energy_data)
+        where auxiliary_energy_data is the tuple
+        (expected_variance, local_energies, unclipped_energy, unclipped_variance, centered_local_energies)
+    """
 
     def energy_and_statistics(params,atoms_positions, positions):
         '''

@@ -49,6 +49,7 @@ def _get_traced_compute_param_norm(
 
 def kfac_wrapper(
     kfac_opt, 
+    energy_and_statistics_fn,
     update_data_fn: UpdateDataFn[D, P],
 )-> Optimizer:
     """Wrap a KFAC optimizer to make it compatible with the optimizer interface."""
@@ -58,42 +59,50 @@ def kfac_wrapper(
     if kfac_opt.multi_device:
         momentum = utils.distribute.replicate_all_local_devices(momentum)
         update_data_fn = utils.distribute.pmap(update_data_fn)
+        energy_and_statistics_fn = utils.distribute.pmap(energy_and_statistics_fn)
+
 
     def init(
-        rng: PRNGKey,
+        rng,
         params: P,
         data,
     ) -> OptimizerState:
-        return kfac_opt.init(params, rng, data)
+        energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
+        batch = (E_loc, energy_per_w, data)
+        return kfac_opt.init(params=params, batch=batch , rng=rng)
 
     def step(
+        key: PRNGKey,
         params: WavefunctionParams,
         opt_state: OptimizerState,
         data,
     ) -> tuple[P,D, OptimizerState, Dict]:
         key, subkey = utils.distribute.split_or_psplit_key(key, kfac_opt.multi_device)
+        energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
+        batch = (E_loc, energy_per_w, data)
+
         params, opt_state, opt_stats = kfac_opt.step(
             params=params,
             state=opt_state,
             rng=subkey,
-            data=data,
+            batch=batch,
             momentum=momentum,
         )
         data = update_data_fn(data, params)
         metrics = {
-                    "energy": opt_stats["loss"], "variance": opt_stats["aux"]["variance"],
-                    "kinetic": opt_stats["aux"]["kinetic"],
-                    "ei_potential": opt_stats["aux"]["ei_potential"],
-                    "ee_potential": opt_stats["aux"]["ee_potential"],
-                    "ii_potential": opt_stats["aux"]["ii_potential"],
-                    "multi_energy": opt_stats["aux"]["multi_energy"],
+                    "energy": opt_stats["loss"], "variance": stats["variance"],
+                    "kinetic": stats["kinetic"],
+                    "ei_potential": stats["ei_potential"],
+                    "ee_potential": stats["ee_potential"],
+                    "ii_potential": stats["ii_potential"],
+                    "multi_energy": stats["multi_energy"],
                     "opt_param_norm": opt_stats["param_norm"],
-                    "opt_grad_norm": opt_stats["precon_grad_norm"],
+                    "opt_grad_norm": opt_stats["grad_norm"],
                     "opt_update_norm": opt_stats["update_norm"],
-                    "energy_noclip": opt_stats["aux"]["energy_noclip"],
-                    "variance_noclip": opt_stats["aux"]["variance_noclip"],
+                    "energy_noclip": stats["energy_noclip"],
+                    "variance_noclip": stats["variance_noclip"],
             }
-        return params, data, opt_state, metrics,
+        return params, data, opt_state, metrics, key
 
     return Optimizer(init=init, step=step)
 

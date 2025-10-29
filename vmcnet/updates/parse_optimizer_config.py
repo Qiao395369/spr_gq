@@ -25,7 +25,7 @@ from .optax_utils import (
 from .spring import spring_wrapper, Spring
 from .kfac import initialize_kfac
 from .gauss_newton import initialize_gauss_newton
-from vmcnet.updates.loss import flat_ansatz_call, make_loss
+from vmcnet.updates.loss import flat_ansatz_call, make_loss, make_value_and_grad
 import jax, kfac_jax
 from functools import partial
 from vmcnet.updates.kfac_multi import kfac_wrapper
@@ -126,9 +126,12 @@ def initialize_optimizer(
 
         kfac_defaults = {
             "l2_reg": optimizer_config.l2_reg,
-            "value_func_has_aux": True,
-            "value_func_has_rng": True,
+            "value_func_has_aux": False,
+            "value_func_has_rng": False,
             "auto_register_kwargs": {"graph_patterns": make_graph_patterns()},
+            # "use_automatic_registration": True,      # 保持自动注册
+            # "register_only_generic": True,           # ★ 仅注册 generic，不跑复杂模式匹配
+            # "auto_register_kwargs": None, 
             "include_norms_in_stats": True,
             "estimation_mode": optimizer_config.estimation_mode,
             "num_burnin_steps": 0,
@@ -136,26 +139,28 @@ def initialize_optimizer(
             "inverse_update_period": optimizer_config.inverse_update_period,
             "pmap_axis_name": utils.distribute.PMAP_AXIS_NAME,
             # KFAC will be flatbatched to combine leading two dims
-            "batch_size_extractor": lambda batch, *_: batch[1].coords.shape[0]
-            * batch[1].coords.shape[1],
+            "batch_size_extractor": (lambda batch, *_: (int(batch[-1]["walker_data"]["elec_position"].shape[0])
+                                                                  * int(batch[-1]["walker_data"]["elec_position"].shape[1])
+                                                                )
+            ),
             "multi_device": True,
         }
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
         )
-        loss_fn = make_loss(
+        loss_fn = make_value_and_grad(
             log_psi_apply_novmap,
-            energy_and_statistics_fn,
             vmc_config.repeat_single_mol,
             utils.distribute.PMAP_AXIS_NAME,
             flat_ansatz_call,
-            det_dist_weight=vmc_config.det_penalty_weight,
+            # det_dist_weight=vmc_config.det_penalty_weight,
         )
-        value_and_grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        # value_and_grad_fn = jax.value_and_grad(loss_fn)
 
         opt = kfac_wrapper(
-            kfac_jax.Optimizer(value_and_grad_func=value_and_grad_fn,**{**kfac_defaults, **opt_kwargs}),
-            update_data_fn
+            kfac_jax.Optimizer(value_and_grad_func=loss_fn, **{**kfac_defaults, **opt_kwargs}),
+            energy_and_statistics_fn,
+            update_data_fn,
         )
         key, subkey = utils.distribute.split_or_psplit_key(key, apply_pmap)
 

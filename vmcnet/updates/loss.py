@@ -91,18 +91,31 @@ def determinant_jvp(
 
 def make_loss(
     ansatz,
-    energy_and_statistics_fn,
     repeat_single_mol: bool,
     pmap_axis_name: str,
     ansatz_call_fn=regular_ansatz_call,
-    det_dist_weight: float = 1.0,
 ):
-    def energy_loss_tangent_w_penalty(
-        log_psi_tangent: jax.Array,
-        # det_dist_tangent: jax.Array,
-        local_energies: jax.Array,
-        energy_per_w: jax.Array,
-    ) -> jax.Array:
+    @jax.custom_jvp
+    def loss(
+        params,
+        batch,
+    ):
+        local_energies, energy_per_w, data = batch
+        log_psi = ansatz_call_fn(ansatz, params, data["atoms_position"], data["walker_data"]["elec_position"])
+        # register log density for kfac
+        kfac_jax.register_normal_predictive_distribution(log_psi[:, None])
+        return jnp.nanmean(local_energies)
+
+    @loss.defjvp
+    def loss_jvp(primals, tangents):
+        params, (local_energies, energy_per_w, data) = primals
+        dparams, _ = tangents
+        _, log_psi_tangent = ansatz_jvp(ansatz, params, dparams, data["atoms_position"], data["walker_data"]["elec_position"])
+
+        log_psi = ansatz_call_fn(ansatz, params, data["atoms_position"], data["walker_data"]["elec_position"])
+        # register log density for kfac
+        kfac_jax.register_normal_predictive_distribution(log_psi[:, None])
+
         if repeat_single_mol:
             energy_per_w = jnp.mean(energy_per_w, axis=0, keepdims=True)
             energy_per_w = jax.lax.pmean(energy_per_w, axis_name=pmap_axis_name)
@@ -111,49 +124,47 @@ def make_loss(
         centered_energy = local_energies - energy_per_w
 
         loss_tangent = jnp.nanmean(centered_energy * log_psi_tangent)
+        loss = jnp.nanmean(local_energies)
 
-        # Weight the det penalty relative to the local energy stddev, to give correct magnitude
-        # TODO: fix for non-uniform weights
-        # pre_conditioner_det = jnp.sqrt( (centered_energy ** 2).sum(-1)/ (local_energies.shape[-1] - 1) )
-
-        # Now make mean over molecules
-        # loss_tangent -= det_dist_weight * (pre_conditioner_det * det_dist_tangent.mean(-1)).mean()
-
-        return loss_tangent
-
-    @jax.custom_jvp
-    def loss(
-        params,
-        rng,  # Accept rng as input
-        data,
-    ):
-        del rng
-        energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
-        return jnp.nanmean(E_loc)[0], stats
-
-    @loss.defjvp
-    def loss_jvp(primals, tangents):
-        params, rng, data = primals
-        atoms_position, elec_position = data["atoms_position"], data["walker_data"]["elec_position"]
-        energy_per_w, local_energies, stats = energy_and_statistics_fn(params, atoms_position, elec_position)
-
-        dparams, _ , _= tangents
-        _, log_psi_tangent = ansatz_jvp(ansatz, params, dparams, atoms_position, elec_position)
-        # _, det_dist_tangent = determinant_jvp(ansatz, params, dparams, atoms_position, elec_position)
-
-        log_psi = ansatz_call_fn(ansatz, params, atoms_position, elec_position)
-        # register log density for kfac
-        kfac_jax.register_normal_predictive_distribution(log_psi[:, None])
-
-        loss_tangent = energy_loss_tangent_w_penalty(
-            log_psi_tangent, 
-            # det_dist_tangent, 
-            local_energies, 
-            energy_per_w
-        )
-        loss = (jnp.nanmean(local_energies), stats)
-        stats_tangent_zero = jax.tree_map(lambda x: jnp.zeros_like(x), stats)
-
-        return loss, (loss_tangent, stats_tangent_zero)
+        return loss, loss_tangent
 
     return loss
+
+def make_value_and_grad(
+    ansatz,
+    repeat_single_mol: bool,
+    pmap_axis_name: str,
+    ansatz_call_fn=regular_ansatz_call,
+):
+    def value_and_grad(params, batch):
+        local_energies, energy_per_w, data = batch
+        atoms = data["atoms_position"]
+        elec  = data["walker_data"]["elec_position"]
+
+        # 前向：log_psi，并注册给 KFAC
+        def f(p):
+            y = ansatz_call_fn(ansatz, p, atoms, elec)   # shape [B]
+            kfac_jax.register_normal_predictive_distribution(y[:, None])
+            return y
+
+        log_psi, vjp_fun = jax.vjp(f, params)           # 得到 VJP 闭包
+
+        if repeat_single_mol:
+            energy_per_w = jnp.mean(energy_per_w, axis=0, keepdims=True)
+            energy_per_w = jax.lax.pmean(energy_per_w, axis_name=pmap_axis_name)
+
+        centered = local_energies - energy_per_w         # shape [B]
+
+        weights = centered.reshape(-1)                   # 现在是 [B]
+        # 对 NaN 做屏蔽且做“nanmean 等价”的缩放
+        is_finite = jnp.isfinite(weights)
+        n_local = jnp.sum(is_finite)
+        n = jnp.maximum(1, n_local)
+        weights = jnp.where(is_finite, weights / n, 0.0).astype(log_psi.dtype)
+
+        grad_params = vjp_fun(weights)[0]                # PyTree，与 params 同结构
+        loss_val = jnp.nanmean(local_energies)           # 标量
+
+        return loss_val, grad_params
+
+    return value_and_grad
