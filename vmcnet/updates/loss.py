@@ -134,7 +134,8 @@ def make_value_and_grad(
     ansatz,
     repeat_single_mol: bool,
     pmap_axis_name: str,
-    ansatz_call_fn=regular_ansatz_call,
+    ansatz_call_fn,
+    apply_pmap: bool,
 ):
     def value_and_grad(params, batch):
         local_energies, energy_per_w, data = batch
@@ -143,7 +144,7 @@ def make_value_and_grad(
 
         # 前向：log_psi，并注册给 KFAC
         def f(p):
-            y = ansatz_call_fn(ansatz, p, atoms, elec)   # shape [B]
+            y = ansatz_call_fn(ansatz, p, atoms, elec)   # shape [W*B]
             kfac_jax.register_normal_predictive_distribution(y[:, None])
             return y
 
@@ -151,12 +152,12 @@ def make_value_and_grad(
 
         if repeat_single_mol:
             energy_per_w = jnp.mean(energy_per_w, axis=0, keepdims=True)
-            energy_per_w = jax.lax.pmean(energy_per_w, axis_name=pmap_axis_name)
+            if apply_pmap:
+                energy_per_w = jax.lax.pmean(energy_per_w, axis_name=pmap_axis_name)
 
-        centered = local_energies - energy_per_w         # shape [B]
+        centered = local_energies - energy_per_w         # (W,B)
 
-        weights = centered.reshape(-1)                   # 现在是 [B]
-        # 对 NaN 做屏蔽且做“nanmean 等价”的缩放
+        weights = centered.reshape(-1)
         is_finite = jnp.isfinite(weights)
         n_local = jnp.sum(is_finite)
         n = jnp.maximum(1, n_local)

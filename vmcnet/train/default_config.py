@@ -96,7 +96,7 @@ def get_default_config() -> ConfigDict:
                 "subfolder_name": NO_NAME,
                 "logging_level": "INFO",
                 "dtype": "float32",
-                "distribute": False,
+                # "distribute": False,
                 "debug_nans": False,  # If true, OVERRIDES config.distribute to be False
                 "initial_seed": 0,
                 "wandb": {
@@ -312,6 +312,7 @@ def get_default_vmc_config() -> Dict:
     vmc_config = {
         "nchains": 1000,
         "repeat_single_mol": False,
+        "repeat_single_molecule_walker": 0,
         "down_sample_num": 6,
         "nepochs": 200000,
         "nburn": 5000,
@@ -332,8 +333,6 @@ def get_default_vmc_config() -> Dict:
         "clip_center": "mean",  # mean or median
         "nan_safe": True,
         "optimizer_type": "spring",
-        "acc_steps": 0,
-        "acc_grad": 0,
         "optimizer": {
             "kfac": {
                 "l2_reg": 0.0,

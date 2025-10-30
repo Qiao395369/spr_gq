@@ -5,13 +5,14 @@ from typing import Any, Callable, Optional, Tuple, TypedDict
 import chex
 import jax
 import jax.numpy as jnp
-
+import functools
 import vmcnet.mcmc.metropolis as metropolis
 from vmcnet.utils.distribute import (
     replicate_all_local_devices,
     default_distribute_data,
 )
 from vmcnet.utils.typing import Array, P, PRNGKey, M, ModelApply, UpdateDataFn
+from vmcnet.utils.distribute import PMAP_AXIS_NAME
 
 
 class PositionAmplitudeWalkerData(TypedDict):
@@ -303,55 +304,82 @@ def make_position_amplitude_gaussian_metropolis_step(
     return metrop_step_fn
 
 
-def down_sample_data(key, data, down_sample_num):
+def shuffle_and_split_data(x, idx, down_sample_num):
+    x = x[idx, ...]
+    x0, x1 = jnp.split(x, [down_sample_num], axis=0)
+    return x0, x1
+
+def down_sample_data_pre(key, data, down_sample_num):
     xp = data["atoms_position"]
     xe = data["walker_data"]["elec_position"]
     amp = data["walker_data"]["amplitude"]
-    move_metadata = data["move_metadata"]
 
     key, subkey = jax.random.split(key)
     walker_num = xp.shape[0]
     idx = jax.random.permutation(subkey, jnp.arange(walker_num))
 
-    xp = xp[idx,...]
-    xe = xe[idx,...]
-    amp = amp[idx,...]
-    xp0, xp1 = jnp.split(xp, [down_sample_num], axis=0)
-    xe0, xe1 = jnp.split(xe, [down_sample_num], axis=0)
-    amp0, amp1 = jnp.split(amp, [down_sample_num], axis=0)
-    
+    (xp0,xp1), (xe0,xe1), (amp0,amp1) = map(functools.partial(shuffle_and_split_data, idx=idx, down_sample_num=down_sample_num) , [xp, xe, amp])
+
+    return (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, key
+
+def down_sample_data(key, data, down_sample_num, apply_pmap):
+    move_metadata = data["move_metadata"]
+    if apply_pmap:
+        (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, key = jax.pmap(down_sample_data_pre,
+                                                               axis_name=PMAP_AXIS_NAME,
+                                                               in_axes=(0, 0, None),
+                                                               static_broadcasted_argnums=(2,),
+                                                               )(key, data, down_sample_num)
+    else:
+        (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, key = jax.jit(down_sample_data_pre,
+                                                               static_argnums=(2,),
+                                                               )(key, data, down_sample_num)
     data = make_position_amplitude_data(xp0, xe0, amp0, move_metadata)
     rest_data = make_position_amplitude_data(xp1, xe1, amp1, move_metadata)
-
     return data, rest_data, idx, key
 
-def add_zero_and_reverse(x,reverse_idx):
-    x = jnp.concatenate([x, jnp.zeros((1, *x.shape[1:]))], axis=0)
-    return x[reverse_idx, ...]
 
-def reform_data(data, rest_data, metrics, idx):
-    xp0 = data["atoms_position"]
+def scatter_to_original_order_energy(x0, idx):
+
+    out = jnp.zeros((idx.shape[0], *x0.shape[1:]), dtype=x0.dtype)
+    n0 = x0.shape[0]
+    return out.at[idx[:n0]].set(x0)
+
+def scatter_to_original_order_data(x0,x1,idx):
+    n0 = x0.shape[0]
+    n1 = x1.shape[0]
+    walker_num = n0 + n1
+    x = jnp.zeros((walker_num, *x0.shape[1:]), dtype=x0.dtype)
+    x = x.at[idx[:n0]].set(x0)
+    x = x.at[idx[n0:]].set(x1)
+    return x
+
+def reform_data_and_metrics(data, rest_data, metrics, idx, apply_pmap):
+
+    xp0 = data["atoms_position"]                   # 选中子集（大小 n0）
     xe0 = data["walker_data"]["elec_position"]
     amp0 = data["walker_data"]["amplitude"]
 
-    xp1 = rest_data["atoms_position"]
+    xp1 = rest_data["atoms_position"]              # 剩余子集（大小 n1）
     xe1 = rest_data["walker_data"]["elec_position"]
     amp1 = rest_data["walker_data"]["amplitude"]
 
-    xp = jnp.concatenate([xp0, xp1], axis=0)
-    xe = jnp.concatenate([xe0, xe1], axis=0)
-    amp = jnp.concatenate([amp0, amp1], axis=0)
+    if apply_pmap:
+        reform_data = jax.pmap(scatter_to_original_order_data, axis_name=PMAP_AXIS_NAME,in_axes=(0,0,0))
+        reform_energy = jax.pmap(scatter_to_original_order_energy, axis_name=PMAP_AXIS_NAME,in_axes=(0,0,0))
+    else:
+        reform_data = jax.jit(scatter_to_original_order_data)
+        reform_energy = jax.jit(scatter_to_original_order_energy)
+    
+    xp  = reform_data(xp0,  xp1,  idx)
+    xe  = reform_data(xe0,  xe1,  idx)
+    amp = reform_data(amp0, amp1, idx)
+    
+    multi_energy_part = metrics["multi_energy"]    # 形状 [n0, ...]
+    multi_energy_full = reform_energy(multi_energy_part, idx)
 
-    # 创建反向索引以恢复原始顺序
-    reverse_idx = jnp.argsort(idx)
+    new_metrics = dict(metrics)
+    new_metrics["multi_energy"] = multi_energy_full
 
-    # 按照原始顺序重新排列
-    xp = xp[reverse_idx, ...]
-    xe = xe[reverse_idx, ...]
-    amp = amp[reverse_idx, ...]
-
-    metrics["multi_energy"] = add_zero_and_reverse(metrics["multi_energy"],reverse_idx)
-
-    data = make_position_amplitude_data(xp, xe, amp, data["move_metadata"])
-
-    return data, metrics
+    data_out = make_position_amplitude_data(xp, xe, amp, data["move_metadata"])
+    return data_out, new_metrics

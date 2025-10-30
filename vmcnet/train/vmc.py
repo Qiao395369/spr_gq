@@ -11,7 +11,7 @@ from vmcnet.updates.update_param_fns import UpdateParamFn
 from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
 import vmcnet.utils as utils
 from vmcnet.utils.typing import D, GetAmplitudeFromData, P, PRNGKey, S
-from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data
+from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data_and_metrics
 import logging
 def vmc_loop(
     params: P,
@@ -34,7 +34,6 @@ def vmc_loop(
     is_pmapped=True,
     start_epoch: int = 0,
     down_sample_num: int = None,
-    acc_steps: int = 0,
     is_eval: bool = False,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     """Main Variational Monte Carlo loop routine.
@@ -105,6 +104,9 @@ def vmc_loop(
     )
     nans_detected = False
     down_sample=(not is_eval and down_sample_num != 0)
+    if is_pmapped:
+        assert down_sample_num % jax.device_count() == 0, "down_sample_num must be divisible by number of devices"
+        down_sample_num = down_sample_num//jax.device_count()
 
     with CheckpointWriter(is_pmapped) as checkpoint_writer, MetricsWriter() as metrics_writer:
         time_mark=time.time()
@@ -121,10 +123,10 @@ def vmc_loop(
             old_key = key.copy()
 
             if down_sample :
-                data, rest_data, idx, key = down_sample_data(key, data, down_sample_num)
+                data, rest_data, idx, key = down_sample_data(key, data, down_sample_num, is_pmapped)
                 accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics  = update_param_fn(params, optimizer_state, data)
-                data, metrics = reform_data(data, rest_data, metrics, idx)
+                params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
+                data, metrics = reform_data_and_metrics(data, rest_data, metrics, idx, is_pmapped)
             else:
                 accept_ratio, data, key = walker_fn(params, data, key)
                 params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)

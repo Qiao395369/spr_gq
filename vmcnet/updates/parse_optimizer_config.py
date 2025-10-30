@@ -143,7 +143,7 @@ def initialize_optimizer(
                                                                   * int(batch[-1]["walker_data"]["elec_position"].shape[1])
                                                                 )
             ),
-            "multi_device": True,
+            "multi_device": apply_pmap,
         }
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
@@ -153,6 +153,7 @@ def initialize_optimizer(
             vmc_config.repeat_single_mol,
             utils.distribute.PMAP_AXIS_NAME,
             flat_ansatz_call,
+            apply_pmap,
             # det_dist_weight=vmc_config.det_penalty_weight,
         )
         # value_and_grad_fn = jax.value_and_grad(loss_fn)

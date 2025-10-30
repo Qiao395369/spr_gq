@@ -95,7 +95,6 @@ def initialize_molecular_pos(
     init_width: float = 0.2,
     dtype=chex.Numeric,
 ) -> Tuple[PRNGKey, Array]:
-    assert len(ion_pos.shape)==3
     natoms=len(ion_charges)
     walker=ion_pos.shape[0]
     assert ion_pos.shape==(walker,natoms,3)
@@ -117,8 +116,8 @@ def initialize_molecular_pos(
     ppp=ppp[:,None,...]
     key, subkey = jax.random.split(key)
     ppp += jax.random.normal(subkey, shape=(walker,nchains,)+ppp.shape[-2:] , dtype=dtype) * init_width
-    logging.info("xp.shape: %s", ion_pos.shape)
-    logging.info("xe.shape: %s", ppp.shape)
+    logging.info("init_xp: %s", ion_pos.shape)
+    logging.info("init_xe: %s", ppp.shape)
     return key, ppp
 
 def combine_local_energy_terms(
@@ -376,7 +375,7 @@ def create_energy_and_statistics_fn(
         energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
             local_energies_noclip, clipping_fn, nan_safe
         )
-        multi_energy=jnp.squeeze(energy_per_w)
+        multi_energy=jnp.squeeze(energy_per_w, axis=-1)
         stats.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential,"multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats

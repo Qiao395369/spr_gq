@@ -43,6 +43,40 @@ FLAGS = flags.FLAGS
 
 import time
 from kfac_jax import utils as kfac_utils
+
+import logging
+
+def should_apply_pmap(
+    require_accelerator: bool = True,
+    min_local_devices: int = 2,
+) -> bool:
+    """
+    根据当前 JAX 设备自动决定是否启用 pmap。
+    - require_accelerator=True 时，仅当存在 GPU/TPU 且设备数≥min_local_devices 才返回 True。
+    - require_accelerator=False 时，允许在 CPU 上多设备（基本很少见）也返回 True。
+    """
+    devices = jax.devices()
+    local_n = jax.local_device_count()
+    backend = jax.default_backend()  # "gpu" / "tpu" / "cpu"
+
+    has_accelerator = any(d.platform in ("gpu", "tpu") for d in devices)
+
+    logging.info(
+        "JAX backend=%s, process_count=%d, local_device_count=%d, global_device_count=%d",
+        backend, jax.process_count(), local_n, jax.device_count()
+    )
+
+    if require_accelerator and not has_accelerator:
+        logging.info("未检测到 GPU/TPU，加速器缺失 → apply_pmap = False")
+        return False
+
+    if local_n >= min_local_devices:
+        logging.info("本地设备数满足条件 (>= %d) → apply_pmap = True", min_local_devices)
+        return True
+
+    logging.info("本地设备数不足 (found=%d, need=%d) → apply_pmap = False", local_n, min_local_devices)
+    return False
+
 def get_params_initialization_key(deterministic):
   '''
   The key point here is to make sure different hosts uses the same RNG key
@@ -116,18 +150,24 @@ def _get_dtype(config: ConfigDict):
 
 
 def _get_electron_ion_config_as_arrays(
-    config: ConfigDict, dtype=jnp.float32
+    config: ConfigDict, dtype=jnp.float32, repeat_single_molecule=False, repeat_single_molecule_walker=4,
 ) -> Tuple[Array, Array, Array]:
     ion_pos = jnp.array(config.ion_pos, dtype=dtype)
     if len(ion_pos.shape)==2:
         ion_pos=ion_pos[None,:]
-    assert len(ion_pos.shape)==3
+
+    if repeat_single_molecule:
+        if ion_pos.shape[0]==1:
+            ion_pos=jnp.repeat(ion_pos,repeat_single_molecule_walker,axis=0)
+        else:
+            RuntimeError("repeat_single_molecule is only valid for single-molecule walkers")
+    
     ion_charges = jnp.array(config.ion_charges, dtype=dtype)
     single_nspins=jnp.array(config.single_nspins,dtype=int)
     nelec = jnp.array(config.nspins)
     nspins=config.nspins
-    # print("ion_pos:",ion_pos)
-    return ion_pos, ion_charges, nelec ,nspins,single_nspins
+    logging.info(f"initial_ion_positions:{ion_pos.shape}")
+    return ion_pos, ion_charges, nelec, nspins, single_nspins
 
 
 def _get_and_init_model(
@@ -334,10 +374,10 @@ def _get_gaoqiao_model(
             return False
         return set() < set(block.keys()) <= {"w", "b"}
 
-    print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
-    print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
+    logging.info("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
+    logging.info("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
     raveled_params, _ = jax.flatten_util.ravel_pytree(params)
-    print("#parameters in the wavefunction model: %d" % raveled_params.size)
+    logging.info(f"#parameters in the wavefunction model: {raveled_params.size}")
 
     if apply_pmap:
         params = utils.distribute.replicate_all_local_devices(params)
@@ -596,7 +636,8 @@ def _setup_vmc(
     data = _make_initial_data(
         log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
     )
-    # print("data:",data)
+    logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
+
     get_amplitude_fn = pacore.get_amplitude_from_data
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
 
@@ -792,7 +833,6 @@ def _burn_and_run_vmc(
         is_pmapped=is_pmapped,
         start_epoch=start_epoch,
         down_sample_num=(None if is_eval else run_config.down_sample_num),
-        acc_steps=run_config.acc_steps,
         is_eval=is_eval,
     )
 
@@ -811,6 +851,9 @@ def _compute_and_save_energy_statistics(
 
 
 def run_molecule() -> None:
+
+    apply_pmap = should_apply_pmap()
+
     """Run VMC on a molecule."""
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
@@ -843,7 +886,8 @@ def run_molecule() -> None:
     dtype_to_use = _get_dtype(config)
 
     ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(
-        config.problem, dtype=dtype_to_use
+        config.problem, dtype=dtype_to_use, repeat_single_molecule=config.vmc.repeat_single_mol ,
+        repeat_single_molecule_walker=config.vmc.repeat_single_molecule_walker
     )
 
     key = jax.random.PRNGKey(config.initial_seed)
@@ -868,7 +912,7 @@ def run_molecule() -> None:
         single_nspins,
         key,
         dtype=dtype_to_use,
-        apply_pmap=config.distribute,
+        apply_pmap=apply_pmap,
     )
 
     start_epoch = 0
@@ -892,7 +936,7 @@ def run_molecule() -> None:
                 reload_config.logdir, logdir, truncate=reload_at_epoch
             )
 
-        if config.distribute:
+        if apply_pmap:
             (
                 data,
                 params,
@@ -920,7 +964,7 @@ def run_molecule() -> None:
         get_amplitude_fn,
         key,
         is_eval=False,
-        is_pmapped=config.distribute,
+        is_pmapped=apply_pmap,
         skip_burn=reload_from_checkpoint and not reload_config.reburn,
         start_epoch=start_epoch,
     )
