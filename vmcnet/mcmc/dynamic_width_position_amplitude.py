@@ -4,7 +4,7 @@ from typing import Callable, TypedDict
 
 import chex
 import jax
-
+import jax.numpy as jnp
 from .metropolis import MetropolisStep
 from .position_amplitude_core import (
     make_position_amplitude_data,
@@ -152,7 +152,7 @@ def make_update_move_metadata_fn(
         moves_since_update = move_metadata["moves_since_update"]
 
         # current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float64),axis=(0,1))
-        current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float32), axis=(0, 1)).astype(move_acceptance_sum.dtype)
+        current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float64), axis=(0, 1)).astype(move_acceptance_sum.dtype)
         move_acceptance_sum = move_acceptance_sum + current_avg_acceptance
         moves_since_update = moves_since_update + jnp.asarray(1, dtype=moves_since_update.dtype)
 

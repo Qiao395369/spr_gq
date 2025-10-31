@@ -50,31 +50,26 @@ def should_apply_pmap(
     require_accelerator: bool = True,
     min_local_devices: int = 2,
 ) -> bool:
-    """
-    根据当前 JAX 设备自动决定是否启用 pmap。
-    - require_accelerator=True 时，仅当存在 GPU/TPU 且设备数≥min_local_devices 才返回 True。
-    - require_accelerator=False 时，允许在 CPU 上多设备（基本很少见）也返回 True。
-    """
+
     devices = jax.devices()
     local_n = jax.local_device_count()
     backend = jax.default_backend()  # "gpu" / "tpu" / "cpu"
 
     has_accelerator = any(d.platform in ("gpu", "tpu") for d in devices)
-
     logging.info(
         "JAX backend=%s, process_count=%d, local_device_count=%d, global_device_count=%d",
         backend, jax.process_count(), local_n, jax.device_count()
     )
 
     if require_accelerator and not has_accelerator:
-        logging.info("未检测到 GPU/TPU，加速器缺失 → apply_pmap = False")
+        logging.info("no GPU/TPU → apply_pmap = False")
         return False
 
     if local_n >= min_local_devices:
-        logging.info("本地设备数满足条件 (>= %d) → apply_pmap = True", min_local_devices)
+        logging.info("local_devices >= %d → apply_pmap = True", min_local_devices)
         return True
 
-    logging.info("本地设备数不足 (found=%d, need=%d) → apply_pmap = False", local_n, min_local_devices)
+    logging.info("local_devices (found=%d, need=%d) → apply_pmap = False", local_n, min_local_devices)
     return False
 
 def get_params_initialization_key(deterministic):
@@ -374,10 +369,10 @@ def _get_gaoqiao_model(
             return False
         return set() < set(block.keys()) <= {"w", "b"}
 
-    logging.info("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
-    logging.info("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
+    print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
+    print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
     raveled_params, _ = jax.flatten_util.ravel_pytree(params)
-    logging.info(f"#parameters in the wavefunction model: {raveled_params.size}")
+    print(f"#parameters in the wavefunction model: {raveled_params.size}")
 
     if apply_pmap:
         params = utils.distribute.replicate_all_local_devices(params)
@@ -851,9 +846,6 @@ def _compute_and_save_energy_statistics(
 
 
 def run_molecule() -> None:
-
-    apply_pmap = should_apply_pmap()
-
     """Run VMC on a molecule."""
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
@@ -882,7 +874,7 @@ def run_molecule() -> None:
     root_logger.setLevel(config.logging_level)
     logdir = _get_logdir_and_save_config(reload_config, config,False)
     # _save_git_hash(logdir)
-
+    apply_pmap = should_apply_pmap()
     dtype_to_use = _get_dtype(config)
 
     ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(
