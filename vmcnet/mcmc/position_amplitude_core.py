@@ -370,7 +370,7 @@ def reform_data_and_metrics(data, rest_data, metrics, idx, apply_pmap):
     else:
         reform_data = jax.jit(scatter_to_original_order_data)
         reform_energy = jax.jit(scatter_to_original_order_energy)
-    
+
     xp  = reform_data(xp0,  xp1,  idx)
     xe  = reform_data(xe0,  xe1,  idx)
     amp = reform_data(amp0, amp1, idx)
