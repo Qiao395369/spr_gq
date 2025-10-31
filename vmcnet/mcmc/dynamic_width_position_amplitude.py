@@ -151,13 +151,14 @@ def make_update_move_metadata_fn(
         move_acceptance_sum = move_metadata["move_acceptance_sum"]
         moves_since_update = move_metadata["moves_since_update"]
 
-        current_avg_acceptance = mean_all_local_devices(current_move_mask,axis=(0,1))
+        # current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float64),axis=(0,1))
+        current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float32), axis=(0, 1)).astype(move_acceptance_sum.dtype)
         move_acceptance_sum = move_acceptance_sum + current_avg_acceptance
-        moves_since_update = moves_since_update + 1
+        moves_since_update = moves_since_update + jnp.asarray(1, dtype=moves_since_update.dtype)
 
         def update_std_move(_):
             move_acceptance_avg = move_acceptance_sum / moves_since_update
-            return (adjust_std_move_fn(std_move, move_acceptance_avg), 0, 0.0)
+            return (adjust_std_move_fn(std_move, move_acceptance_avg), jnp.asarray(0, dtype=moves_since_update.dtype), jnp.zeros_like(move_acceptance_sum))
 
         def skip_update_std_move(_):
             return (std_move, moves_since_update, move_acceptance_sum)
