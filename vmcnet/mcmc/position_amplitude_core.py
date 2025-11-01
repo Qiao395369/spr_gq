@@ -167,10 +167,15 @@ def make_position_amplitude_gaussian_proposal(
     """
 
     def proposal_fn(params: P, data: PositionAmplitudeData, key: PRNGKey):
+        jax.debug.print("marker_5")
         std_move = get_std_move(data)
+        jax.debug.print("marker_6")
         proposed_position, key = metropolis.gaussian_proposal(data["walker_data"]["elec_position"], std_move, key)
+        jax.debug.print("marker_7")
         atoms_position = data["atoms_position"]
+        jax.debug.print("marker_8")
         proposed_amplitude = model_apply(params, atoms_position, proposed_position)
+        jax.debug.print("marker_9")
         return (
             make_position_amplitude_data(
                 atoms_position, proposed_position, proposed_amplitude, data["move_metadata"]
@@ -200,6 +205,7 @@ def make_position_amplitude_metropolis_symmetric_acceptance(
         params: P, data: PositionAmplitudeData, proposed_data: PositionAmplitudeData
     ):
         del params
+        jax.debug.print("marker_10")
         return metropolis.metropolis_symmetric_acceptance(
             data["walker_data"]["amplitude"],
             proposed_data["walker_data"]["amplitude"],
@@ -255,12 +261,14 @@ def make_position_amplitude_update(
         new_walker_data = jax.tree_map(
             mask_on_first_dimension, data["walker_data"], proposed_data["walker_data"]
         )
-
+        jax.debug.print("marker_11")
         new_move_metadata = proposed_data["move_metadata"]
+        jax.debug.print("marker_12")
         if update_move_metadata_fn is not None:
             new_move_metadata = update_move_metadata_fn(
                 data["move_metadata"], move_mask
             )
+        jax.debug.print("marker_13")
 
         return PositionAmplitudeData(
             atoms_position=data["atoms_position"], walker_data=new_walker_data, move_metadata=new_move_metadata
