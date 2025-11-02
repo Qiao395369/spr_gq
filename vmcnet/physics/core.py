@@ -143,13 +143,17 @@ def combine_local_energy_terms(
 
     return local_energy_fn
 
+def allreduce_mean(x,axis):
+    x=jnp.mean(x,axis)
+    return jax.lax.pmean(x,axis_name=utils.distribute.PMAP_AXIS_NAME)
+
 def get_statistics_from_other_energy(
     energy1: Array, energy2: Array, energy3: Array, energy4: Array, nan_safe: bool = True
 ) -> Tuple[Array, Array]:
-    if nan_safe:
-        allreduce_mean = utils.distribute.nanmean_all_local_devices
-    else:
-        allreduce_mean = utils.distribute.mean_all_local_devices
+    # if nan_safe:
+    #     allreduce_mean = utils.distribute.nanmean_all_local_devices
+    # else:
+    #     allreduce_mean = utils.distribute.mean_all_local_devices
     energy1 = allreduce_mean(energy1,axis=(0,1))
     energy2 = allreduce_mean(energy2,axis=(0,1))
     energy3 = allreduce_mean(energy3,axis=(0,1))
@@ -179,15 +183,16 @@ def get_statistics_from_local_energy(
     # is fairly crucial to the success of the algorithm
     assert len(local_energies.shape) == 2  # local_energies:(W,B)
     W, B = local_energies.shape
-    # ridx = jax.lax.axis_index("dev")  # 确保外层 pmap(..., axis_name="dev")
-    ridx=0
+    ridx = jax.lax.axis_index(utils.distribute.PMAP_AXIS_NAME) 
+    # ridx=0
     jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] local_energies shape={local_energies.shape} dtype={local_energies.dtype.name}")
-    if nan_safe:
-        allreduce_mean = utils.distribute.nanmean_all_local_devices
-        w_mean = jnp.nanmean
-    else:
-        allreduce_mean = utils.distribute.mean_all_local_devices
-        w_mean = jnp.mean
+    # if nan_safe:
+    #     allreduce_mean = utils.distribute.nanmean_all_local_devices
+    #     w_mean = jnp.nanmean
+    # else:
+    #  allreduce_mean = utils.distribute.mean_all_local_devices
+    #     w_mean = jnp.mean
+    w_mean = jnp.mean
 
     energy_per_w = w_mean(local_energies, axis=1, keepdims=True)  # (W,1)
     jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}")
@@ -197,7 +202,7 @@ def get_statistics_from_local_energy(
     variance = allreduce_mean(var_per_w, axis=0)  # ()
     jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] variance shape={variance.shape} dtype={variance.dtype.name}")
     
-    return energy_per_w, variance    
+    return energy_per_w, variance 
 
 
 def get_clipped_energies_and_stats(
@@ -216,7 +221,7 @@ def get_clipped_energies_and_stats(
     
     energy_stats = dict(
         variance=variance,  #()
-        energy_noclip=utils.distribute.nanmean_all_local_devices(energy_noclip,axis=(0,1)),  #(1,)
+        energy_noclip=allreduce_mean(energy_noclip,axis=(0,1)),  #(1,)
         variance_noclip=variance_noclip,  #()
     )
 
@@ -374,8 +379,8 @@ def create_energy_and_statistics_fn(
         ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
         ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
         local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
-        # ridx = jax.lax.axis_index("dev")  # 确保外层 pmap(..., axis_name="dev")
-        ridx = 0
+        ridx = jax.lax.axis_index(utils.distribute.PMAP_AXIS_NAME) 
+
         jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}||local_energies_noclip shape={local_energies_noclip.shape} dtype={local_energies_noclip.dtype.name}")
                         
         kinetic,ei_potential,ee_potential,ii_potential = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
