@@ -55,18 +55,18 @@ def make_metropolis_step(
     ) -> Tuple[chex.Numeric, D, PRNGKey]:
         """Take a single metropolis step."""
         key, subkey = jax.random.split(key)
-        jax.debug.print("marker_0")
+        # jax.debug.print("marker_0")
         proposed_data, key = proposal_fn(params, data, key)
-        jax.debug.print("marker_1")
+        # jax.debug.print("marker_1")
         accept_prob = acceptance_fn(params, data, proposed_data)  #accept_prob:(W,B)
-        jax.debug.print("marker_2")
+        jax.debug.print(f"accept_prob:{accept_prob.shape}")
         move_mask = cast(
             Array,
             jax.random.uniform(subkey, shape=accept_prob.shape) < accept_prob,
         )
-        jax.debug.print("marker_3")
+        jax.debug.print(f"move_mask:{move_mask.shape}")
         new_data = update_data_fn(data, proposed_data, move_mask)
-        jax.debug.print("marker_4")
+        # jax.debug.print("marker_4")
         return jnp.mean(accept_prob), new_data, key
 
     return metrop_step_fn

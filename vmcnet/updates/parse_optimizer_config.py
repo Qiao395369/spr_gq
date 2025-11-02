@@ -83,6 +83,7 @@ def _get_InverseSchedule(init_value, decay_rate, offset=0.0):
 def initialize_optimizer(
     log_psi_apply_novmap: ModelApply[P],
     kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+    det_fn_novmap,
     clipping_fn: Optional[ClippingFn],
     vmc_config: ConfigDict,
     params: P,
@@ -150,11 +151,12 @@ def initialize_optimizer(
         )
         loss_fn = make_value_and_grad(
             log_psi_apply_novmap,
+            det_fn_novmap,
             vmc_config.repeat_single_mol,
             utils.distribute.PMAP_AXIS_NAME,
             flat_ansatz_call,
+            vmc_config.det_penalty_weight,
             apply_pmap,
-            # det_dist_weight=vmc_config.det_penalty_weight,
         )
         # value_and_grad_fn = jax.value_and_grad(loss_fn)
 

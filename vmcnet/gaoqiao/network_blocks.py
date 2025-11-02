@@ -194,7 +194,8 @@ def logdet_matmul(xs: Sequence[jnp.ndarray],
   sign_in, logdet = functools.reduce(
       lambda a, b: (a[0] * b[0], a[1] + b[1]),
       [slogdet(x) for x in xs if x.shape[-1] > 1], (1, 0))
-
+  # jax.debug.print(f"sign_in:{sign_in.shape}")   #(ndet,)
+  # jax.debug.print(f"logdet:{logdet.shape}")     #(nedt,)
   # log-sum-exp trick
   maxlogdet = jnp.max(logdet)
   det = sign_in * det1d * jnp.exp(logdet - maxlogdet)
@@ -216,4 +217,4 @@ def logdet_matmul(xs: Sequence[jnp.ndarray],
   else:
     sign_out = jnp.exp(1j * jnp.angle(result))
   log_out = jnp.log(jnp.abs(result)) + maxlogdet
-  return sign_out, log_out
+  return sign_out, log_out, logdet

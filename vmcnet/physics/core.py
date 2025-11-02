@@ -157,7 +157,7 @@ def get_statistics_from_other_energy(
     return energy1,energy2,energy3,energy4
 
 def get_statistics_from_local_energy(
-    local_energies: Array, nan_safe: bool = True
+    local_energies: Array, nan_safe: bool ,
 ) -> Tuple[Array, Array]:
     """Collectively reduce local energies to an average energy and variance.
 
@@ -179,6 +179,9 @@ def get_statistics_from_local_energy(
     # is fairly crucial to the success of the algorithm
     assert len(local_energies.shape) == 2  # local_energies:(W,B)
     W, B = local_energies.shape
+    # ridx = jax.lax.axis_index("dev")  # 确保外层 pmap(..., axis_name="dev")
+    ridx=0
+    jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] local_energies shape={local_energies.shape} dtype={local_energies.dtype.name}")
     if nan_safe:
         allreduce_mean = utils.distribute.nanmean_all_local_devices
         w_mean = jnp.nanmean
@@ -187,10 +190,13 @@ def get_statistics_from_local_energy(
         w_mean = jnp.mean
 
     energy_per_w = w_mean(local_energies, axis=1, keepdims=True)  # (W,1)
+    jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}")
+    
     var_per_w = jnp.sum(jnp.square(local_energies - energy_per_w), axis=1) / jnp.maximum(B - 1, 1)  # (W,)
 
     variance = allreduce_mean(var_per_w, axis=0)  # ()
-
+    jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] variance shape={variance.shape} dtype={variance.dtype.name}")
+    
     return energy_per_w, variance    
 
 
@@ -368,14 +374,21 @@ def create_energy_and_statistics_fn(
         ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
         ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
         local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
-
+        # ridx = jax.lax.axis_index("dev")  # 确保外层 pmap(..., axis_name="dev")
+        ridx = 0
+        jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}||local_energies_noclip shape={local_energies_noclip.shape} dtype={local_energies_noclip.dtype.name}")
+                        
         kinetic,ei_potential,ee_potential,ii_potential = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
-
-
+        jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}")
+        
         energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
             local_energies_noclip, clipping_fn, nan_safe
         )
+        jax.debug.print(f"in energy_and_statistics: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}||E_loc shape={E_loc.shape} dtype={E_loc.dtype.name}")
+        
         multi_energy=jnp.squeeze(energy_per_w, axis=-1)
+        jax.debug.print(f"in energy_and_statistics: [replica {ridx}] multi_energy shape={multi_energy.shape} dtype={multi_energy.dtype.name}")
+
         stats.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential,"multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats

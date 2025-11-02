@@ -219,7 +219,7 @@ def _get_gaoqiao_model(
         # trimul_params = None
         # gemi_params = None
         # feat_params = None
-        params, network_wfn = gaoqiaobuild.build_network(           #orbitals
+        params, network_wfn, det_fn = gaoqiaobuild.build_network(           #orbitals
             n=nelec,  #电子个数
             charges=charges,  #i.e. charges=jnp.asarray([7.,7.])
             nspins=nspins,   #i.e. (7,7)
@@ -386,7 +386,11 @@ def _get_gaoqiao_model(
     def log_psi_apply(params, xp, xe):
         return jax.vmap(jax.vmap(log_psi_apply_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, xp, xe)
         
-    return log_psi_apply,log_psi_apply_novmap, params, key
+    def det_fn_novmap(params,xp,xe):
+        det = det_fn(params,xe,xp) #xe(ne,3),xp(na,3)
+        return det
+
+    return log_psi_apply,log_psi_apply_novmap, det_fn_novmap, params, key
 
 
 # TODO: figure out how to merge this and other distributing logic with the current
@@ -604,7 +608,7 @@ def _setup_vmc(
 
     # Make the model
     if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer","lapnet"]:
-        log_psi_apply_vmap, log_psi_apply,params, key =  _get_gaoqiao_model(
+        log_psi_apply_vmap, log_psi_apply, det_fn_novmap, params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
@@ -662,6 +666,7 @@ def _setup_vmc(
     ) = updates.parse_optimizer_config.initialize_optimizer(
         log_psi_apply,
         kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+        det_fn_novmap,
         clipping_fn,
         config.vmc,
         params,
@@ -980,7 +985,7 @@ def run_molecule() -> None:
         log_psi_apply,
         log_psi_apply_novmap,
         pacore.get_position_from_data,
-        apply_pmap=config.distribute,
+        apply_pmap=apply_pmap,
     )
     optimizer_state = None
 

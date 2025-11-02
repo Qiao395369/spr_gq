@@ -2321,6 +2321,7 @@ def fermi_net(
     pos: jnp.ndarray,
     atoms: jnp.ndarray,
     nspins: Tuple[int, ...],
+    return_det_dist=False,
     options: FermiNetOptions = FermiNetOptions(),
 ):
   """Forward evaluation of the Fermionic Neural Network for a single datum.
@@ -2358,8 +2359,11 @@ def fermi_net(
   # print("orbitals:",orbitals)
   assert (options.envelope_pw is None),"envelope_pw should be None in gq"
 
-  sign_out, log_out = network_blocks.logdet_matmul(orbitals, w=params['det'], do_complex=options.do_complex)
+  sign_out, log_out, logdet = network_blocks.logdet_matmul(orbitals, w=params['det'], do_complex=options.do_complex)
 
+  if return_det_dist:
+    return jax.nn.log_softmax(logdet)
+  
   if params['jastrow'] is not None:
     jastrow = options.jastrow.apply(params['jastrow'], r_ee, he)
     log_out += jastrow
@@ -2472,8 +2476,17 @@ def make_fermi_net(
   network = functools.partial(
       fermi_net,
       nspins=nspins,
+      return_det_dist=False,
       options=options,
   )
 
-  return init, network, options
+  det_fn = functools.partial(
+      fermi_net,
+      nspins=nspins,
+      return_det_dist=True,
+      options=options,
+  )
+
+
+  return init, network, det_fn, options
 

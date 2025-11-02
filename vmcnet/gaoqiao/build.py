@@ -189,7 +189,7 @@ def build_network(
 			attn_1_params=None,
 		)
 
-	network_init, signed_network, network_options = networks.make_fermi_net(
+	network_init, signed_network, det_fn, network_options = networks.make_fermi_net(
 		n, 
 		ndim, 
 		nspins,
@@ -217,7 +217,7 @@ def build_network(
 	key, subkey = jax.random.split(key)
 	params = network_init(subkey)
 
-	return params, signed_network
+	return params, signed_network, det_fn
 
 if __name__=='__main__':
 	n = 14

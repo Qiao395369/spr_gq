@@ -59,7 +59,7 @@ def ansatz_jvp(
 
 
 def determinant_jvp(
-    ansatz,
+    det_fn_novmap,
     params,
     dparams,
     atoms_position,
@@ -79,9 +79,7 @@ def determinant_jvp(
     """
 
     def _call(params):
-        det_dist = jax.vmap(
-            jax.vmap(partial(ansatz, return_det_dist=True), (None, None, 0)), (None, 0, 0)
-        )(params, atoms_position, elec_position)[1]
+        det_dist = jax.vmap(jax.vmap(det_fn_novmap, (None, None, 0)), (None, 0, 0))(params, atoms_position, elec_position)
         return det_dist.mean(-1)
 
     return typing.cast(tuple[jax.Array, jax.Array], jax.jvp(_call, (params,), (dparams,)))
@@ -132,13 +130,16 @@ def make_loss(
 
 def make_value_and_grad(
     ansatz,
+    det_fn_novmap,
     repeat_single_mol: bool,
     pmap_axis_name: str,
     ansatz_call_fn,
+    det_dist_weight,
     apply_pmap: bool,
 ):
     def value_and_grad(params, batch):
         local_energies, energy_per_w, data = batch
+        (W, B) = local_energies.shape
         atoms = data["atoms_position"]
         elec  = data["walker_data"]["elec_position"]
 
@@ -157,15 +158,30 @@ def make_value_and_grad(
 
         centered = local_energies - energy_per_w         # (W,B)
 
-        weights = centered.reshape(-1)
-        is_finite = jnp.isfinite(weights)
-        n_local = jnp.sum(is_finite)
-        n = jnp.maximum(1, n_local)
-        weights = jnp.where(is_finite, weights / n, 0.0).astype(log_psi.dtype)
+        weights_energy = centered.reshape(-1)
+        weights_energy = (weights_energy / (W*B)).astype(log_psi.dtype)
+        grad_params_energy = vjp_fun(weights_energy)[0]                # PyTree，与 params 同结构
 
-        grad_params = vjp_fun(weights)[0]                # PyTree，与 params 同结构
+        pre_conditioner_det = jnp.sqrt(jnp.sum(centered ** 2, axis=-1, keepdims=True ) / jnp.maximum(1, B - 1))  #(W,1)
+
+        def g(p):  #(W,B)
+            det_dist = jax.vmap(jax.vmap(det_fn_novmap, (None, None, 0)), (None, 0, 0))(p, atoms, elec)
+            return det_dist.mean(-1)
+
+        det_out, vjp_det = jax.vjp(g, params)
+
+        row = ((-det_dist_weight) / (W * B)) * pre_conditioner_det  # (W,1)
+        det_scale = jnp.ones_like(det_out) * row                    # (W,B)
+        det_scale = det_scale.astype(det_out.dtype)
+        grad_params_det = vjp_det(det_scale)[0]
+
+        grad_params = jax.tree_util.tree_map(
+            lambda a, b: a + b, grad_params_energy, grad_params_det
+        )
+
         loss_val = jnp.nanmean(local_energies)           # 标量
 
         return loss_val, grad_params
 
     return value_and_grad
+
