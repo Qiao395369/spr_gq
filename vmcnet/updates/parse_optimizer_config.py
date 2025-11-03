@@ -144,7 +144,7 @@ def initialize_optimizer(
                                                                   * int(batch[-1]["walker_data"]["elec_position"].shape[1])
                                                                 )
             ),
-            "multi_device": apply_pmap,
+            "multi_device": True,
         }
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
             kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
@@ -156,7 +156,6 @@ def initialize_optimizer(
             utils.distribute.PMAP_AXIS_NAME,
             flat_ansatz_call,
             vmc_config.det_penalty_weight,
-            apply_pmap,
         )
         # value_and_grad_fn = jax.value_and_grad(loss_fn)
 
@@ -165,7 +164,7 @@ def initialize_optimizer(
             energy_and_statistics_fn,
             update_data_fn,
         )
-        key, subkey = utils.distribute.split_or_psplit_key(key, apply_pmap)
+        key, subkey = utils.distribute.split_or_psplit_key(key, multi_device = True)
 
         optimizer_state = opt.init(subkey,params,data)
         update_param_fn = opt.step
@@ -229,13 +228,8 @@ def initialize_optimizer(
         opt_kwargs["damping_schedule"] = damping_rate_schedule
         opt_kwargs["repeat_single_mol"] = vmc_config.repeat_single_mol
         opt = spring_wrapper(Spring(**opt_kwargs), log_psi_apply_novmap, update_data_fn, energy_and_statistics_fn)
-        if apply_pmap:
-            update_param_fn = jax.pmap(opt.step, axis_name=utils.distribute.PMAP_AXIS_NAME)
-            init_fn = jax.pmap(opt.init, axis_name=utils.distribute.PMAP_AXIS_NAME)
-        else:
-            update_param_fn = jax.jit(opt.step)
-            init_fn = jax.jit(opt.init)
-        optimizer_state = init_fn(params)
+        optimizer_state = opt.init(params)
+        update_param_fn = opt.step
         return update_param_fn, optimizer_state, key
     
     elif vmc_config.optimizer_type == "gauss_newton":

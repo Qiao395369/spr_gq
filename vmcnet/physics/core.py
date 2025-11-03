@@ -116,8 +116,8 @@ def initialize_molecular_pos(
     ppp=ppp[:,None,...]
     key, subkey = jax.random.split(key)
     ppp += jax.random.normal(subkey, shape=(walker,nchains,)+ppp.shape[-2:] , dtype=dtype) * init_width
-    logging.info("init_xp: %s", ion_pos.shape)
-    logging.info("init_xe: %s", ppp.shape)
+    logging.info("init_xp: %s \n " \
+    "         init_xe: %s", ion_pos.shape, ppp.shape)
     return key, ppp
 
 def combine_local_energy_terms(
@@ -369,64 +369,81 @@ def create_energy_and_statistics_fn(
         (expected_variance, local_energies, unclipped_energy, unclipped_variance, centered_local_energies)
     """
 
-    def energy_and_statistics(params,atoms_positions, positions):
-        '''
-        atoms_positions:(W,natom,dim)
-        positions:(W,B,nele,dim)
-        '''
-        jax.debug.print(f"in energy_and_statistics: atoms_positions shape={atoms_positions.shape} dtype={atoms_positions.dtype.name}||positions shape={positions.shape} dtype={positions.dtype.name}")
-        kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
-        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
-        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
-        ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
-        local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
+    def energy_and_statistics(params, atoms_positions, positions):
+        """
+        atoms_positions: (W, natom, dim)
+        positions:       (W, B, nele, dim)
+        Returns:
+            energy_per_w: (W, 1)
+            E_loc:        (W, B)
+            stats: dict(...)
+        """
+        jax.debug.print(
+            f"energy_and_statistics: atoms_positions shape={atoms_positions.shape} dtype={atoms_positions.dtype.name} || positions shape={positions.shape} dtype={positions.dtype.name}",
+        )
+
+        # --- Compute per-replica tensors (shape (W,B)) ---
+        kinetic = jax.vmap(jax.vmap(kinetic_fn,      in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
+        ei_pot  = jax.vmap(jax.vmap(ei_potential_fn, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
+        ee_pot  = jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
+        ii_pot  = jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
+
+        local_energies_noclip = kinetic + ei_pot + ee_pot + ii_pot  # (W,B)
         W, B = local_energies_noclip.shape
-        dtype = local_energies_noclip.dtype
+        out_dtype = local_energies_noclip.dtype  # 保持对外 dtype 一致
 
-        if debug == "0":
-            kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype)
-            energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
-            stats = dict(
-                        variance=jnp.ones((),dtype=dtype),  #()
-                        energy_noclip=jnp.ones((1,),dtype=dtype),  #(1,)
-                        variance_noclip=jnp.ones((),dtype=dtype),  #()
-                    )
-        
-        if debug == "1":
-            kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
-            energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
-            stats = dict(
-                        variance=jnp.ones((),dtype=dtype),  #()
-                        energy_noclip=jnp.ones((1,),dtype=dtype),  #(1,)
-                        variance_noclip=jnp.ones((),dtype=dtype),  #()
-                    )
+        # --- Per-replica reductions to scalars (shape ()) ---
+        # 注意：对 (W,B) 做 mean → 标量，维度完全一致，便于后续 stack 一次 pmean
+        kinetic_mean = jnp.mean(kinetic, axis=(0, 1))
+        ei_mean      = jnp.mean(ei_pot,  axis=(0, 1))
+        ee_mean      = jnp.mean(ee_pot,  axis=(0, 1))
+        ii_mean      = jnp.mean(ii_pot,  axis=(0, 1))
 
-        if debug == "2":
-            kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
-            energy_per_w, E_loc, stats = get_clipped_energies_and_stats(local_energies_noclip, clipping_fn, nan_safe)
+        # --- 必须在 pmap 作用域；更友好地报错 ---
+        _assert_in_pmap_or_explain(PMAP_AXIS_NAME)
 
-        if debug == "3":
-            kinetic_mean = jnp.mean(kinetic, axis=(0,1))
-            ei_potential_mean = jnp.mean(ei_potential, axis=(0,1))
-            ee_potential_mean = jnp.mean(ee_potential, axis=(0,1))
-            ii_potential_mean = jnp.mean(ii_potential, axis=(0,1))
-            
-            _assert_in_pmap_or_explain(PMAP_AXIS_NAME)
-            kinetic_pmean = jax.lax.pmean(kinetic_mean, axis_name=PMAP_AXIS_NAME)
-            ei_potential_pmean = jax.lax.pmean(ei_potential_mean, axis_name=PMAP_AXIS_NAME)
-            ee_potential_pmean = jax.lax.pmean(ee_potential_mean, axis_name=PMAP_AXIS_NAME)
-            ii_potential_pmean = jax.lax.pmean(ii_potential_mean, axis_name=PMAP_AXIS_NAME)
+        # --- Sentinel sync: 确保所有副本已就绪（对齐 collective 序列） ---
+        _ = jax.lax.psum(jnp.array(0, jnp.int32), axis_name=PMAP_AXIS_NAME)
+        jax.debug.print("sentinel psum ok")
 
-            energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
-            stats = dict(
-                        variance=jnp.ones((),dtype=dtype),  #()
-                        energy_noclip=jnp.ones((1,),dtype=dtype),  #(1,)
-                        variance_noclip=jnp.ones((),dtype=dtype),  #()
-                    )
+        # --- 把 4 个标量拼成向量，统一到 fp32 后只做一次 pmean ---
+        stacked = jnp.stack([kinetic_mean, ei_mean, ee_mean, ii_mean], axis=0)  # (4,)
+        comm_vec = stacked.astype(jnp.float32)
 
-        multi_energy=jnp.squeeze(energy_per_w, axis=-1)
+        # --- 轻量一致性自检：所有副本的元素数应一致 ---
+        vec_size  = jnp.array(comm_vec.size, jnp.int32)
+        world_sz  = jax.lax.psum(jnp.array(1, jnp.int32), axis_name=PMAP_AXIS_NAME)
+        sum_sizes = jax.lax.psum(vec_size, axis_name=PMAP_AXIS_NAME)
+        jax.debug.print(f"comm check: world={world_sz}, vec_size={vec_size}, sum_sizes={sum_sizes}")
+        # 若有需要，可在这里加 assert（训练时不建议抛异常）：
+        # assert_fn = lambda cond, msg: jax.lax.cond(cond, lambda _: None, lambda _: (_ for _ in ()).throw(AssertionError(msg)), operand=None)
+        # assert_fn(sum_sizes == world_sz * vec_size, "collective vector size mismatch across replicas")
 
-        stats.update({"kinetic": kinetic_pmean, "ei_potential": ei_potential_pmean ,"ee_potential":ee_potential_pmean,"ii_potential":ii_potential_pmean,"multi_energy":multi_energy})
+        # --- 单次 AllReduce（pmean） ---
+        comm_vec = jax.lax.pmean(comm_vec, axis_name=PMAP_AXIS_NAME)  # (4,)
+        comm_vec = comm_vec.astype(out_dtype)
+        kinetic_pmean, ei_pmean, ee_pmean, ii_pmean = comm_vec
+
+        # --- 下面保持你的原有返回结构（占位实现） ---
+        # 如需真正能量/方差统计，可在此处替换为实际计算逻辑。
+        energy_per_w = jnp.ones((W, 1), dtype=out_dtype)
+        E_loc        = jnp.ones((W, B), dtype=out_dtype)
+
+        stats = dict(
+            variance=jnp.ones((),   dtype=out_dtype),
+            energy_noclip=jnp.ones((1,), dtype=out_dtype),
+            variance_noclip=jnp.ones((), dtype=out_dtype),
+            kinetic=kinetic_pmean,
+            ei_potential=ei_pmean,
+            ee_potential=ee_pmean,
+            ii_potential=ii_pmean,
+            multi_energy=jnp.squeeze(energy_per_w, axis=-1),  # (W,)
+            world_size=world_sz,  # 方便排查
+        )
+
+        # multi_energy=jnp.squeeze(energy_per_w, axis=-1)
+
+        # stats.update({"kinetic": kinetic_pmean, "ei_potential": ei_potential_pmean ,"ee_potential":ee_potential_pmean,"ii_potential":ii_potential_pmean,"multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats
 

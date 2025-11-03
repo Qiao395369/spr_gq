@@ -36,16 +36,6 @@ from .update_param_fns import UpdateParamFn, update_metrics_with_noclip
 OptimizerState: TypeAlias = Dict
 WavefunctionParams: TypeAlias = Dict
 
-def _get_traced_compute_param_norm(
-    apply_pmap: bool = True,
-) -> Callable[[PyTree], Array]:
-    if not apply_pmap:
-        return jax.jit(tree_reduce_l1)
-
-    return utils.distribute.pmap(tree_reduce_l1)
-
-
-    
 
 def kfac_wrapper(
     kfac_opt, 
@@ -55,11 +45,9 @@ def kfac_wrapper(
     """Wrap a KFAC optimizer to make it compatible with the optimizer interface."""
 
     momentum = jnp.asarray(0.0)
-
-    if kfac_opt.multi_device:
-        momentum = utils.distribute.replicate_all_local_devices(momentum)
-        update_data_fn = utils.distribute.pmap(update_data_fn)
-        energy_and_statistics_fn = utils.distribute.pmap(energy_and_statistics_fn)
+    momentum = utils.distribute.replicate_all_local_devices(momentum)
+    update_data_fn = utils.distribute.pmap(update_data_fn)
+    energy_and_statistics_fn = utils.distribute.pmap(energy_and_statistics_fn)
 
 
     def init(
@@ -80,7 +68,7 @@ def kfac_wrapper(
         opt_state: OptimizerState,
         data,
     ) -> tuple[P,D, OptimizerState, Dict]:
-        key, subkey = utils.distribute.split_or_psplit_key(key, kfac_opt.multi_device)
+        key, subkey = utils.distribute.split_or_psplit_key(key, multi_device = True)
         energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
         batch = (E_loc, energy_per_w, data)
 

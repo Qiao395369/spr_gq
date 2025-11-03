@@ -135,7 +135,6 @@ def make_value_and_grad(
     pmap_axis_name: str,
     ansatz_call_fn,
     det_dist_weight,
-    apply_pmap: bool,
 ):
     def value_and_grad(params, batch):
         local_energies, energy_per_w, data = batch
@@ -153,8 +152,7 @@ def make_value_and_grad(
 
         if repeat_single_mol:
             energy_per_w = jnp.mean(energy_per_w, axis=0, keepdims=True)
-            if apply_pmap:
-                energy_per_w = jax.lax.pmean(energy_per_w, axis_name=pmap_axis_name)
+            energy_per_w = jax.lax.pmean(energy_per_w, axis_name=pmap_axis_name)
 
         centered = local_energies - energy_per_w         # (W,B)
 

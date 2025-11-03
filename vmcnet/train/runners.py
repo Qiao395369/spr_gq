@@ -46,31 +46,19 @@ from kfac_jax import utils as kfac_utils
 
 import logging
 
-def should_apply_pmap(
-    require_accelerator: bool = True,
-    min_local_devices: int = 2,
-) -> bool:
-
+def show_devices():
     devices = jax.devices()
     local_n = jax.local_device_count()
     backend = jax.default_backend()  # "gpu" / "tpu" / "cpu"
-
-    has_accelerator = any(d.platform in ("gpu", "tpu") for d in devices)
     logging.info(
-        "JAX backend=%s, process_count=%d, local_device_count=%d, global_device_count=%d",
-        backend, jax.process_count(), local_n, jax.device_count()
+        "Devices=%s\n " \
+        "         JAX backend=%s\n " \
+        "         process_count=%d\n" \
+        "          local_device_count=%d\n" \
+        "          global_device_count=%d",
+        devices, backend, jax.process_count(), local_n, jax.device_count()
     )
 
-    if require_accelerator and not has_accelerator:
-        logging.info("no GPU/TPU → apply_pmap = False")
-        return False
-
-    if local_n >= min_local_devices:
-        logging.info("local_devices >= %d → apply_pmap = True", min_local_devices)
-        return True
-
-    logging.info("local_devices (found=%d, need=%d) → apply_pmap = False", local_n, min_local_devices)
-    return False
 
 def get_params_initialization_key(deterministic):
   '''
@@ -111,8 +99,8 @@ def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict,in
     utils.io.save_config_dict_to_json(reload_config, config.logdir, name+"_config")
     # logging.info("%s configuration: \n%s", (name,reload_config))
     # logging.info("Running with configuration: \n%s", config)
-    logging.info("%s configuration   : %s", name, config.logdir+"/"+name+"_config.json")
-    logging.info("Run with configuration: %s", config.logdir+"/"+"config.json")
+    logging.info("%s configuration  : %s\n" \
+    "          Run with configuration: %s", name, config.logdir+"/"+name+"_config.json", config.logdir+"/"+"config.json")
     return config.logdir
 
 
@@ -161,7 +149,7 @@ def _get_electron_ion_config_as_arrays(
     single_nspins=jnp.array(config.single_nspins,dtype=int)
     nelec = jnp.array(config.nspins)
     nspins=config.nspins
-    logging.info(f"initial_ion_positions:{ion_pos.shape}")
+    # logging.info(f"initial_ion_positions:{ion_pos.shape}")
     return ion_pos, ion_charges, nelec, nspins, single_nspins
 
 
@@ -372,7 +360,7 @@ def _get_gaoqiao_model(
     print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
     print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
     raveled_params, _ = jax.flatten_util.ravel_pytree(params)
-    print(f"#parameters in the wavefunction model: {raveled_params.size}")
+    logging.info(f"#parameters in the wavefunction model: {raveled_params.size}")
 
     if apply_pmap:
         params = utils.distribute.replicate_all_local_devices(params)
@@ -849,9 +837,10 @@ def _compute_and_save_energy_statistics(
         output_filename,
     )
 
-
+import os
 def run_molecule() -> None:
     """Run VMC on a molecule."""
+    # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
     reload_from_checkpoint = (
@@ -879,7 +868,9 @@ def run_molecule() -> None:
     root_logger.setLevel(config.logging_level)
     logdir = _get_logdir_and_save_config(reload_config, config,False)
     # _save_git_hash(logdir)
-    apply_pmap = should_apply_pmap()
+    show_devices()
+    apply_pmap = True
+
     dtype_to_use = _get_dtype(config)
 
     ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(
