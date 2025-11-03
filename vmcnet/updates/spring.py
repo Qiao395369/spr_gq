@@ -58,7 +58,7 @@ class Optimizer(NamedTuple):
 def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statistics_fn) -> Optimizer:
     """Wrap the spring optimizer to make it compatible with the optimizer interface."""
 
-    @partial(jax.pmap, axis_name=PMAP_AXIS_NAME)
+    # @partial(jax.pmap, axis_name=PMAP_AXIS_NAME)
     def init(
         params: P,
     ) -> OptimizerState:
@@ -71,8 +71,9 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
         return jax.flatten_util.ravel_pytree(log_grads)[0]
     
 
-    @partial(jax.pmap, axis_name=PMAP_AXIS_NAME)
+    # @partial(jax.pmap, axis_name=PMAP_AXIS_NAME)
     def step(
+        key,
         params: P,
         opt_state: OptimizerState,
         data:D ,
@@ -99,7 +100,7 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
                     "variance_noclip": stats["variance_noclip"],
             }
         # metrics = jax.tree_map(lambda x: jnp.asarray(x, dtype=jnp.float32), metrics)
-        return params,data, opt_state, metrics
+        return params,data, opt_state, metrics, key
 
     return Optimizer(init=init, step=step)
 
@@ -113,12 +114,14 @@ class Spring:
         learning_rate_schedule: Callable[[int], float],
         damping_schedule: Callable[[int], float],
         repeat_single_mol: bool = False,
+        apply_pmap: bool = True,
     ):
         self.mu = mu
         self.norm_constraint = norm_constraint
         self.lr_schedule = learning_rate_schedule
         self.dp_schedule = damping_schedule
         self.repeat_single_mol = repeat_single_mol
+        self.apply_pmap = apply_pmap
 
     def init(self, params: P):
         opt_state = {
@@ -143,7 +146,8 @@ class Spring:
         T_reg = T + ones + self.dp_schedule(opt_state["step"]) * jnp.eye(electron_batch_size)[None,:,:] #(W,B,B)
         # E_mean_per_mol = jnp.mean(E_loc, axis=-1, keepdims=True)  #(W,B)->(W,1)
         E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,1)
-        E_mean = jax.lax.pmean(E_mean, axis_name=PMAP_AXIS_NAME)  #(1,1)
+        if self.apply_pmap:
+            E_mean = jax.lax.pmean(E_mean, axis_name=PMAP_AXIS_NAME)  #(1,1)
         if self.repeat_single_mol:
             E_mean_per_mol = E_mean
         epsilon_bar = (E_loc - E_mean_per_mol) / jnp.sqrt(electron_batch_size)

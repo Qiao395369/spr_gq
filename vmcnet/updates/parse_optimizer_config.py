@@ -220,7 +220,7 @@ def initialize_optimizer(
     elif vmc_config.optimizer_type == "spring":
         damping_rate_schedule = _get_damping_rate_schedule(vmc_config)
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
+            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
         )
         opt_kwargs = {}
         opt_kwargs["mu"] = optimizer_config.mu
@@ -229,8 +229,13 @@ def initialize_optimizer(
         opt_kwargs["damping_schedule"] = damping_rate_schedule
         opt_kwargs["repeat_single_mol"] = vmc_config.repeat_single_mol
         opt = spring_wrapper(Spring(**opt_kwargs), log_psi_apply_novmap, update_data_fn, energy_and_statistics_fn)
-        optimizer_state = opt.init(params)
-        update_param_fn = opt.step
+        if apply_pmap:
+            update_param_fn = jax.pmap(opt.step, axis_name=utils.distribute.PMAP_AXIS_NAME)
+            init_fn = jax.pmap(opt.init, axis_name=utils.distribute.PMAP_AXIS_NAME)
+        else:
+            update_param_fn = jax.jit(opt.step)
+            init_fn = jax.jit(opt.init)
+        optimizer_state = init_fn(params)
         return update_param_fn, optimizer_state, key
     
     elif vmc_config.optimizer_type == "gauss_newton":

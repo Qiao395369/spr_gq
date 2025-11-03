@@ -19,7 +19,7 @@ from vmcnet.utils.typing import (
     Dict,
     Any,
 )
-from vmcnet.utils.distribute import PMAP_AXIS_NAME as PMAP_AXIS_NAME
+from vmcnet.utils.distribute import PMAP_AXIS_NAME
 EnergyAuxData = Dict[str, Any]
 ValueGradEnergyFn = Callable[[P, Array, Array], Tuple[Array, EnergyAuxData, P]]
 
@@ -410,7 +410,8 @@ def create_energy_and_statistics_fn(
             ei_potential_mean = jnp.mean(ei_potential, axis=(0,1))
             ee_potential_mean = jnp.mean(ee_potential, axis=(0,1))
             ii_potential_mean = jnp.mean(ii_potential, axis=(0,1))
-
+            
+            _assert_in_pmap_or_explain(PMAP_AXIS_NAME)
             kinetic_pmean = jax.lax.pmean(kinetic_mean, axis_name=PMAP_AXIS_NAME)
             ei_potential_pmean = jax.lax.pmean(ei_potential_mean, axis_name=PMAP_AXIS_NAME)
             ee_potential_pmean = jax.lax.pmean(ee_potential_mean, axis_name=PMAP_AXIS_NAME)
@@ -437,3 +438,19 @@ def create_energy_and_statistics_fn(
         # jax.debug.print(f"in energy_and_statistics: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}||E_loc shape={E_loc.shape} dtype={E_loc.dtype.name}")
         # jax.debug.print(f"in energy_and_statistics: [replica {ridx}] multi_energy shape={multi_energy.shape} dtype={multi_energy.dtype.name}")
         # jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}||local_energies_noclip shape={local_energies_noclip.shape} dtype={local_energies_noclip.dtype.name}")
+
+def _assert_in_pmap_or_explain(axis_name: str):
+    # 如果当前不在 pmap 作用域，下面这行会抛错；我们捕获后抛出更友好的信息
+    try:
+        ridx = jax.lax.axis_index(axis_name)
+        jax.debug.print(f"pmap preflight ok: axis_name={axis_name}, replica_index={ridx}")
+    except Exception as e:
+        # 这里故意抛清晰的错误，告诉你在哪里、为什么、怎么修
+        raise RuntimeError(
+            f"[allreduce_mean] Not inside jax.pmap(axis_name={axis_name}). "
+            f"You're calling a collective (pmean) outside pmap, or the axis_name mismatches.\n"
+            f"Tips:\n"
+            f"  - Wrap the caller with @jax.pmap(axis_name={axis_name}).\n"
+            f"  - Ensure this axis_name matches everywhere (including utils.distribute.PMAP_AXIS_NAME).\n"
+            f"  - Single-device is fine, but still must be inside pmap if you call pmean."
+        ) from e
