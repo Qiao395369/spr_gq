@@ -154,11 +154,11 @@ def get_statistics_from_other_energy(
     #     allreduce_mean = utils.distribute.nanmean_all_local_devices
     # else:
     #     allreduce_mean = utils.distribute.mean_all_local_devices
-    energy1 = allreduce_mean(energy1,axis=(0,1))
-    energy2 = allreduce_mean(energy2,axis=(0,1))
-    energy3 = allreduce_mean(energy3,axis=(0,1))
-    energy4 = allreduce_mean(energy4,axis=(0,1))
-    return energy1,energy2,energy3,energy4
+    energy1_mean = allreduce_mean(energy1,axis=(0,1))
+    energy2_mean = allreduce_mean(energy2,axis=(0,1))
+    energy3_mean = allreduce_mean(energy3,axis=(0,1))
+    energy4_mean = allreduce_mean(energy4,axis=(0,1))
+    return energy1_mean, energy2_mean, energy3_mean, energy4_mean
 
 def get_statistics_from_local_energy(
     local_energies: Array, nan_safe: bool ,
@@ -383,18 +383,16 @@ def create_energy_and_statistics_fn(
 
         jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}||local_energies_noclip shape={local_energies_noclip.shape} dtype={local_energies_noclip.dtype.name}")
                         
-        kinetic,ei_potential,ee_potential,ii_potential = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
+        kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
         jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}")
         
-        energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
-            local_energies_noclip, clipping_fn, nan_safe
-        )
+        energy_per_w, E_loc, stats = get_clipped_energies_and_stats(local_energies_noclip, clipping_fn, nan_safe)
         jax.debug.print(f"in energy_and_statistics: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}||E_loc shape={E_loc.shape} dtype={E_loc.dtype.name}")
         
         multi_energy=jnp.squeeze(energy_per_w, axis=-1)
         jax.debug.print(f"in energy_and_statistics: [replica {ridx}] multi_energy shape={multi_energy.shape} dtype={multi_energy.dtype.name}")
 
-        stats.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential,"multi_energy":multi_energy})
+        stats.update({"kinetic": kinetic_mean, "ei_potential": ei_potential_mean ,"ee_potential":ee_potential_mean,"ii_potential":ii_potential_mean,"multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats
 
