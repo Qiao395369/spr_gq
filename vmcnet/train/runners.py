@@ -16,6 +16,8 @@ import numpy as np
 from absl import flags
 from ml_collections import ConfigDict
 # import wandb
+from vmcnet.utils.distribute import PMAP_AXIS_NAME
+import vmcnet.utils as utils
 
 import vmcnet.mcmc as mcmc
 import vmcnet.mcmc.dynamic_width_position_amplitude as dwpa
@@ -356,7 +358,7 @@ def _get_gaoqiao_model(
         if not isinstance(block, dict):
             return False
         return set() < set(block.keys()) <= {"w", "b"}
-
+    
     print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
     print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
     raveled_params, _ = jax.flatten_util.ravel_pytree(params)
@@ -364,6 +366,12 @@ def _get_gaoqiao_model(
 
     if apply_pmap:
         params = utils.distribute.replicate_all_local_devices(params)
+    print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
+    print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
+    raveled_params, _ = jax.flatten_util.ravel_pytree(params)
+    logging.info(f"#parameters in the wavefunction model: {raveled_params.size}")
+
+    
 
     # @jax.jit
     def log_psi_apply_novmap(params,xp,xe):
@@ -624,6 +632,19 @@ def _setup_vmc(
         log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
     )
     logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
+
+    logging.info("JAX devices:%s", jax.devices())
+    n = jax.local_device_count()
+    x = jnp.ones((n,), dtype=jnp.float32)
+
+    def f(x):
+        r = jax.lax.axis_index(PMAP_AXIS_NAME)
+        s = jax.lax.pmean(x, axis_name=PMAP_AXIS_NAME)
+        jax.debug.print("[replica {}] x={} pmean={}", r, x, s)  # 不要 ordered=True
+        return s
+    pmap_f= utils.distribute.pmap(f)
+    y = pmap_f(data["atoms_position"])
+    logging.info("result:%s", jnp.asarray(y))
 
     get_amplitude_fn = pacore.get_amplitude_from_data
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)

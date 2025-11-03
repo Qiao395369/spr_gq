@@ -379,7 +379,7 @@ def create_energy_and_statistics_fn(
             stats: dict(...)
         """
         jax.debug.print(
-            f"energy_and_statistics: atoms_positions shape={atoms_positions.shape} dtype={atoms_positions.dtype.name} || positions shape={positions.shape} dtype={positions.dtype.name}",
+            f"energy_and_statistics: atoms_positions shape={atoms_positions.shape} dtype={atoms_positions.dtype.name} || positions shape={positions.shape} dtype={positions.dtype.name}"
         )
 
         # --- Compute per-replica tensors (shape (W,B)) ---
