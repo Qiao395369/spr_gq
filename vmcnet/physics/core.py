@@ -19,7 +19,7 @@ from vmcnet.utils.typing import (
     Dict,
     Any,
 )
-
+from vmcnet.utils.distribute import PMAP_AXIS_NAME as PMAP_AXIS_NAME
 EnergyAuxData = Dict[str, Any]
 ValueGradEnergyFn = Callable[[P, Array, Array], Tuple[Array, EnergyAuxData, P]]
 
@@ -384,7 +384,7 @@ def create_energy_and_statistics_fn(
         dtype = local_energies_noclip.dtype
 
         if debug == "0":
-            kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype)
+            kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype)
             energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
             stats = dict(
                         variance=jnp.ones((),dtype=dtype),  #()
@@ -393,7 +393,7 @@ def create_energy_and_statistics_fn(
                     )
         
         if debug == "1":
-            kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
+            kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
             energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
             stats = dict(
                         variance=jnp.ones((),dtype=dtype),  #()
@@ -402,12 +402,30 @@ def create_energy_and_statistics_fn(
                     )
 
         if debug == "2":
-            kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
+            kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
             energy_per_w, E_loc, stats = get_clipped_energies_and_stats(local_energies_noclip, clipping_fn, nan_safe)
+
+        if debug == "3":
+            kinetic_mean = jnp.mean(kinetic, axis=(0,1))
+            ei_potential_mean = jnp.mean(ei_potential, axis=(0,1))
+            ee_potential_mean = jnp.mean(ee_potential, axis=(0,1))
+            ii_potential_mean = jnp.mean(ii_potential, axis=(0,1))
+
+            kinetic_pmean = jax.lax.pmean(kinetic_mean, axis_name=PMAP_AXIS_NAME)
+            ei_potential_pmean = jax.lax.pmean(ei_potential_mean, axis_name=PMAP_AXIS_NAME)
+            ee_potential_pmean = jax.lax.pmean(ee_potential_mean, axis_name=PMAP_AXIS_NAME)
+            ii_potential_pmean = jax.lax.pmean(ii_potential_mean, axis_name=PMAP_AXIS_NAME)
+
+            energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
+            stats = dict(
+                        variance=jnp.ones((),dtype=dtype),  #()
+                        energy_noclip=jnp.ones((1,),dtype=dtype),  #(1,)
+                        variance_noclip=jnp.ones((),dtype=dtype),  #()
+                    )
 
         multi_energy=jnp.squeeze(energy_per_w, axis=-1)
 
-        stats.update({"kinetic": kinetic_mean, "ei_potential": ei_potential_mean ,"ee_potential":ee_potential_mean,"ii_potential":ii_potential_mean,"multi_energy":multi_energy})
+        stats.update({"kinetic": kinetic_pmean, "ei_potential": ei_potential_pmean ,"ee_potential":ee_potential_pmean,"ii_potential":ii_potential_pmean,"multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats
 
