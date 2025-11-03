@@ -147,7 +147,7 @@ def initialize_optimizer(
             "multi_device": apply_pmap,
         }
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
+            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
         )
         loss_fn = make_value_and_grad(
             log_psi_apply_novmap,

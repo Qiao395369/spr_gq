@@ -67,7 +67,10 @@ def kfac_wrapper(
         params: P,
         data,
     ) -> OptimizerState:
-        energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
+        atoms_position = data["atoms_position"]
+        elec_position = data["walker_data"]["elec_position"]
+        jax.debug.print(f"in init: atoms: {atoms_position.shape}, elec: {elec_position.shape}")
+        energy_per_w, E_loc, stats = energy_and_statistics_fn(params,atoms_position,elec_position)
         batch = (E_loc, energy_per_w, data)
         return kfac_opt.init(params=params, batch=batch , rng=rng)
 

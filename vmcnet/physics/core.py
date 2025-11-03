@@ -221,7 +221,7 @@ def get_clipped_energies_and_stats(
     
     energy_stats = dict(
         variance=variance,  #()
-        energy_noclip=allreduce_mean(energy_noclip,axis=(0,1)),  #(1,)
+        energy_noclip=allreduce_mean(energy_noclip,axis=(0,1)),  #()
         variance_noclip=variance_noclip,  #()
     )
 
@@ -338,7 +338,7 @@ def create_value_and_grad_energy_fn(
 
 def create_energy_and_statistics_fn(
     kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-    nchains: int,
+    debug: str,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
 ) -> ValueGradEnergyFn[P]:
@@ -374,26 +374,48 @@ def create_energy_and_statistics_fn(
         atoms_positions:(W,natom,dim)
         positions:(W,B,nele,dim)
         '''
+        jax.debug.print(f"in energy_and_statistics: atoms_positions shape={atoms_positions.shape} dtype={atoms_positions.dtype.name}||positions shape={positions.shape} dtype={positions.dtype.name}")
         kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
         ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
         ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
         ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
         local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
-        ridx = jax.lax.axis_index(utils.distribute.PMAP_AXIS_NAME) 
+        W, B = local_energies_noclip.shape
+        dtype = local_energies_noclip.dtype
 
-        jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}||local_energies_noclip shape={local_energies_noclip.shape} dtype={local_energies_noclip.dtype.name}")
-                        
-        kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
-        jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}")
+        if debug == "0":
+            kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype), jnp.ones((), dtype=dtype)
+            energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
+            stats = dict(
+                        variance=jnp.ones((),dtype=dtype),  #()
+                        energy_noclip=jnp.ones((1,),dtype=dtype),  #(1,)
+                        variance_noclip=jnp.ones((),dtype=dtype),  #()
+                    )
         
-        energy_per_w, E_loc, stats = get_clipped_energies_and_stats(local_energies_noclip, clipping_fn, nan_safe)
-        jax.debug.print(f"in energy_and_statistics: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}||E_loc shape={E_loc.shape} dtype={E_loc.dtype.name}")
-        
+        if debug == "1":
+            kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
+            energy_per_w, E_loc = jnp.ones((W,1),dtype=dtype), jnp.ones((W,B),dtype=dtype)
+            stats = dict(
+                        variance=jnp.ones((),dtype=dtype),  #()
+                        energy_noclip=jnp.ones((1,),dtype=dtype),  #(1,)
+                        variance_noclip=jnp.ones((),dtype=dtype),  #()
+                    )
+
+        if debug == "2":
+            kinetic_mean,ei_potential_mean,ee_potential_mean,ii_potential_mean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
+            energy_per_w, E_loc, stats = get_clipped_energies_and_stats(local_energies_noclip, clipping_fn, nan_safe)
+
         multi_energy=jnp.squeeze(energy_per_w, axis=-1)
-        jax.debug.print(f"in energy_and_statistics: [replica {ridx}] multi_energy shape={multi_energy.shape} dtype={multi_energy.dtype.name}")
 
         stats.update({"kinetic": kinetic_mean, "ei_potential": ei_potential_mean ,"ee_potential":ee_potential_mean,"ii_potential":ii_potential_mean,"multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats
 
     return energy_and_statistics
+
+
+        # ridx = jax.lax.axis_index(utils.distribute.PMAP_AXIS_NAME) 
+        # jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}")
+        # jax.debug.print(f"in energy_and_statistics: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}||E_loc shape={E_loc.shape} dtype={E_loc.dtype.name}")
+        # jax.debug.print(f"in energy_and_statistics: [replica {ridx}] multi_energy shape={multi_energy.shape} dtype={multi_energy.dtype.name}")
+        # jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}||local_energies_noclip shape={local_energies_noclip.shape} dtype={local_energies_noclip.dtype.name}")

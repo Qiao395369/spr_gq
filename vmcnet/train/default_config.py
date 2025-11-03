@@ -311,6 +311,7 @@ def get_default_vmc_config() -> Dict:
     """Get a default VMC training configuration."""
     vmc_config = {
         "nchains": 1000,
+        "debug": "0",
         "repeat_single_mol": False,
         "repeat_single_molecule_walker": 0,
         "down_sample_num": 6,
