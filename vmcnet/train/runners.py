@@ -648,6 +648,7 @@ def _setup_vmc(
     print("result:", jnp.asarray(yy1))
     x2 = jnp.ones((n,), dtype=jnp.float64)
     yy2 = ff(x2)
+
     print("result:", jnp.asarray(yy2))
 
     def f(x):
@@ -874,6 +875,7 @@ def _compute_and_save_energy_statistics(
 import os
 def run_molecule() -> None:
     """Run VMC on a molecule."""
+    
     # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
@@ -903,6 +905,22 @@ def run_molecule() -> None:
     logdir = _get_logdir_and_save_config(reload_config, config,False)
     # _save_git_hash(logdir)
     show_devices()
+    logging.info("JAX devices:%s", jax.devices())
+    n = jax.local_device_count()
+    
+    @partial(jax.pmap, axis_name="dev")
+    def ff(x):
+        r = jax.lax.axis_index("dev")
+        s = jax.lax.psum(x, axis_name="dev")
+        jax.debug.print("[replica {}] x={} psum={}", r, x, s)  # 不要 ordered=True
+        return s
+    x1 = jnp.ones((n,), dtype=jnp.float32)
+    yy1 = ff(x1)
+    print("result:", jnp.asarray(yy1))
+    x2 = jnp.ones((n,), dtype=jnp.float64)
+    yy2 = ff(x2)
+    print("result:", jnp.asarray(yy2))
+
     apply_pmap = True
 
     dtype_to_use = _get_dtype(config)
