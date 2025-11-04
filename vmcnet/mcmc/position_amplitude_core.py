@@ -374,7 +374,7 @@ def reform_data_and_metrics(data, rest_data, metrics, idx, apply_pmap):
 
     if apply_pmap:
         reform_data = jax.pmap(scatter_to_original_order_data, axis_name=PMAP_AXIS_NAME,in_axes=(0,0,0))
-        reform_energy = jax.pmap(scatter_to_original_order_energy, axis_name=PMAP_AXIS_NAME,in_axes=(0,0,0))
+        reform_energy = jax.pmap(scatter_to_original_order_energy, axis_name=PMAP_AXIS_NAME,in_axes=(0,0))
     else:
         reform_data = jax.jit(scatter_to_original_order_data)
         reform_energy = jax.jit(scatter_to_original_order_energy)
@@ -391,3 +391,4 @@ def reform_data_and_metrics(data, rest_data, metrics, idx, apply_pmap):
 
     data_out = make_position_amplitude_data(xp, xe, amp, data["move_metadata"])
     return data_out, new_metrics
+
