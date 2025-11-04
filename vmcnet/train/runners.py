@@ -18,7 +18,7 @@ from ml_collections import ConfigDict
 # import wandb
 from vmcnet.utils.distribute import PMAP_AXIS_NAME
 import vmcnet.utils as utils
-
+from functools import partial
 import vmcnet.mcmc as mcmc
 import vmcnet.mcmc.dynamic_width_position_amplitude as dwpa
 import vmcnet.mcmc.position_amplitude_core as pacore
@@ -366,6 +366,7 @@ def _get_gaoqiao_model(
 
     if apply_pmap:
         params = utils.distribute.replicate_all_local_devices(params)
+
     print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
     print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
     raveled_params, _ = jax.flatten_util.ravel_pytree(params)
@@ -635,7 +636,19 @@ def _setup_vmc(
 
     logging.info("JAX devices:%s", jax.devices())
     n = jax.local_device_count()
-    x = jnp.ones((n,), dtype=jnp.float32)
+    x1 = jnp.ones((n,), dtype=jnp.float32)
+
+    @partial(jax.pmap, axis_name="dev")
+    def ff(x):
+        r = jax.lax.axis_index("dev")
+        s = jax.lax.psum(x, axis_name="dev")
+        jax.debug.print("[replica {}] x={} psum={}", r, x, s)  # 不要 ordered=True
+        return s
+    yy1 = ff(x1)
+    print("result:", jnp.asarray(yy1))
+    x2 = jnp.ones((n,), dtype=jnp.float64)
+    yy2 = ff(x2)
+    print("result:", jnp.asarray(yy2))
 
     def f(x):
         r = jax.lax.axis_index(PMAP_AXIS_NAME)
