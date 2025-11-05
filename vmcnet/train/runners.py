@@ -42,7 +42,7 @@ from vmcnet.utils.typing import (
 )
 
 FLAGS = flags.FLAGS
-
+import sys
 import time
 from kfac_jax import utils as kfac_utils
 
@@ -875,39 +875,14 @@ def _compute_and_save_energy_statistics(
 import os
 def run_molecule() -> None:
     """Run VMC on a molecule."""
-    
-    # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
+    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
-
-    reload_from_checkpoint = (
-        reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
-        and reload_config.use_checkpoint_file
-    )
-
-    if reload_from_checkpoint:
-        config.notes = config.notes + " (reloaded from {}/{}{})".format(
-            reload_config.logdir,
-            reload_config.checkpoint_relative_file_path,
-            ", new optimizer state" if reload_config.new_optimizer_state else "",
-        )
-
-    # wandb.login()
-    # wandb.init(
-    #     mode=config.wandb.mode,
-    #     project=config.wandb.project,
-    #     name=config.wandb.name,
-    #     group=config.wandb.group,
-    #     config=config,
-    # )
-
     root_logger = logging.getLogger()
     root_logger.setLevel(config.logging_level)
-    logdir = _get_logdir_and_save_config(reload_config, config,False)
-    # _save_git_hash(logdir)
     show_devices()
     logging.info("JAX devices:%s", jax.devices())
     n = jax.local_device_count()
-
+    jax.config.update("jax_enable_x64", True)
     @partial(jax.pmap, axis_name="dev")
     def ff(x):
         r = jax.lax.axis_index("dev")
@@ -920,6 +895,26 @@ def run_molecule() -> None:
     x2 = jnp.ones((n,), dtype=jnp.float64)
     yy2 = ff(x2)
     logging.info(f"result:{jnp.asarray(yy2)}")
+
+
+    sys.exit()
+    
+
+    reload_from_checkpoint = (
+        reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
+        and reload_config.use_checkpoint_file
+    )
+
+    if reload_from_checkpoint:
+        config.notes = config.notes + " (reloaded from {}/{}{})".format(
+            reload_config.logdir,
+            reload_config.checkpoint_relative_file_path,
+            ", new optimizer state" if reload_config.new_optimizer_state else "",
+        )
+    
+    logdir = _get_logdir_and_save_config(reload_config, config,False)
+    # _save_git_hash(logdir)
+    
 
     apply_pmap = True
 
