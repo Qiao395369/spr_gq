@@ -873,10 +873,10 @@ def _compute_and_save_energy_statistics(
     )
 
 import os
-def run_molecule() -> None:
+def run_molecule(reload_config, config) -> None:
     """Run VMC on a molecule."""
-    # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
-    reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
+    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
+    # reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
     root_logger = logging.getLogger()
     root_logger.setLevel(config.logging_level)
     show_devices()

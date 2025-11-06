@@ -9,15 +9,14 @@ from absl import flags
 from ml_collections import ConfigDict
 from ml_collections.config_flags import config_flags
 
-import vmcnet.train as train
-import vmcnet.utils.io as io
-from vmcnet.train.default_config import NO_NAME, NO_PATH, DEFAULT_PRESETS_DIR
+from ..utils.io import load_config_dict
+from .default_config import NO_NAME, NO_PATH, NO_RELOAD_LOG_DIR, DEFAULT_PRESETS_DIR, get_default_config, choose_model_type_in_model_config, get_default_reload_config, get_default_infer_config
 
 
 def _get_config_from_reload(
     reload_config: ConfigDict, flag_values: flags.FlagValues
 ) -> ConfigDict:
-    reloaded_config = io.load_config_dict(
+    reloaded_config = load_config_dict(
         reload_config.logdir, reload_config.config_relative_file_path
     )
     reloaded_config.logdir = reloaded_config.base_logdir
@@ -31,10 +30,10 @@ def _get_config_from_reload(
 def _get_config_from_default_config(
     flag_values: flags.FlagValues, presets_path=None
 ) -> ConfigDict:
-    base_config = train.default_config.get_default_config()
+    base_config = get_default_config()
 
     if presets_path is not None:
-        presets = io.load_config_dict("", presets_path)
+        presets = load_config_dict("", presets_path)
         base_config.update(presets)
 
     config_flags.DEFINE_config_dict(
@@ -45,7 +44,7 @@ def _get_config_from_default_config(
     )
     flag_values(sys.argv)
     config = flag_values.config
-    config.model = train.default_config.choose_model_type_in_model_config(config.model)
+    config.model = choose_model_type_in_model_config(config.model)
     return config
 
 
@@ -98,7 +97,7 @@ def parse_flags(flag_values: flags.FlagValues) -> Tuple[ConfigDict, ConfigDict]:
     )
     config_flags.DEFINE_config_dict(
         "reload",
-        train.default_config.get_default_reload_config(),
+        get_default_reload_config(),
         lock_config=True,
         flag_values=flag_values,
     )
@@ -107,7 +106,7 @@ def parse_flags(flag_values: flags.FlagValues) -> Tuple[ConfigDict, ConfigDict]:
     reload_config = flag_values.reload
 
     reload = (
-        reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
+        reload_config.logdir != NO_RELOAD_LOG_DIR
         and reload_config.use_config_file
     )
 
@@ -145,7 +144,7 @@ def inference_parse_flags(flag_values: flags.FlagValues) -> Tuple[ConfigDict, Co
 
     config_flags.DEFINE_config_dict(
         "infer",
-        train.default_config.get_default_infer_config(),
+        get_default_infer_config(),
         lock_config=True,
         flag_values=flag_values,
     )
