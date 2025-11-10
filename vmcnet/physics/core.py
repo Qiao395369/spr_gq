@@ -143,17 +143,15 @@ def combine_local_energy_terms(
 
     return local_energy_fn
 
-def allreduce_mean(x,axis):
-    x=jnp.mean(x,axis)
-    return jax.lax.pmean(x,axis_name=utils.distribute.PMAP_AXIS_NAME)
+
 
 def get_statistics_from_other_energy(
     energy1: Array, energy2: Array, energy3: Array, energy4: Array, nan_safe: bool = True
 ) -> Tuple[Array, Array]:
-    # if nan_safe:
-    #     allreduce_mean = utils.distribute.nanmean_all_local_devices
-    # else:
-    #     allreduce_mean = utils.distribute.mean_all_local_devices
+    if nan_safe:
+        allreduce_mean = utils.distribute.nanmean_all_local_devices
+    else:
+        allreduce_mean = utils.distribute.mean_all_local_devices
     energy1_mean = allreduce_mean(energy1,axis=(0,1))
     energy2_mean = allreduce_mean(energy2,axis=(0,1))
     energy3_mean = allreduce_mean(energy3,axis=(0,1))
@@ -183,24 +181,16 @@ def get_statistics_from_local_energy(
     # is fairly crucial to the success of the algorithm
     assert len(local_energies.shape) == 2  # local_energies:(W,B)
     W, B = local_energies.shape
-    ridx = jax.lax.axis_index(utils.distribute.PMAP_AXIS_NAME) 
-    # ridx=0
-    jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] local_energies shape={local_energies.shape} dtype={local_energies.dtype.name}")
-    # if nan_safe:
-    #     allreduce_mean = utils.distribute.nanmean_all_local_devices
-    #     w_mean = jnp.nanmean
-    # else:
-    #  allreduce_mean = utils.distribute.mean_all_local_devices
-    #     w_mean = jnp.mean
-    w_mean = jnp.mean
+    if nan_safe:
+        allreduce_mean = utils.distribute.nanmean_all_local_devices
+        w_mean = jnp.nanmean
+    else:
+     allreduce_mean = utils.distribute.mean_all_local_devices
+        w_mean = jnp.mean
 
     energy_per_w = w_mean(local_energies, axis=1, keepdims=True)  # (W,1)
-    jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}")
-    
     var_per_w = jnp.sum(jnp.square(local_energies - energy_per_w), axis=1) / jnp.maximum(B - 1, 1)  # (W,)
-
     variance = allreduce_mean(var_per_w, axis=0)  # ()
-    jax.debug.print(f"in get_statistics_from_local_energy: [replica {ridx}] variance shape={variance.shape} dtype={variance.dtype.name}")
     
     return energy_per_w, variance 
 
@@ -369,105 +359,26 @@ def create_energy_and_statistics_fn(
         (expected_variance, local_energies, unclipped_energy, unclipped_variance, centered_local_energies)
     """
 
-    def energy_and_statistics(params, atoms_positions, positions):
-        """
-        atoms_positions: (W, natom, dim)
-        positions:       (W, B, nele, dim)
-        Returns:
-            energy_per_w: (W, 1)
-            E_loc:        (W, B)
-            stats: dict(...)
-        """
-        jax.debug.print(
-            f"energy_and_statistics: atoms_positions shape={atoms_positions.shape} dtype={atoms_positions.dtype.name} || positions shape={positions.shape} dtype={positions.dtype.name}"
+    def energy_and_statistics(params,atoms_positions, positions):
+        '''
+        atoms_positions:(W,natom,dim)
+        positions:(W,B,nele,dim)
+        '''
+        kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
+        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
+        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
+        ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
+        local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
+
+        kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
+
+
+        energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
+            local_energies_noclip, clipping_fn, nan_safe
         )
-
-        # --- Compute per-replica tensors (shape (W,B)) ---
-        kinetic = jax.vmap(jax.vmap(kinetic_fn,      in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
-        ei_pot  = jax.vmap(jax.vmap(ei_potential_fn, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
-        ee_pot  = jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
-        ii_pot  = jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, atoms_positions, positions)
-
-        local_energies_noclip = kinetic + ei_pot + ee_pot + ii_pot  # (W,B)
-        W, B = local_energies_noclip.shape
-        out_dtype = local_energies_noclip.dtype  # 保持对外 dtype 一致
-
-        # --- Per-replica reductions to scalars (shape ()) ---
-        # 注意：对 (W,B) 做 mean → 标量，维度完全一致，便于后续 stack 一次 pmean
-        kinetic_mean = jnp.mean(kinetic, axis=(0, 1))
-        ei_mean      = jnp.mean(ei_pot,  axis=(0, 1))
-        ee_mean      = jnp.mean(ee_pot,  axis=(0, 1))
-        ii_mean      = jnp.mean(ii_pot,  axis=(0, 1))
-
-        # --- 必须在 pmap 作用域；更友好地报错 ---
-        _assert_in_pmap_or_explain(PMAP_AXIS_NAME)
-
-        # --- Sentinel sync: 确保所有副本已就绪（对齐 collective 序列） ---
-        _ = jax.lax.psum(jnp.array(0, jnp.int32), axis_name=PMAP_AXIS_NAME)
-        jax.debug.print("sentinel psum ok")
-
-        # --- 把 4 个标量拼成向量，统一到 fp32 后只做一次 pmean ---
-        stacked = jnp.stack([kinetic_mean, ei_mean, ee_mean, ii_mean], axis=0)  # (4,)
-        comm_vec = stacked.astype(jnp.float32)
-
-        # --- 轻量一致性自检：所有副本的元素数应一致 ---
-        vec_size  = jnp.array(comm_vec.size, jnp.int32)
-        world_sz  = jax.lax.psum(jnp.array(1, jnp.int32), axis_name=PMAP_AXIS_NAME)
-        sum_sizes = jax.lax.psum(vec_size, axis_name=PMAP_AXIS_NAME)
-        jax.debug.print(f"comm check: world={world_sz}, vec_size={vec_size}, sum_sizes={sum_sizes}")
-        # 若有需要，可在这里加 assert（训练时不建议抛异常）：
-        # assert_fn = lambda cond, msg: jax.lax.cond(cond, lambda _: None, lambda _: (_ for _ in ()).throw(AssertionError(msg)), operand=None)
-        # assert_fn(sum_sizes == world_sz * vec_size, "collective vector size mismatch across replicas")
-
-        # --- 单次 AllReduce（pmean） ---
-        comm_vec = jax.lax.pmean(comm_vec, axis_name=PMAP_AXIS_NAME)  # (4,)
-        comm_vec = comm_vec.astype(out_dtype)
-        kinetic_pmean, ei_pmean, ee_pmean, ii_pmean = comm_vec
-
-        # --- 下面保持你的原有返回结构（占位实现） ---
-        # 如需真正能量/方差统计，可在此处替换为实际计算逻辑。
-        energy_per_w = jnp.ones((W, 1), dtype=out_dtype)
-        E_loc        = jnp.ones((W, B), dtype=out_dtype)
-
-        stats = dict(
-            variance=jnp.ones((),   dtype=out_dtype),
-            energy_noclip=jnp.ones((1,), dtype=out_dtype),
-            variance_noclip=jnp.ones((), dtype=out_dtype),
-            kinetic=kinetic_pmean,
-            ei_potential=ei_pmean,
-            ee_potential=ee_pmean,
-            ii_potential=ii_pmean,
-            multi_energy=jnp.squeeze(energy_per_w, axis=-1),  # (W,)
-            world_size=world_sz,  # 方便排查
-        )
-
-        # multi_energy=jnp.squeeze(energy_per_w, axis=-1)
-
-        # stats.update({"kinetic": kinetic_pmean, "ei_potential": ei_potential_pmean ,"ee_potential":ee_potential_pmean,"ii_potential":ii_potential_pmean,"multi_energy":multi_energy})
+        multi_energy=jnp.squeeze(energy_per_w, axis=-1)
+        stats.update({"kinetic": kinetic_pmean, "ei_potential": ei_potential_pmean ,"ee_potential":ee_potential_pmean ,"ii_potential":ii_potential_pmean ,"multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats
 
     return energy_and_statistics
-
-
-        # ridx = jax.lax.axis_index(utils.distribute.PMAP_AXIS_NAME) 
-        # jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}")
-        # jax.debug.print(f"in energy_and_statistics: [replica {ridx}] energy_per_w shape={energy_per_w.shape} dtype={energy_per_w.dtype.name}||E_loc shape={E_loc.shape} dtype={E_loc.dtype.name}")
-        # jax.debug.print(f"in energy_and_statistics: [replica {ridx}] multi_energy shape={multi_energy.shape} dtype={multi_energy.dtype.name}")
-        # jax.debug.print(f"in energy_and_statistics:[replica {ridx}] kinetic shape={kinetic.shape} dtype={kinetic.dtype.name}||local_energies_noclip shape={local_energies_noclip.shape} dtype={local_energies_noclip.dtype.name}")
-
-def _assert_in_pmap_or_explain(axis_name: str):
-    # 如果当前不在 pmap 作用域，下面这行会抛错；我们捕获后抛出更友好的信息
-    try:
-        ridx = jax.lax.axis_index(axis_name)
-        jax.debug.print(f"pmap preflight ok: axis_name={axis_name}, replica_index={ridx}")
-    except Exception as e:
-        # 这里故意抛清晰的错误，告诉你在哪里、为什么、怎么修
-        raise RuntimeError(
-            f"[allreduce_mean] Not inside jax.pmap(axis_name={axis_name}). "
-            f"You're calling a collective (pmean) outside pmap, or the axis_name mismatches.\n"
-            f"Tips:\n"
-            f"  - Wrap the caller with @jax.pmap(axis_name={axis_name}).\n"
-            f"  - Ensure this axis_name matches everywhere (including utils.distribute.PMAP_AXIS_NAME).\n"
-            f"  - Single-device is fine, but still must be inside pmap if you call pmean."
-        ) from e
