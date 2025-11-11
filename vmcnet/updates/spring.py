@@ -88,10 +88,10 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
 
         metrics = {
                     "energy": E_mean, "variance": stats["variance"],
-                    "kinetic": stats["kinetic"],
-                    "ei_potential": stats["ei_potential"],
-                    "ee_potential": stats["ee_potential"],
-                    "ii_potential": stats["ii_potential"],
+                    # "kinetic": stats["kinetic"],
+                    # "ei_potential": stats["ei_potential"],
+                    # "ee_potential": stats["ee_potential"],
+                    # "ii_potential": stats["ii_potential"],
                     "multi_energy": stats["multi_energy"],
                     "opt_param_norm": param_norm,
                     "opt_grad_norm": grad_norm,

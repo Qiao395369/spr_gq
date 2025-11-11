@@ -1,20 +1,19 @@
-from absl import app
-from absl import flags
-import logging
-from .parse_config_flags import parse_flags
-from .runners import run_molecule
-from ml_collections.config_flags import config_flags
+# from absl import app
+# from absl import flags
+# import logging
+# from .parse_config_flags import parse_flags
+# from .runners import run_molecule
+# from .default_config import get_default_config, get_default_reload_config
+# from ml_collections.config_flags import config_flags
+# import sys
 
-# internal imports
+# FLAGS = flags.FLAGS
+# base_config = get_default_config()
 
-FLAGS = flags.FLAGS
+# def main():
+#   cfg = FLAGS.config
+#   reload_config = FLAGS.reload
+#   run_molecule(reload_config, cfg)
 
-def main(_):
-  reload_config, config = parse_flags(FLAGS)
-  root_logger = logging.getLogger()
-  root_logger.setLevel(config.logging_level)
-  run_molecule(reload_config, config)
-
-
-if __name__ == '__main__':
-  app.run(main)
+# if __name__ == '__main__':
+#   main()

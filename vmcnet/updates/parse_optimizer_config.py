@@ -82,7 +82,7 @@ def _get_InverseSchedule(init_value, decay_rate, offset=0.0):
 
 def initialize_optimizer(
     log_psi_apply_novmap: ModelApply[P],
-    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+    local_energy_fn,
     det_fn_novmap,
     clipping_fn: Optional[ClippingFn],
     vmc_config: ConfigDict,
@@ -102,7 +102,7 @@ def initialize_optimizer(
     if vmc_config.optimizer_type == "kfac":
         energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
             log_psi_apply_novmap,
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+            local_energy_fn,
             vmc_config.nchains,
             clipping_fn,
             nan_safe=vmc_config.nan_safe,
@@ -147,7 +147,7 @@ def initialize_optimizer(
             "multi_device": True,
         }
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
+            local_energy_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
         )
         loss_fn = make_value_and_grad(
             log_psi_apply_novmap,
@@ -173,7 +173,7 @@ def initialize_optimizer(
     elif vmc_config.optimizer_type == "sgd":
         energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
             log_psi_apply_novmap,
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+            local_energy_fn,
             vmc_config.nchains,
             clipping_fn,
             nan_safe=vmc_config.nan_safe,
@@ -196,7 +196,7 @@ def initialize_optimizer(
     elif vmc_config.optimizer_type == "adam":
         energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
             log_psi_apply_novmap,
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+            local_energy_fn,
             vmc_config.nchains,
             clipping_fn,
             nan_safe=vmc_config.nan_safe,
@@ -219,7 +219,7 @@ def initialize_optimizer(
     elif vmc_config.optimizer_type == "spring":
         damping_rate_schedule = _get_damping_rate_schedule(vmc_config)
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
+            local_energy_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
         )
         opt_kwargs = {}
         opt_kwargs["mu"] = optimizer_config.mu
@@ -234,13 +234,13 @@ def initialize_optimizer(
     
     elif vmc_config.optimizer_type == "gauss_newton":
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
+            local_energy_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
         )
         (
             update_param_fn,
             optimizer_state,
         ) = initialize_gauss_newton(
-            kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+            local_energy_fn,
             log_psi_apply_novmap,
             energy_and_statistics_fn,
             params,

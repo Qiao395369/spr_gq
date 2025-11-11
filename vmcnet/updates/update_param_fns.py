@@ -3,7 +3,7 @@
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import jax
-
+import jax.numpy as jnp
 import vmcnet.physics as physics
 import vmcnet.utils as utils
 from vmcnet.utils.pytree_helpers import (
@@ -132,12 +132,9 @@ def construct_default_update_param_fn(
 
 
 def construct_eval_update_param_fn(
-    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-    nchains: int,
-    get_position_fn: GetPositionFromData[D],
-    apply_pmap: bool = True,
-    record_local_energies: bool = True,
+    local_energy_fn,
     nan_safe: bool = False,
+    apply_pmap: bool = True,
 ) -> UpdateParamFn[P, D, OptimizerState]:
     """No update/clipping/grad function which simply evaluates the local energies.
 
@@ -161,30 +158,28 @@ def construct_eval_update_param_fn(
         updating the parameters
     """
 
-    def eval_update_param_fn(params, data, optimizer_state, key):
-        positions = get_position_fn(data)
+    def eval_update_param_fn(key, params, optimizer_state, data):
+        positions = data["walker_data"]["elec_position"]
         atoms_positions = data["atoms_position"]
 
-        kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
-        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
-        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
-        ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
-        local_energies=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
+        local_energies=jax.vmap(jax.vmap(local_energy_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
+        # kinetic,ei_potential,ee_potential,ii_potential = physics.core.get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
 
-        kinetic,ei_potential,ee_potential,ii_potential = physics.core.get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
-
-        energy, variance = physics.core.get_statistics_from_local_energy(
-            local_energies, nchains, nan_safe=nan_safe
+        energy_per_w, variance = physics.core.get_statistics_from_local_energy(
+            local_energies, nan_safe=nan_safe
         )
 
-        metrics = {"energy": utils.distribute.nanmean_all_local_devices(energy,axis=(0,1)), "variance": variance}
-        metrics.update({"kinetic":kinetic, "ei_potential":ei_potential, "ee_potential":ee_potential, "ii_potential":ii_potential})
-        if record_local_energies:
-            metrics.update({"local_energies": local_energies.reshape((-1))})
+        metrics = {"energy": utils.distribute.nanmean_all_local_devices(energy_per_w,axis=(0,1)), "variance": variance}
+        metrics.update({""
+                        # "kinetic":kinetic, 
+                        # "ei_potential":ei_potential, 
+                        # "ee_potential":ee_potential, 
+                        # "ii_potential":ii_potential,
+                        "multi_energy": local_energies,
+                        })
         return params, data, optimizer_state, metrics, key
 
-    traced_fn = make_traced_fn_with_single_metrics(
-        eval_update_param_fn, apply_pmap, {"energy", "variance"}
-    )
+    # traced_fn = make_traced_fn_with_single_metrics(eval_update_param_fn, apply_pmap, {"energy", "variance"})
+    pmapped_update_param_fn = utils.distribute.pmap(eval_update_param_fn)
 
-    return traced_fn
+    return pmapped_update_param_fn

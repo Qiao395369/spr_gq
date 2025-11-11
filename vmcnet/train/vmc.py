@@ -104,7 +104,7 @@ def vmc_loop(
     )
     nans_detected = False
     down_sample=(not is_eval and down_sample_num != 0)
-    if is_pmapped:
+    if is_pmapped and down_sample:
         assert down_sample_num % jax.device_count() == 0, "down_sample_num must be divisible by number of devices"
         down_sample_num = down_sample_num//jax.device_count()
 
@@ -138,6 +138,7 @@ def vmc_loop(
             metrics["accept_ratio"] = accept_ratio
             
             if is_pmapped:
+                metrics["multi_energy"] = jax.device_get(metrics["multi_energy"])[None,...]
                 metrics = jax.tree_map(lambda x: x[0], metrics)
                 metrics = jax.device_put(metrics, jax.devices("cpu")[0])
 

@@ -1,0 +1,11 @@
+{
+    "logdir": "NONE",
+    "use_config_file": true,
+    "config_relative_file_path": "config.json",
+    "use_checkpoint_file": true,
+    "checkpoint_relative_file_path": "best_checkpoint.npz",
+    "new_optimizer_state": false,
+    "reburn": false,
+    "append": true,
+    "same_logdir": false
+}

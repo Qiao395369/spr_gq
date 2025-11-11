@@ -38,7 +38,8 @@ S = TypeVar("S", bound=PyTree)
 
 # Actual optimizer states currently used
 # TODO: Figure out how to make kfac_opt.State not be interpreted by mypy as Any
-OptimizerState = Union[kfac_jax.optimizer.OptimizerState, optax.OptState]
+# OptimizerState = Union[kfac_jax.optimizer.OptimizerState, optax.OptState]
+OptimizerState = Any
 
 LearningRateSchedule = Callable[[Array], Array]
 

@@ -135,10 +135,10 @@ def combine_local_energy_terms(
         (params, x) -> local energy array of shape (x.shape[0],)
     """
 
-    def local_energy_fn(params: P, x: Array) -> Array:
-        local_energy_sum = local_energy_terms[0](params, x)
+    def local_energy_fn(params: P, atoms_position: Array, elec_position: Array) -> Array:
+        local_energy_sum = local_energy_terms[0](params, atoms_position, elec_position)
         for term in local_energy_terms[1:]:
-            local_energy_sum = cast(Array, local_energy_sum + term(params, x))
+            local_energy_sum = cast(Array, local_energy_sum + term(params, atoms_position, elec_position))
         return local_energy_sum
 
     return local_energy_fn
@@ -185,7 +185,7 @@ def get_statistics_from_local_energy(
         allreduce_mean = utils.distribute.nanmean_all_local_devices
         w_mean = jnp.nanmean
     else:
-     allreduce_mean = utils.distribute.mean_all_local_devices
+        allreduce_mean = utils.distribute.mean_all_local_devices
         w_mean = jnp.mean
 
     energy_per_w = w_mean(local_energies, axis=1, keepdims=True)  # (W,1)
@@ -205,22 +205,22 @@ def get_clipped_energies_and_stats(
 
     if clipping_fn is not None:
         local_energies = clipping_fn(local_energies_noclip, energy_noclip)  #local_energies_noclip:(W,B)， energy_noclip:(W,1)-->local_energies: (W,B)
-        energy, variance = get_statistics_from_local_energy(local_energies, nan_safe=nan_safe)  #energy: (W,1)  variance:(1,)
+        energy_per_w, variance = get_statistics_from_local_energy(local_energies, nan_safe=nan_safe)  #energy: (W,1)  variance:(1,)
     else:
-        local_energies, energy, variance= local_energies_noclip, energy_noclip, variance_noclip
+        local_energies, energy_per_w, variance= local_energies_noclip, energy_noclip, variance_noclip
     
     energy_stats = dict(
         variance=variance,  #()
-        energy_noclip=allreduce_mean(energy_noclip,axis=(0,1)),  #()
+        energy_noclip=utils.distribute.nanmean_all_local_devices(energy_noclip,axis=(0,1)),  #()
         variance_noclip=variance_noclip,  #()
     )
 
-    return energy, local_energies, energy_stats
+    return energy_per_w, local_energies, energy_stats
 
 
 def create_value_and_grad_energy_fn(
     log_psi_apply: ModelApply[P],
-    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+    local_energy_fn,
     nchains: int,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
@@ -307,12 +307,7 @@ def create_value_and_grad_energy_fn(
         atoms_positions:(W,natom,dim)
         positions:(W,B,nele,dim)
         '''
-        kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
-        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
-        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
-        ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
-
-        local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
+        local_energies_noclip=jax.vmap(jax.vmap(local_energy_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
 
         kinetic,ei_potential,ee_potential,ii_potential = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
 
@@ -327,7 +322,7 @@ def create_value_and_grad_energy_fn(
 
 
 def create_energy_and_statistics_fn(
-    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+    local_energy_fn,
     debug: str,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
@@ -364,20 +359,20 @@ def create_energy_and_statistics_fn(
         atoms_positions:(W,natom,dim)
         positions:(W,B,nele,dim)
         '''
-        kinetic=jax.vmap(jax.vmap(kinetic_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
-        ei_potential= jax.vmap(jax.vmap(ei_potential_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
-        ee_potential=jax.vmap(jax.vmap(ee_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
-        ii_potential=jax.vmap(jax.vmap(ii_potential_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions,positions)#(W,B)
-        local_energies_noclip=kinetic+ei_potential+ee_potential+ii_potential  #(W,B)
-
-        kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
+        local_energies_noclip = jax.vmap(jax.vmap(local_energy_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
+        # kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
 
 
         energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
             local_energies_noclip, clipping_fn, nan_safe
         )
-        multi_energy=jnp.squeeze(energy_per_w, axis=-1)
-        stats.update({"kinetic": kinetic_pmean, "ei_potential": ei_potential_pmean ,"ee_potential":ee_potential_pmean ,"ii_potential":ii_potential_pmean ,"multi_energy":multi_energy})
+        multi_energy = jnp.squeeze(energy_per_w, axis=-1)
+        stats.update({
+            # "kinetic": kinetic_pmean, 
+            # "ei_potential": ei_potential_pmean ,
+            # "ee_potential":ee_potential_pmean ,
+            # "ii_potential":ii_potential_pmean ,
+            "multi_energy":multi_energy})
 
         return energy_per_w, E_loc, stats
 

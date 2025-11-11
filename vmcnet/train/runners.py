@@ -349,7 +349,7 @@ def _get_gaoqiao_model(
         params = network_init(subkey)
         # params = kfac_utils.replicate_all_local_devices(params)
         # Often just need log|psi(x)|.
-        network_wfn = lambda *args, **kwargs: signed_network(*args, **kwargs)  # type: networks.LogWaveFuncLike
+        network_wfn = lambda *args, **kwargs: signed_network(*args, **kwargs)
 
     else:
         raise ValueError(f"Unknown electron wavefunction type: {wfn_type}")
@@ -367,12 +367,11 @@ def _get_gaoqiao_model(
     if apply_pmap:
         params = utils.distribute.replicate_all_local_devices(params)
 
-    print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
-    print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
-    raveled_params, _ = jax.flatten_util.ravel_pytree(params)
-    logging.info(f"#parameters in the wavefunction model: {raveled_params.size}")
+    # print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
+    # print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
+    # raveled_params, _ = jax.flatten_util.ravel_pytree(params)
+    # logging.info(f"#parameters in the wavefunction model: {raveled_params.size}")
 
-    
 
     # @jax.jit
     def log_psi_apply_novmap(params,xp,xe):
@@ -521,8 +520,8 @@ def _assemble_mol_local_energy_fn(
     ii_potential_fn = physics.potential.create_ion_ion_coulomb_potential(
         ion_charges
     )
-    return kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn
-
+    local_energy_fn = physics.core.combine_local_energy_terms([kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn])
+    return local_energy_fn
 
 # TODO: figure out where this should go -- the act of clipping energies is kind of just
 # a training trick rather than a physics thing, so maybe this stays here
@@ -634,32 +633,6 @@ def _setup_vmc(
     )
     logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
 
-    logging.info("JAX devices:%s", jax.devices())
-    n = jax.local_device_count()
-    x1 = jnp.ones((n,), dtype=jnp.float32)
-
-    @partial(jax.pmap, axis_name="dev")
-    def ff(x):
-        r = jax.lax.axis_index("dev")
-        s = jax.lax.psum(x, axis_name="dev")
-        jax.debug.print("[replica {}] x={} psum={}", r, x, s)  # 不要 ordered=True
-        return s
-    yy1 = ff(x1)
-    logging.info(f"result:{jnp.asarray(yy1)}")
-    x2 = jnp.ones((n,), dtype=jnp.float64)
-    yy2 = ff(x2)
-
-    logging.info(f"result:{jnp.asarray(yy2)}")
-
-    def f(x):
-        r = jax.lax.axis_index(PMAP_AXIS_NAME)
-        s = jax.lax.pmean(x, axis_name=PMAP_AXIS_NAME)
-        jax.debug.print("[replica {}] x={} pmean={}", r, x, s)  # 不要 ordered=True
-        return s
-    pmap_f= utils.distribute.pmap(f)
-    y = pmap_f(data["atoms_position"])
-    logging.info("result:%s", jnp.asarray(y))
-
     get_amplitude_fn = pacore.get_amplitude_from_data
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
 
@@ -668,7 +641,7 @@ def _setup_vmc(
         config.vmc, log_psi_apply_vmap, apply_pmap=apply_pmap
     )
 
-    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn = _assemble_mol_local_energy_fn(
+    local_energy_fn = _assemble_mol_local_energy_fn(
         ion_pos,
         ion_charges,
         config.vmc.kinetic_type,
@@ -688,7 +661,7 @@ def _setup_vmc(
         key,
     ) = updates.parse_optimizer_config.initialize_optimizer(
         log_psi_apply,
-        kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
+        local_energy_fn,
         det_fn_novmap,
         clipping_fn,
         config.vmc,
@@ -733,7 +706,7 @@ def _setup_eval(
     ei_softening = problem_config.ei_softening
     ee_softening = problem_config.ee_softening
 
-    kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn= _assemble_mol_local_energy_fn(
+    local_energy_fn = _assemble_mol_local_energy_fn(
         ion_pos,
         ion_charges,
         config.vmc.kinetic_type,
@@ -742,10 +715,7 @@ def _setup_eval(
         log_psi_apply,
     )
     eval_update_param_fn = updates.update_param_fns.construct_eval_update_param_fn(
-        kinetic_fn,ei_potential_fn,ee_potential_fn,ii_potential_fn,
-        eval_config.nchains*ion_pos.shape[0],
-        get_position_fn,
-        record_local_energies=eval_config.record_local_energies,
+        local_energy_fn,
         nan_safe=eval_config.nan_safe,
         apply_pmap=apply_pmap,
     )
@@ -783,7 +753,7 @@ def _make_new_data_for_eval(
         dtype=dtype,
     )
     # redistribute if needed
-    if config.distribute:
+    if is_pmapped:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
     data = _make_initial_data(
         log_psi_apply,
@@ -792,7 +762,7 @@ def _make_new_data_for_eval(
         init_pos,
         params,
         dtype=dtype,
-        apply_pmap=config.distribute,
+        apply_pmap=is_pmapped,
     )
 
     return key, data
@@ -861,10 +831,10 @@ def _burn_and_run_vmc(
 
 
 def _compute_and_save_energy_statistics(
-    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int ,nn:int
+    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int ,
 ) -> None:
     local_energies = np.loadtxt(local_energies_file_path)
-    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers,nn)
+    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers)
     # eval_statistics = jax.tree_map(lambda x: x.tolist(), eval_statistics)
     utils.io.save_dict_to_json(
         eval_statistics,
@@ -873,33 +843,11 @@ def _compute_and_save_energy_statistics(
     )
 
 import os
-def run_molecule(reload_config, config) -> None:
+def run_molecule() -> None:
     """Run VMC on a molecule."""
     os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
-    # reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
-    root_logger = logging.getLogger()
-    root_logger.setLevel(config.logging_level)
-    show_devices()
-    logging.info("JAX devices:%s", jax.devices())
-    n = jax.local_device_count()
-    jax.config.update("jax_enable_x64", True)
-    @partial(jax.pmap, axis_name="dev")
-    def ff(x):
-        r = jax.lax.axis_index("dev")
-        s = jax.lax.psum(x, axis_name="dev")
-        jax.debug.print("[replica {}] x={} psum={}", r, x, s)  # 不要 ordered=True
-        return s
-    x1 = jnp.ones((n,), dtype=jnp.float32)
-    yy1 = ff(x1)
-    logging.info(f"result:{jnp.asarray(yy1)}")
-    x2 = jnp.ones((n,), dtype=jnp.float64)
-    yy2 = ff(x2)
-    logging.info(f"result:{jnp.asarray(yy2)}")
-
-
-    sys.exit()
+    reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
     
-
     reload_from_checkpoint = (
         reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
         and reload_config.use_checkpoint_file
@@ -911,10 +859,13 @@ def run_molecule(reload_config, config) -> None:
             reload_config.checkpoint_relative_file_path,
             ", new optimizer state" if reload_config.new_optimizer_state else "",
         )
-    
-    logdir = _get_logdir_and_save_config(reload_config, config,False)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(config.logging_level)
+    logdir = _get_logdir_and_save_config(reload_config, config, False)
     # _save_git_hash(logdir)
-    
+
+    show_devices()
 
     apply_pmap = True
 
@@ -928,7 +879,7 @@ def run_molecule(reload_config, config) -> None:
     key = jax.random.PRNGKey(config.initial_seed)
 
     (
-        log_psi_apply,
+        log_psi_apply_vmap,
         log_psi_apply_novmap,
         burning_step,
         walker_fn,
@@ -1020,26 +971,26 @@ def run_molecule(reload_config, config) -> None:
         config,
         ion_pos,
         ion_charges,
-        log_psi_apply,
+        log_psi_apply_vmap,
         log_psi_apply_novmap,
         pacore.get_position_from_data,
         apply_pmap=apply_pmap,
     )
-    optimizer_state = None
+    optimizer_sxtate = None
 
     eval_and_vmc_nchains_match = config.vmc.nchains == config.eval.nchains
     if not config.eval.use_data_from_training or not eval_and_vmc_nchains_match:
         logging.info("creating new data ...")
         key, data = _make_new_data_for_eval(
             config,
-            log_psi_apply,
+            log_psi_apply_vmap,
             params,
             ion_pos,
             ion_charges,
             nelec,
             single_nspins,
             key,
-            is_pmapped=config.distribute,
+            is_pmapped=apply_pmap,
             dtype=dtype_to_use,
         )
 
@@ -1055,18 +1006,18 @@ def run_molecule(reload_config, config) -> None:
         get_amplitude_fn,
         key,
         is_eval=True,
-        is_pmapped=config.distribute,
+        is_pmapped=apply_pmap,
     )
 
     # need to check for local_energy.txt because when config.eval.nepochs=0 the file is
     # not created regardless of config.eval.record_local_energies
     local_es_were_recorded = os.path.exists(
-        os.path.join(eval_logdir, "local_energies.txt")
+        os.path.join(eval_logdir, "multi_energy.txt")
     )
     if config.eval.record_local_energies and local_es_were_recorded:
-        local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
+        local_energies_filepath = os.path.join(eval_logdir, "multi_energy.txt")
         _compute_and_save_energy_statistics(
-            local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0],0
+            local_energies_filepath, eval_logdir, "statistics", config.eval.nchains, ion_pos.shape[0]
         )
 
 
@@ -1200,3 +1151,7 @@ def vmc_statistics() -> None:
     _compute_and_save_energy_statistics(
         args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers,args.nn
     )
+
+
+if __name__ == "__main__":
+    run_molecule()

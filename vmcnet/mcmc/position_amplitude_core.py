@@ -391,4 +391,3 @@ def reform_data_and_metrics(data, rest_data, metrics, idx, apply_pmap):
 
     data_out = make_position_amplitude_data(xp, xe, amp, data["move_metadata"])
     return data_out, new_metrics
-
