@@ -22,6 +22,7 @@ from functools import partial
 import vmcnet.mcmc as mcmc
 import vmcnet.mcmc.dynamic_width_position_amplitude as dwpa
 import vmcnet.mcmc.position_amplitude_core as pacore
+from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data_and_metrics
 import vmcnet.models as models
 import vmcnet.physics as physics
 import vmcnet.train as train
@@ -662,6 +663,15 @@ def _setup_vmc(
     if apply_pmap:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
 
+    down_sample_num = config.vmc.down_sample_num
+    if down_sample_num != 0:
+        if apply_pmap:
+            assert down_sample_num % jax.device_count() == 0, "down_sample_num must be divisible by number of devices"
+            down_sample_num = down_sample_num//jax.device_count()
+        data_down_sample, _ , _, key = down_sample_data(key, data, down_sample_num, apply_pmap)
+    else:
+        data_down_sample = data
+
     (   update_param_fn,
         optimizer_state,
         key,
@@ -672,7 +682,7 @@ def _setup_vmc(
         clipping_fn,
         config.vmc,
         params,
-        data,
+        data_down_sample,
         pacore.get_position_from_data,
         update_data_fn,
         key,
@@ -830,7 +840,7 @@ def _burn_and_run_vmc(
         nhistory_max=nhistory_max,
         is_pmapped=is_pmapped,
         start_epoch=start_epoch,
-        down_sample_num=(None if is_eval else run_config.down_sample_num),
+        down_sample_num=(0 if is_eval else run_config.down_sample_num),
         is_eval=is_eval,
     )
 
@@ -850,7 +860,7 @@ def _compute_and_save_energy_statistics(
 import os
 def run_molecule() -> None:
     """Run VMC on a molecule."""
-    # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
+    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
     # jax.config.update("jax_debug_nans", True)  # 发现 NaN/Inf 的原语会报错
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
     
