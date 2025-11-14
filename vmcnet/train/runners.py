@@ -877,7 +877,9 @@ def run_molecule() -> None:
     dtype_to_use = _get_dtype(config)
 
     ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(
-        config.problem, dtype=dtype_to_use, repeat_single_molecule=config.vmc.repeat_single_mol ,
+        config.problem, 
+        dtype=dtype_to_use, 
+        repeat_single_molecule=config.vmc.repeat_single_mol ,
         repeat_single_molecule_walker=config.vmc.repeat_single_molecule_walker
     )
 
@@ -970,7 +972,13 @@ def run_molecule() -> None:
     # (energy, var, overall mean acceptance ratio, std error, iac) to eval_logdir, post
     # evaluation
     eval_logdir = os.path.join(logdir, "eval")
-    ion_pos, ion_charges, nelec ,nspins,single_nspins= _get_electron_ion_config_as_arrays(config.eval, dtype=dtype_to_use)
+
+    ion_pos, ion_charges, nelec ,nspins,single_nspins= _get_electron_ion_config_as_arrays(
+        config.eval, 
+        dtype=dtype_to_use
+        repeat_single_molecule=config.eval.repeat_single_mol ,
+        repeat_single_molecule_walker=config.eval.repeat_single_molecule_walker
+        )
 
     eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
         config,
