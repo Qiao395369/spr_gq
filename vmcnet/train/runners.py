@@ -375,7 +375,8 @@ def _get_gaoqiao_model(
     print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
     print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
     raveled_params, _ = jax.flatten_util.ravel_pytree(params)
-    logging.info(f"#parameters in the wavefunction model: {raveled_params.size}")
+    logging.info(f"parameters in the wavefunction model: {raveled_params.size}")
+    print(f"parameters in the wavefunction model: {raveled_params.size}")
 
     if apply_pmap:
         params = utils.distribute.replicate_all_local_devices(params)
@@ -835,10 +836,10 @@ def _burn_and_run_vmc(
 
 
 def _compute_and_save_energy_statistics(
-    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int ,
+    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int ,repeat_single_mol:bool
 ) -> None:
     local_energies = np.loadtxt(local_energies_file_path)
-    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers)
+    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers,repeat_single_mol)
     # eval_statistics = jax.tree_map(lambda x: x.tolist(), eval_statistics)
     utils.io.save_dict_to_json(
         eval_statistics,
@@ -849,7 +850,7 @@ def _compute_and_save_energy_statistics(
 import os
 def run_molecule() -> None:
     """Run VMC on a molecule."""
-    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
+    # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
     # jax.config.update("jax_debug_nans", True)  # 发现 NaN/Inf 的原语会报错
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
     
@@ -975,9 +976,9 @@ def run_molecule() -> None:
 
     ion_pos, ion_charges, nelec ,nspins,single_nspins= _get_electron_ion_config_as_arrays(
         config.eval, 
-        dtype=dtype_to_use
-        repeat_single_molecule=config.eval.repeat_single_mol ,
-        repeat_single_molecule_walker=config.eval.repeat_single_molecule_walker
+        dtype=dtype_to_use,
+        repeat_single_molecule=config.eval.repeat_single_mol,
+        repeat_single_molecule_walker=config.eval.repeat_single_molecule_walker,
         )
 
     eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
@@ -1030,7 +1031,7 @@ def run_molecule() -> None:
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "multi_energy.txt")
         _compute_and_save_energy_statistics(
-            local_energies_filepath, eval_logdir, "statistics", config.eval.nchains, ion_pos.shape[0]
+            local_energies_filepath, eval_logdir, "statistics", config.eval.nchains, ion_pos.shape[0], config.eval.repeat_single_mol
         )
 
 
