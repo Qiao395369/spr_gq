@@ -4,7 +4,6 @@ from typing import Callable, Dict, Tuple, Any, TypeAlias, Callable, NamedTuple, 
 import jax
 import jax.flatten_util
 import jax.numpy as jnp
-import neural_tangents as nt  # type: ignore
 from ml_collections import ConfigDict
 import chex
 import optax
@@ -79,8 +78,12 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
         data:D ,
     ) -> tuple[P,D, OptimizerState, Dict]:
         log_psi_grads = raveled_log_psi_grad(params, data["atoms_position"], data["walker_data"]["elec_position"])
+        # check_nan("log_psi_grads",log_psi_grads)
         energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
+        # check_nan("E_loc",E_loc)
+        # check_nan("energy_per_w",energy_per_w)
         updates, E_mean, opt_state = spring_opt.update(log_psi_grads, E_loc, energy_per_w, opt_state)
+        # check_nan("E_mean",E_mean)
         gradient = opt_state["prev_grad"]
         param_norm, update_norm, grad_norm = map(tree_norm, [params, updates, gradient])
         params = apply_updates(params, updates)
@@ -137,22 +140,32 @@ class Spring:
     ) -> Tuple[Array, P]:
         walker_batch_this_process, electron_batch_size = E_loc.shape
         prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(opt_state["prev_grad"])
-        
+        # check_nan("log_psi_grads",log_psi_grads)
         Ohat = (log_psi_grads - jnp.mean(log_psi_grads, axis=-2, keepdims=True)) / jnp.sqrt(electron_batch_size)  #(W,B,np)-(W,1,np)/sqrt(B)->(W,B,np)
+        # check_nan("Ohat",Ohat)
         T = jnp.einsum("mjk, mlk  -> mjl", Ohat, Ohat)  #(W,B,np),(W,B,np)->(W,B,B)
+        # check_nan("T",T)
         ones = jnp.ones_like(T) / electron_batch_size
         T_reg = T + ones + self.dp_schedule(opt_state["step"]) * jnp.eye(electron_batch_size)[None,:,:] #(W,B,B)
+        # check_nan("step",opt_state["step"])
+        # check_nan("dp",self.dp_schedule(opt_state["step"]))
+        # check_nan("T_reg",T_reg)
         # E_mean_per_mol = jnp.mean(E_loc, axis=-1, keepdims=True)  #(W,B)->(W,1)
         E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,1)
         E_mean = jax.lax.pmean(E_mean, axis_name=PMAP_AXIS_NAME)  #(1,1)
         if self.repeat_single_mol:
             E_mean_per_mol = E_mean
         epsilon_bar = (E_loc - E_mean_per_mol) / jnp.sqrt(electron_batch_size)
+        # check_nan("epsilon_bar",epsilon_bar)
         epsilon_tilde = epsilon_bar - jnp.einsum("mjk, k -> mj", Ohat, self.mu * prev_grad)  #(W,B,np),(np)->(W,B)
+        # check_nan("epsilon_tilde",epsilon_tilde)
         epsilon_projected = jax.scipy.linalg.solve(T_reg, epsilon_tilde[..., None])[..., 0]  #(W,B,B)(W,B,1)-->(W,B,1)-->(W,B)
-        dtheta_residual = jax.lax.pmean(jnp.einsum("mjk,mj->k", Ohat, epsilon_projected) ,axis_name=PMAP_AXIS_NAME)/walker_batch_this_process
+        # check_nan("epsilon_projected",epsilon_projected)
+        dtheta_residual = jax.lax.pmean(jnp.einsum("mjk, mj -> k", Ohat, epsilon_projected) ,axis_name=PMAP_AXIS_NAME)/walker_batch_this_process
+        # check_nan("dtheta_residual",dtheta_residual)
         grad = dtheta_residual + self.mu * prev_grad
         scaled_grad = self.apply_norm_constraint(grad)
+        # check_nan("grad",grad)
         return unravel_fn(grad), unravel_fn(scaled_grad), jnp.squeeze(E_mean)
 
     def apply_norm_constraint(self, grad: WavefunctionParams) -> WavefunctionParams:
@@ -161,7 +174,7 @@ class Spring:
         eps=1e-12
         coefficient = jnp.minimum(1, jnp.sqrt(self.norm_constraint / (sq_norm_grads + eps)))
         return grad * coefficient
-\
+
     def update(
         self, grad_psi, E_loc, energy_per_w, opt_state: OptimizerState
     ) -> tuple[WavefunctionParams, OptimizerState]:
@@ -185,3 +198,30 @@ def apply_updates(params: WavefunctionParams, updates: WavefunctionParams) -> Wa
     return jax.tree_util.tree_map(
         lambda p, u: jnp.asarray(p + u).astype(jnp.asarray(p).dtype), params, updates
     )
+
+
+
+from jax import lax
+
+def check_nan(name, x):
+    isnan = jnp.isnan(x)
+    isinf = jnp.isinf(x)
+    bad   = jnp.any(isnan | isinf)
+
+    frac_nan = jnp.mean(isnan.astype(jnp.float32))
+    min_val = jnp.nanmin(x)
+    max_val = jnp.nanmax(x)
+
+    dev_id = lax.axis_index(PMAP_AXIS_NAME)
+
+    jax.debug.print(
+            "[dev {}] {}: bad={} frac_nan={} min={} max={}",
+            dev_id,
+            name,
+            bad,
+            frac_nan,
+            min_val,
+            max_val,
+        )
+
+    return x

@@ -378,9 +378,9 @@ def lapnet_each_det(
       options=options,
   )
   output = network_blocks.individual_slogdet(orbitals)[1]
-  output = output + jastrow_factor(r_ee, nspins, **params['jastrow'])
+  # output = output + jastrow_factor(r_ee, nspins, **params['jastrow'])
 
-  return output
+  return jax.nn.log_softmax(output)
 
 
 def lapnet(

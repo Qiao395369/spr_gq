@@ -323,7 +323,6 @@ def create_value_and_grad_energy_fn(
 
 def create_energy_and_statistics_fn(
     local_energy_fn,
-    debug: str,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
 ) -> ValueGradEnergyFn[P]:

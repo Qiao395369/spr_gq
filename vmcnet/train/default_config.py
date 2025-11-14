@@ -311,25 +311,24 @@ def get_default_vmc_config() -> Dict:
     """Get a default VMC training configuration."""
     vmc_config = {
         "nchains": 1000,
-        "debug": "0",
         "repeat_single_mol": False,
         "repeat_single_molecule_walker": 0,
-        "down_sample_num": 6,
+        "down_sample_num": 3,
         "nepochs": 200000,
         "nburn": 5000,
         "det_penalty_weight": 1.0,
         "nsteps_per_param_update": 10,
         "nmoves_per_width_update": 100,
         "std_move": 0.25,
-        "checkpoint_every": 5000,
-        "best_checkpoint_every": 100,
+        "init_width":1.0,
+        "checkpoint_every": 20000,
+        "best_checkpoint_every": 10000,
         "checkpoint_dir": "checkpoints",
         "checkpoint_variance_scale": 10,
-        "check_for_nans": False,
+        "check_for_nans": True,
         "nhistory_max": 200,
         "record_amplitudes": False,
         "record_param_l1_norm": False,
-        "kinetic_type": "old",
         "clip_threshold": 5.0,
         "clip_center": "mean",  # mean or median
         "nan_safe": True,
@@ -438,12 +437,12 @@ def get_default_gq_config() -> Dict:
         "rescale_input": "all", #choices=["all", "all_eps", "e-a", "None"]
         "RHF": False,
         "activation_type": "tanh", #choices=["tanh", "relu", "silu]
-        "psiformer_type": "default", #choices=["default", "multi"]
+        "psiformer_multi": False, 
         "psiformer_num_layers": 4,
         "psiformer_num_heads": 4,
         "psiformer_heads_dim": 64,
         "psiformer_mlp_hidden_dims": 256,
-        "ferminet_type": "default", #choices=["default", "multi"]
+        "ferminet_multi": False, #choices=["default", "multi"]
         "lapnet_multi": False,
     }
     return gq_config

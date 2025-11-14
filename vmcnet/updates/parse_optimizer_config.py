@@ -66,7 +66,7 @@ def _get_damping_rate_schedule(
     elif optimizer_config.damp_schedule_type == "inverse_time":
 
         return _get_InverseSchedule(
-            optimizer_config.damping, vmc_config.nepochs // 100, optimizer_config.damping / 1000
+            optimizer_config.damping, max(vmc_config.nepochs // 100, 1), optimizer_config.damping / 1000
             )
 
     else:
@@ -147,7 +147,7 @@ def initialize_optimizer(
             "multi_device": True,
         }
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            local_energy_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
+            local_energy_fn, clipping_fn, vmc_config.nan_safe
         )
         loss_fn = make_value_and_grad(
             log_psi_apply_novmap,
@@ -219,7 +219,7 @@ def initialize_optimizer(
     elif vmc_config.optimizer_type == "spring":
         damping_rate_schedule = _get_damping_rate_schedule(vmc_config)
         energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            local_energy_fn, vmc_config.debug, clipping_fn, vmc_config.nan_safe
+            local_energy_fn, clipping_fn, vmc_config.nan_safe
         )
         opt_kwargs = {}
         opt_kwargs["mu"] = optimizer_config.mu
@@ -229,6 +229,7 @@ def initialize_optimizer(
         opt_kwargs["repeat_single_mol"] = vmc_config.repeat_single_mol
         opt = spring_wrapper(Spring(**opt_kwargs), log_psi_apply_novmap, update_data_fn, energy_and_statistics_fn)
         optimizer_state = opt.init(params)
+        from jax.experimental import checkify as cf
         update_param_fn = opt.step
         return update_param_fn, optimizer_state, key
     

@@ -160,22 +160,25 @@ def make_value_and_grad(
         weights_energy = (weights_energy / (W*B)).astype(log_psi.dtype)
         grad_params_energy = vjp_fun(weights_energy)[0]                # PyTree，与 params 同结构
 
-        pre_conditioner_det = jnp.sqrt(jnp.sum(centered ** 2, axis=-1, keepdims=True ) / jnp.maximum(1, B - 1))  #(W,1)
+        if det_dist_weight == 0:
+            grad_params = grad_params_energy
+        else:
+            pre_conditioner_det = jnp.sqrt(jnp.sum(centered ** 2, axis=-1, keepdims=True ) / jnp.maximum(1, B - 1))  #(W,1)
 
-        def g(p):  #(W,B)
-            det_dist = jax.vmap(jax.vmap(det_fn_novmap, (None, None, 0)), (None, 0, 0))(p, atoms, elec)
-            return det_dist.mean(-1)
+            def g(p):  #(W,B)
+                det_dist = jax.vmap(jax.vmap(det_fn_novmap, (None, None, 0)), (None, 0, 0))(p, atoms, elec)
+                return det_dist.mean(-1)
 
-        det_out, vjp_det = jax.vjp(g, params)
+            det_out, vjp_det = jax.vjp(g, params)
 
-        row = ((-det_dist_weight) / (W * B)) * pre_conditioner_det  # (W,1)
-        det_scale = jnp.ones_like(det_out) * row                    # (W,B)
-        det_scale = det_scale.astype(det_out.dtype)
-        grad_params_det = vjp_det(det_scale)[0]
+            row = ((-det_dist_weight) / (W * B)) * pre_conditioner_det  # (W,1)
+            det_scale = jnp.ones_like(det_out) * row                    # (W,B)
+            det_scale = det_scale.astype(det_out.dtype)
+            grad_params_det = vjp_det(det_scale)[0]
 
-        grad_params = jax.tree_util.tree_map(
-            lambda a, b: a + b, grad_params_energy, grad_params_det
-        )
+            grad_params = jax.tree_util.tree_map(
+                lambda a, b: a + b, grad_params_energy, grad_params_det
+            )
 
         loss_val = jnp.nanmean(local_energies)           # 标量
 

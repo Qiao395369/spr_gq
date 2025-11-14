@@ -46,7 +46,7 @@ class PsiformerOptions(networks.BaseNetworkOptions):
   heads_dim: int = 64
   mlp_hidden_dims: Tuple[int, ...] = (256,)
   use_layer_norm: bool = False
-  psiformer_type: str = "default"
+  psiformer_multi: bool = False
 
 
 def make_layer_norm() ->...:
@@ -324,7 +324,7 @@ def make_psiformer_layers(
 
     h_to_orbitals = self_attn_apply(params, x)
 
-    if options.psiformer_type == "multi":
+    if options.psiformer_multi == True:
       h_to_orbitals = h_to_orbitals[:-natoms]
 
     return h_to_orbitals
@@ -345,7 +345,7 @@ def make_fermi_net(
     complex_output: bool = False,
     bias_orbitals: bool = False,
     rescale_inputs: bool = False,
-    psiformer_type: str = "default",
+    psiformer_multi: bool = False,
     # Psiformer-specific kwargs below.
     num_layers: int,
     num_heads: int,
@@ -414,7 +414,7 @@ def make_fermi_net(
       heads_dim=heads_dim,
       mlp_hidden_dims=mlp_hidden_dims,
       use_layer_norm=use_layer_norm,
-      psiformer_type=psiformer_type,
+      psiformer_multi=psiformer_multi,
   )  # pytype: disable=wrong-keyword-args
 
   psiformer_layers = make_psiformer_layers(nspins, charges.shape[0], options)
@@ -432,8 +432,8 @@ def make_fermi_net(
   def network_apply(
       params,
       pos: jnp.ndarray,
-      spins: jnp.ndarray,
       atoms: jnp.ndarray,
+      spins: jnp.ndarray,
       charges: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Forward evaluation of the Psiformer.
@@ -462,11 +462,17 @@ def make_fermi_net(
     if 'state_scale' in params:
       # only used at inference time for excited states
       result = result[0], result[1] + params['state_scale']
-    return result
-
-  return networks.Network(
-      options=options,
-      init=network_init,
-      apply=network_apply,
-      orbitals=orbitals_apply,
-  )
+    return result[:-1]
+  
+  def network_each_det(
+      params,
+      pos: jnp.ndarray,
+      atoms: jnp.ndarray,
+      spins: jnp.ndarray,
+      charges: jnp.ndarray,
+  ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    result = network_blocks.logdet_matmul(orbitals)
+    return jax.nn.log_softmax(result[2])
+  
+  return network_init, network_apply, options, network_each_det

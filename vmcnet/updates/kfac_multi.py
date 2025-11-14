@@ -71,7 +71,11 @@ def kfac_wrapper(
         key, subkey = utils.distribute.split_or_psplit_key(key, multi_device = True)
         energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
         batch = (E_loc, energy_per_w, data)
-
+        # check_nan("energy_per_w",energy_per_w)
+        # check_nan("E_loc",E_loc)
+        # prev_params1, _ = jax.flatten_util.ravel_pytree(params)
+        # check_nan("prev_params1",prev_params1)
+        # tree_has_bad(opt_state, "opt_state_before_step")
         params, opt_state, opt_stats = kfac_opt.step(
             params=params,
             state=opt_state,
@@ -79,6 +83,9 @@ def kfac_wrapper(
             batch=batch,
             momentum=momentum,
         )
+        # prev_params2, _ = jax.flatten_util.ravel_pytree(params)
+        # check_nan("prev_params2",prev_params2)
+        # tree_has_bad(opt_state, "opt_state_after_step")
         data = update_data_fn(data, params)
         metrics = {
                     "energy": opt_stats["loss"], "variance": stats["variance"],
@@ -96,6 +103,42 @@ def kfac_wrapper(
         return params, data, opt_state, metrics, key
 
     return Optimizer(init=init, step=step)
+
+
+
+
+def check_nan(name, x):
+    isnan = jnp.isnan(x)
+    isinf = jnp.isinf(x)
+    bad   = jnp.any(isnan | isinf)
+
+    frac_nan = jnp.mean(isnan.astype(jnp.float32))
+    min_val = jnp.nanmin(x)
+    max_val = jnp.nanmax(x)
+
+
+    jax.debug.print(
+            " {}: bad={} frac_nan={} min={} max={}",
+            name,
+            bad,
+            frac_nan,
+            min_val,
+            max_val,
+        )
+
+    return x
+
+def tree_has_bad(tree, name):
+    leaves, _ = jax.tree.flatten(tree)
+    leaves = [jnp.asarray(x) for x in leaves
+              if jnp.issubdtype(jnp.asarray(x).dtype, jnp.inexact)]
+    if not leaves:
+        return
+    isnan = [jnp.isnan(x).any() for x in leaves]
+    isinf = [jnp.isinf(x).any() for x in leaves]
+    isnan = bool(jax.device_get(jnp.any(jnp.stack(isnan)))) if isnan else False
+    isinf = bool(jax.device_get(jnp.any(jnp.stack(isinf)))) if isinf else False
+    print(f"{name}: has_nan={isnan}, has_inf={isinf}")
 
 
 

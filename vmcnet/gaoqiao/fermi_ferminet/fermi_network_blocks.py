@@ -175,4 +175,4 @@ def logdet_matmul(
   else:
     phase_out = jnp.sign(result)
   log_out = jnp.log(jnp.abs(result)) + maxlogdet
-  return phase_out, log_out
+  return phase_out, log_out, logdet

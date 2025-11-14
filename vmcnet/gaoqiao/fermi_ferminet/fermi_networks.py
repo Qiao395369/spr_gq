@@ -294,7 +294,7 @@ class BaseNetworkOptions:
   feature_layer: FeatureLayer = None
   jastrow: jastrows.JastrowType = jastrows.JastrowType.NONE
   complex_output: bool = False
-  ferminet_type: str = 'default'
+  ferminet_multi: bool = False
 
 
 @attr.s(auto_attribs=True, kw_only=True)
@@ -823,12 +823,10 @@ def make_fermi_net_layers(
     nchannels = len([nspin for nspin in nspins if nspin > 0])
 
     def nfeatures(out1, out2, aux):
-      if options.ferminet_type == "default":
+      if options.ferminet_multi == False:
         return (nchannels + 1) * out1 + (nchannels) * out2 + aux
-      elif options.ferminet_type == "multi":
-        return (nchannels + 2) * out1 + (nchannels+1) * out2 + aux
       else:
-        raise ValueError(f"Unknown ferminet_type: {options.ferminet_type}")
+        return (nchannels + 2) * out1 + (nchannels+1) * out2 + aux
 
     # one-electron stream, per electron:
     #  - one-electron features per atom (default: electron-atom vectors
@@ -1103,7 +1101,7 @@ def make_fermi_net_layers(
       # the output of the one-electron stream to the orbital projection layer.
       h_to_orbitals = h_one
 
-    if options.ferminet_type == "multi":
+    if options.ferminet_multi == True:
       h_to_orbitals = h_to_orbitals[:-natoms]
     return h_to_orbitals
 
@@ -1444,7 +1442,7 @@ def make_fermi_net(
     electron_nuclear_aux_dims: Tuple[int, ...] = tuple(),
     nuclear_embedding_dim: int = 0,
     schnet_electron_nuclear_convolutions: Tuple[int, ...] = tuple(),
-    ferminet_type: str = "default",
+    ferminet_multi: bool = False,
 ) -> Network:
   """Creates functions for initializing parameters and evaluating ferminet.
 
@@ -1527,7 +1525,7 @@ def make_fermi_net(
       nuclear_embedding_dim=nuclear_embedding_dim,
       schnet_electron_nuclear_convolutions=schnet_electron_nuclear_convolutions,
       use_last_layer=use_last_layer,
-      ferminet_type=ferminet_type,
+      ferminet_multi=ferminet_multi,
   )
 
   if options.envelope.apply_type == fermi_envelopes.EnvelopeType.PRE_ORBITAL:
@@ -1550,8 +1548,8 @@ def make_fermi_net(
   def apply(
       params,
       pos: jnp.ndarray,
-      spins: jnp.ndarray,
       atoms: jnp.ndarray,
+      spins: jnp.ndarray,
       charges: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Forward evaluation of the Fermionic Neural Network for a single datum.
@@ -1581,8 +1579,17 @@ def make_fermi_net(
     if 'state_scale' in params:
       # only used at inference time for excited states
       result = result[0], result[1] + params['state_scale']
-    return result
+    return result[:-1]
 
-  return Network(
-      options=options, init=init, apply=apply, orbitals=orbitals_apply
-  )
+  def network_each_det(
+      params,
+      pos: jnp.ndarray,
+      atoms: jnp.ndarray,
+      spins: jnp.ndarray,
+      charges: jnp.ndarray,
+  ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    result = fermi_network_blocks.logdet_matmul(orbitals)
+    return jax.nn.log_softmax(result[2])
+
+  return init, apply, options, network_each_det

@@ -240,14 +240,14 @@ def _get_gaoqiao_model(
         from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
         envelope = fermi_envelopes.make_isotropic_envelope()
-        if config_gq.ferminet_type=="default":
+        if config_gq.ferminet_multi==False:
             feature_layer = fermi_networks.make_ferminet_features(
                 natoms=charges.shape[0],
                 nspins=nspins,
                 ndim=3,
                 rescale_inputs=True,
             )
-        elif config_gq.ferminet_type=="multi":
+        else:
             feature_layer = fermi_networks.make_ferminet_features_multi(
                 natoms=charges.shape[0],
                 nspins=nspins,
@@ -255,7 +255,7 @@ def _get_gaoqiao_model(
                 rescale_inputs=True,
             )
         
-        network = fermi_networks.make_fermi_net(
+        (network_init, network_apply, network_options, network_each_det) = fermi_networks.make_fermi_net(
             nspins=nspins,
             charges=charges,
             ndim=3,
@@ -269,18 +269,26 @@ def _get_gaoqiao_model(
             rescale_inputs=True,
             complex_output=config_gq.do_complex,
             hidden_dims=tuple([(config_gq.h1,config_gq.h2) for _ in range(config_gq.wfn_depth)]),
-            ferminet_type=config_gq.ferminet_type,
+            ferminet_multi=config_gq.ferminet_multi,
         )
         key, subkey = jax.random.split(key)
-        params = network.init(subkey)
+        params = network_init(subkey)
         spins_psi=None
-        network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
+        network_wfn = functools.partial(network_apply,
+                                        spins=spins_psi,
+                                        charges=charges,
+                                        )
+        det_fn = functools.partial( network_each_det,
+                                    spins=spins_psi,
+                                    charges=charges,
+                                    )
+        
     elif wfn_type == 'psiformer':
         from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
         from vmcnet.gaoqiao.fermi_ferminet import psiformer
         envelope = fermi_envelopes.make_isotropic_envelope()
-        if config_gq.psiformer_type == "default":
+        if config_gq.psiformer_multi == False:
             feature_layer = fermi_networks.make_ferminet_features(
                 natoms=charges.shape[0],
                 nspins=nspins,
@@ -288,7 +296,7 @@ def _get_gaoqiao_model(
                 rescale_inputs=True,
             )
             spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1])])
-        elif config_gq.psiformer_type == "multi":
+        else:
             feature_layer = fermi_networks.make_ferminet_features_multi(
                 natoms=charges.shape[0],
                 nspins=nspins,
@@ -296,8 +304,6 @@ def _get_gaoqiao_model(
                 rescale_inputs=True,
             )
             spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1]),jnp.zeros(charges.shape[0])])
-        else:
-            raise ValueError(f"Unknown psiformer layer type: {config_gq.psiformer_type}")
         
         psiformer_config={
               'num_layers': config_gq.psiformer_num_layers,
@@ -306,7 +312,7 @@ def _get_gaoqiao_model(
               'mlp_hidden_dims': (config_gq.psiformer_mlp_hidden_dims,),
               'use_layer_norm': True,
               }
-        network = psiformer.make_fermi_net(
+        (network_init, network_apply, network_options, network_each_det) = psiformer.make_fermi_net(
             nspins=nspins,
             charges=charges,
             ndim=3,
@@ -318,12 +324,19 @@ def _get_gaoqiao_model(
             bias_orbitals=False,
             rescale_inputs=True,
             complex_output=config_gq.do_complex,
-            psiformer_type=config_gq.psiformer_type,
+            psiformer_multi=config_gq.psiformer_multi,
             **psiformer_config,
         )
         key, subkey = jax.random.split(key)
-        params = network.init(subkey)
-        network_wfn = lambda params,xe,xp:network.apply(params,xe,spins=spins_psi,atoms=xp,charges=charges)
+        params = network_init(subkey)
+        network_wfn = functools.partial(network_apply,
+                                        spins=spins_psi,
+                                        charges=charges,
+                                        )
+        det_fn = functools.partial( network_each_det,
+                                    spins=spins_psi,
+                                    charges=charges,
+                                    )
 
     elif wfn_type == 'lapnet':
         from vmcnet.gaoqiao.lapnet import lapnet
@@ -332,7 +345,7 @@ def _get_gaoqiao_model(
               'determinants': 16,
               'after_determinants': (1,),
               }
-        (network_init, signed_network,network_options, network_each_det) = functools.partial(
+        (network_init, signed_network, network_options, det_fn) = functools.partial(
             lapnet.make_lapnet,
             envelope='abs-isotropic',
             bias_orbitals=False,
@@ -498,19 +511,13 @@ def _get_mcmc_fns(
 
 # TODO: figure out where this should go, perhaps in a physics/molecule.py file?
 def _assemble_mol_local_energy_fn(
-    ion_pos: Array,
     ion_charges: Array,
-    kinetic_type: str,
     ei_softening: chex.Scalar,
     ee_softening: chex.Scalar,
     log_psi_apply: ModelApply[P],
 ) :
-    if kinetic_type == "old":
-        kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy_old(log_psi_apply)
-    elif kinetic_type == "new":
-        kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy_new(log_psi_apply)
-    else:
-        raise ValueError("unknown kinetic_type: %s"%(kinetic_type))
+
+    kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy_new(log_psi_apply)
     ei_potential_fn = physics.potential.create_electron_ion_coulomb_potential(
         ion_charges, softening_term=ei_softening
     )
@@ -598,7 +605,7 @@ def _setup_vmc(
         ion_charges, 
         nelec_total, 
         single_nspins,
-        config.eval.init_width,
+        config.vmc.init_width,
         dtype=dtype
     )   #init_pos:(W,B,ne,dim)
 
@@ -642,9 +649,7 @@ def _setup_vmc(
     )
 
     local_energy_fn = _assemble_mol_local_energy_fn(
-        ion_pos,
         ion_charges,
-        config.vmc.kinetic_type,
         config.problem.ei_softening,
         config.problem.ee_softening,
         log_psi_apply,
@@ -707,9 +712,7 @@ def _setup_eval(
     ee_softening = problem_config.ee_softening
 
     local_energy_fn = _assemble_mol_local_energy_fn(
-        ion_pos,
         ion_charges,
-        config.vmc.kinetic_type,
         ei_softening,
         ee_softening,
         log_psi_apply,
@@ -755,6 +758,7 @@ def _make_new_data_for_eval(
     # redistribute if needed
     if is_pmapped:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
+
     data = _make_initial_data(
         log_psi_apply,
         config.eval,
@@ -846,6 +850,7 @@ import os
 def run_molecule() -> None:
     """Run VMC on a molecule."""
     os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
+    # jax.config.update("jax_debug_nans", True)  # 发现 NaN/Inf 的原语会报错
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
     
     reload_from_checkpoint = (

@@ -152,7 +152,7 @@ def make_update_move_metadata_fn(
         moves_since_update = move_metadata["moves_since_update"]
         # jax.debug.print("marker_14")
         # current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float64),axis=(0,1))
-        current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float64), axis=(0, 1)).astype(move_acceptance_sum.dtype)
+        current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(move_acceptance_sum.dtype), axis=(0, 1))
         # jax.debug.print("marker_15")
         move_acceptance_sum = move_acceptance_sum + current_avg_acceptance
         # jax.debug.print("marker_16")
