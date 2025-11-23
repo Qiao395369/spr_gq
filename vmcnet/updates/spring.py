@@ -164,7 +164,8 @@ class Spring:
         dtheta_residual = jax.lax.pmean(jnp.einsum("mjk, mj -> k", Ohat, epsilon_projected) ,axis_name=PMAP_AXIS_NAME)/walker_batch_this_process
         # check_nan("dtheta_residual",dtheta_residual)
         grad = dtheta_residual + self.mu * prev_grad
-        scaled_grad = self.apply_norm_constraint(grad)
+        # scaled_grad = self.apply_norm_constraint(grad)
+        scaled_grad = grad
         # check_nan("grad",grad)
         return unravel_fn(grad), unravel_fn(scaled_grad), jnp.squeeze(E_mean)
 
