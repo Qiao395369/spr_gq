@@ -2200,8 +2200,9 @@ def fermi_net_orbitals(
   # print("h_to_orbitals:",h_to_orbitals)
   # print("hz:",hz)
   # print("pairs:",pairs)
-  ret = fermi_net_orbitals_part2(params, pos, h_to_orbitals, hz, pairs, nspins, options)
-  return ret
+  orbitals = fermi_net_orbitals_part2(params, pos, h_to_orbitals, hz, pairs, nspins, options)
+
+  return orbitals
 
 def fermi_net_orbitals_part1(
     params,
@@ -2311,6 +2312,10 @@ def fermi_net_orbitals_part2(
     orbitals = [jnp.concatenate(orbitals, axis=1)] #[(ndet,nele,nele)]
   #本质上，ndet=1时，对于输入的orbitals_in:(nele,64)->[(n_up,64),(n_dn,64)]->[(n_up,nele),(n_dn,nele)]->[(nele,nele)] 
   #等效于：第一维是nele个轨道，第二维是nele个电子填充。
+  if params['jastrow'] is not None:
+    jastrow = options.jastrow.apply(params['jastrow'], r_ee, model_h_to_orbitals)
+    orbitals = [orbital * jastrow for orbital in orbitals ]
+
   return orbitals, (ae, r_ae, r_ee, model_h_to_orbitals, hz)
 
 ## FermiNet ##
@@ -2364,12 +2369,25 @@ def fermi_net(
   if return_det_dist:
     return jax.nn.log_softmax(logdet)
   
-  if params['jastrow'] is not None:
-    jastrow = options.jastrow.apply(params['jastrow'], r_ee, he)
-    log_out += jastrow
-
   return sign_out, log_out
 
+def orbitals_fn(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    return_det_dist=False,
+    options: FermiNetOptions = FermiNetOptions(),
+):
+  orbitals,_ = fermi_net_orbitals(
+      params,
+      pos,
+      atoms=atoms,
+      nspins=nspins,
+      options=options,
+  )
+
+  return orbitals
 
 def make_fermi_net(
     nele: int, 
@@ -2487,6 +2505,12 @@ def make_fermi_net(
       options=options,
   )
 
+  orb_fn = functools.partial(
+      orbitals_fn,
+      nspins=nspins,
+      options=options, 
+  )
 
-  return init, network, det_fn, options
+
+  return init, network, det_fn, options, orb_fn
 

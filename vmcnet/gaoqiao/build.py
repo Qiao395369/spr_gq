@@ -8,7 +8,8 @@ import jax
 import ml_collections
 import logging
 def build_network(
-	n, charges, nspins,
+	n, charges, 
+	nspins: Tuple[int, ...],
 	key, 
 	ndet, depth, h1, h2, nh, do_complex,
 	gq_type:str= 'ef',
@@ -67,6 +68,7 @@ def build_network(
 	
 	if jastrow_type in ["mlp","mlp_res"]:
 		jastrow = jastrows.make_mlp_jastrow(
+			nspins = nspins,
 			hiddenlayers_num=jastrow_mlp_nlayer,
 			hiddenlayers_size=jastrow_mlp_ndim,
 			activation_fn=activation_fn,
@@ -189,7 +191,7 @@ def build_network(
 			attn_1_params=None,
 		)
 
-	network_init, signed_network, det_fn, network_options = networks.make_fermi_net(
+	network_init, signed_network, det_fn, network_options, orbitals = networks.make_fermi_net(
 		n, 
 		ndim, 
 		nspins,
@@ -217,7 +219,7 @@ def build_network(
 	key, subkey = jax.random.split(key)
 	params = network_init(subkey)
 
-	return params, signed_network, det_fn
+	return params, signed_network, det_fn, orbitals
 
 if __name__=='__main__':
 	n = 14

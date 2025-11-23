@@ -11,6 +11,7 @@ import math
 import chex
 import flax
 import jax
+from jax.experimental import multihost_utils
 import jax.numpy as jnp
 import numpy as np
 from absl import flags
@@ -28,6 +29,9 @@ import vmcnet.physics as physics
 import vmcnet.train as train
 import vmcnet.updates as updates
 import vmcnet.utils as utils
+import kfac_jax
+import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
+import vmcnet.train.pretrain as pretrain
 from vmcnet.utils.typing import (
     Array,
     P,
@@ -48,6 +52,67 @@ import time
 from kfac_jax import utils as kfac_utils
 
 import logging
+
+def create_hf_data(ion_pos, symbol, nspins):
+    """
+    ion_pos:(W,natoms,dim)
+    symbol:["x", "x", ...] total n=natoms strings
+    """
+    multi_walker_list = []
+    walker_num, natoms, _= ion_pos.shape
+    assert len(symbol) == natoms
+    for i in range(walker_num):
+        single_walker_list = []
+        for j in range(natoms):
+            single_atom_data = fermi_system.Atom(symbol[j], ion_pos[i][j]) 
+            single_walker_list.append(single_atom_data)
+        multi_walker_list.append(single_walker_list)
+
+    hartree_focks = []
+    for single_walker_data in multi_walker_list:
+        hartree_fock = pretrain.get_hf(
+            pyscf_mol = None,
+            molecule = single_walker_data,
+            nspins = nspins,
+            restricted = False,
+            basis = "ccpvdz",
+            states = 0,
+        )
+        hartree_focks.append(hartree_fock)
+
+    hf_wfn = []
+    for hartree_fock in hartree_focks:
+        hf_wfn_novmap = train.pretrain.get_hf_wfn(hartree_fock, nspins)
+        hf_novmap = lambda xe : hf_wfn_novmap(xe)[1]
+        hf_wfn.append(hf_novmap)
+    return hartree_focks, hf_wfn
+
+def create_hf_data_single(ion_pos, symbol, nspins):
+    """
+    ion_pos:(W,natoms,dim)
+    symbol:["x", "x", ...] total n=natoms strings
+    """
+    data = ion_pos[0]   #data:(natoms,dim)
+    natoms = data.shape[0]
+    assert len(symbol) == natoms
+    single_walker_list = []
+    for i in range(natoms):
+        single_atom_data = fermi_system.Atom(symbol[i], data[i]) 
+        single_walker_list.append(single_atom_data)
+    
+    hartree_fock = pretrain.get_hf(
+            pyscf_mol = None,
+            molecule = single_walker_list,
+            nspins = nspins,
+            restricted = False,
+            basis = "ccpvdz",
+            states = 0,
+        )
+    hf_wfn_novmap = train.pretrain.get_hf_wfn(hartree_fock, nspins)
+    hf_novmap = lambda xe : hf_wfn_novmap(xe)[1]
+    
+    return hartree_fock, hf_novmap
+
 
 def show_devices():
     devices = jax.devices()
@@ -210,7 +275,7 @@ def _get_gaoqiao_model(
         # trimul_params = None
         # gemi_params = None
         # feat_params = None
-        params, network_wfn, det_fn = gaoqiaobuild.build_network(           #orbitals
+        params, network_wfn, det_fn, orb_fn = gaoqiaobuild.build_network(           #orbitals
             n=nelec,  #电子个数
             charges=charges,  #i.e. charges=jnp.asarray([7.,7.])
             nspins=nspins,   #i.e. (7,7)
@@ -256,7 +321,7 @@ def _get_gaoqiao_model(
                 rescale_inputs=True,
             )
         
-        (network_init, network_apply, network_options, network_each_det) = fermi_networks.make_fermi_net(
+        (network_init, network_apply, network_options, network_each_det, orbitals) = fermi_networks.make_fermi_net(
             nspins=nspins,
             charges=charges,
             ndim=3,
@@ -280,6 +345,10 @@ def _get_gaoqiao_model(
                                         charges=charges,
                                         )
         det_fn = functools.partial( network_each_det,
+                                    spins=spins_psi,
+                                    charges=charges,
+                                    )
+        orb_fn = functools.partial(orbitals,
                                     spins=spins_psi,
                                     charges=charges,
                                     )
@@ -313,7 +382,7 @@ def _get_gaoqiao_model(
               'mlp_hidden_dims': (config_gq.psiformer_mlp_hidden_dims,),
               'use_layer_norm': True,
               }
-        (network_init, network_apply, network_options, network_each_det) = psiformer.make_fermi_net(
+        (network_init, network_apply, network_options, network_each_det, orbitals) = psiformer.make_fermi_net(
             nspins=nspins,
             charges=charges,
             ndim=3,
@@ -338,15 +407,19 @@ def _get_gaoqiao_model(
                                     spins=spins_psi,
                                     charges=charges,
                                     )
+        orb_fn = functools.partial( orbitals,
+                                    spins=spins_psi,
+                                    charges=charges,
+                                    )
 
     elif wfn_type == 'lapnet':
         from vmcnet.gaoqiao.lapnet import lapnet
         detnet = {
-              'hidden_dims': ((256, 4), (256, 4), (256, 4), (256, 4)),
+              'hidden_dims': tuple((config_gq.lapnet_mlp_hidden_dims,config_gq.lapnet_num_heads) for i in range(config_gq.lapnet_num_layers)),
               'determinants': 16,
               'after_determinants': (1,),
               }
-        (network_init, signed_network, network_options, det_fn) = functools.partial(
+        (network_init, signed_network, network_options, det_fn, orb_fn) = functools.partial(
             lapnet.make_lapnet,
             envelope='abs-isotropic',
             bias_orbitals=False,
@@ -394,14 +467,30 @@ def _get_gaoqiao_model(
         return logabsdet
 
     # @jax.jit
-    def log_psi_apply(params, xp, xe):
+    def log_psi_apply_vmap(params, xp, xe):
         return jax.vmap(jax.vmap(log_psi_apply_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, xp, xe)
         
     def det_fn_novmap(params,xp,xe):
         det = det_fn(params,xe,xp) #xe(ne,3),xp(na,3)
         return det
+    
+    def orb_fn_novmap(params,xp,xe):
+        orb = orb_fn(params,xe,xp)[0] #xe(ne,3),xp(na,3)
+        return orb
+    
+    orb_fn_vmap = jax.vmap(jax.vmap(orb_fn_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+    # test_xe = jnp.ones((14,3))
+    # test_xp = jnp.ones((2,3))
 
-    return log_psi_apply,log_psi_apply_novmap, det_fn_novmap, params, key
+    # orb = orb_fn_novmap(params,test_xp,test_xe)
+    # det = det_fn_novmap(params,test_xp,test_xe)
+    # log_psi = log_psi_apply_novmap(params,test_xp,test_xe)
+    # print("orb.shape:", orb.shape)
+    # print("det.shape:", det.shape)
+    # print("log_psi.shape:", log_psi.shape)
+    # sys.exit()
+
+    return log_psi_apply_vmap, log_psi_apply_novmap, det_fn_novmap, orb_fn_vmap, params, key
 
 
 # TODO: figure out how to merge this and other distributing logic with the current
@@ -613,7 +702,7 @@ def _setup_vmc(
 
     # Make the model
     if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer","lapnet"]:
-        log_psi_apply_vmap, log_psi_apply, det_fn_novmap, params, key =  _get_gaoqiao_model(
+        log_psi_apply_vmap, log_psi_apply, det_fn_novmap, orb_fn_vmap, params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
@@ -646,9 +735,7 @@ def _setup_vmc(
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
 
     # Setup metropolis step
-    burning_step, walker_fn = _get_mcmc_fns(
-        config.vmc, log_psi_apply_vmap, apply_pmap=apply_pmap
-    )
+    burning_step, walker_fn = _get_mcmc_fns(config.vmc, log_psi_apply_vmap, apply_pmap=apply_pmap)
 
     local_energy_fn = _assemble_mol_local_energy_fn(
         ion_charges,
@@ -659,6 +746,10 @@ def _setup_vmc(
 
     clipping_fn = _get_clipping_fn(config.vmc)
 
+    energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
+            local_energy_fn, clipping_fn, config.vmc.nan_safe
+        )
+    
     # Setup parameter updates
     if apply_pmap:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
@@ -677,9 +768,8 @@ def _setup_vmc(
         key,
     ) = updates.parse_optimizer_config.initialize_optimizer(
         log_psi_apply,
-        local_energy_fn,
+        energy_and_statistics_fn,
         det_fn_novmap,
-        clipping_fn,
         config.vmc,
         params,
         data_down_sample,
@@ -692,6 +782,8 @@ def _setup_vmc(
     return (
         log_psi_apply_vmap,
         log_psi_apply,
+        orb_fn_vmap,
+        energy_and_statistics_fn,
         burning_step,
         walker_fn,
         update_param_fn,
@@ -784,11 +876,16 @@ def _make_new_data_for_eval(
 
 
 def _burn_and_run_vmc(
-    run_config: ConfigDict,
+    config: ConfigDict,
+    ion_pos: Array,
+    nspins,
     logdir: str,
     params: P,
     optimizer_state: S,
     data: D,
+    net_orbitals_vmap,
+    net_wfn_novmap,
+    energy_and_statistics_fn,
     burning_step: mcmc.metropolis.BurningStep[P, D],
     walker_fn: mcmc.metropolis.WalkerFn[P, D],
     update_param_fn: updates.update_param_fns.UpdateParamFn[P, D, S],
@@ -800,6 +897,7 @@ def _burn_and_run_vmc(
     start_epoch: int = 0,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     if not is_eval:
+        run_config = config.vmc
         checkpoint_every = run_config.checkpoint_every
         best_checkpoint_every = run_config.best_checkpoint_every
         checkpoint_dir = run_config.checkpoint_dir
@@ -807,6 +905,7 @@ def _burn_and_run_vmc(
         nhistory_max = run_config.nhistory_max
         check_for_nans = run_config.check_for_nans
     else:
+        run_config = config.eval
         checkpoint_every = None
         best_checkpoint_every = None
         checkpoint_dir = ""
@@ -814,12 +913,46 @@ def _burn_and_run_vmc(
         nhistory_max = 0
         check_for_nans = False
 
+    config_pretrain = config.pretrain
+    if config_pretrain.method == "hf" and config_pretrain.iterations > 0 and not is_eval:
+        hartree_fock, hf_novmap = create_hf_data_single(ion_pos, config.problem.atoms_symbol, nspins)
+
+        def hf_and_net_sum(params,xp,xe):
+            result1 = jnp.exp(hf_novmap(xe))
+            result2 = jnp.exp(net_wfn_novmap(params,xp,xe))
+            result = jnp.log((result1+result2)/2)
+            return result
+
+        def hf_net(params,xp,xe):
+            del params,xp
+            return hf_novmap(xe)
+        
+        hf_wfn_sum_vmap = jax.vmap(jax.vmap(hf_and_net_sum, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+
+        pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, hf_wfn_sum_vmap, apply_pmap=is_pmapped)
+
+        key, subkeys = kfac_jax.utils.p_split(key)
+
+        if not config_pretrain.skip_burn:
+            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
+
+        params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
+            params=params,
+            data=data,
+            net_orbitals_vmap=net_orbitals_vmap,
+            energy_and_statistics_fn=energy_and_statistics_fn,
+            pretrain_walker_fn=pretrain_walker_fn,
+            walker_fn=walker_fn,
+            burning_step=burning_step,
+            key=key,
+            nspins=nspins,
+            scf_approx=hartree_fock,
+            iterations=config_pretrain.iterations,
+            )
+
     if not skip_burn:
-        data, key = mcmc.metropolis.burn_data(
-            burning_step, run_config.nburn, params, data, key
-        )
+        data, key = mcmc.metropolis.burn_data(burning_step, run_config.nburn, params, data, key)
     nchains = math.prod(data["atoms_position"].shape[:-2])
-    
     return train.vmc.vmc_loop(
         params,
         optimizer_state,
@@ -899,6 +1032,8 @@ def run_molecule() -> None:
     (
         log_psi_apply_vmap,
         log_psi_apply_novmap,
+        orb_fn_vmap,
+        energy_and_statistics_fn,
         burning_step,
         walker_fn,
         update_param_fn,
@@ -957,16 +1092,21 @@ def run_molecule() -> None:
     logging.info("Saving to %s", logdir)
 
     params, optimizer_state, data, key, nans_detected = _burn_and_run_vmc(
-        config.vmc,
-        logdir,
-        params,
-        optimizer_state,
-        data,
-        burning_step,
-        walker_fn,
-        update_param_fn,
-        get_amplitude_fn,
-        key,
+        config=config,
+        ion_pos=ion_pos,
+        nspins=nspins,
+        logdir=logdir,
+        params=params,
+        optimizer_state=optimizer_state,
+        data=data,
+        net_orbitals_vmap=orb_fn_vmap,
+        net_wfn_novmap=log_psi_apply_novmap,
+        energy_and_statistics_fn=energy_and_statistics_fn,
+        burning_step=burning_step,
+        walker_fn=walker_fn,
+        update_param_fn=update_param_fn,
+        get_amplitude_fn=get_amplitude_fn,
+        key=key,
         is_eval=False,
         is_pmapped=apply_pmap,
         skip_burn=reload_from_checkpoint and not reload_config.reburn,
@@ -1019,16 +1159,19 @@ def run_molecule() -> None:
         )
 
     _burn_and_run_vmc(
-        config.eval,
-        eval_logdir,
-        params,
-        optimizer_state,
-        data,
-        eval_burning_step,
-        eval_walker_fn,
-        eval_update_param_fn,
-        get_amplitude_fn,
-        key,
+        config=config,
+        ion_pos=None,
+        nspins=None,
+        logdir=eval_logdir,
+        params=params,
+        optimizer_state=optimizer_state,
+        data=data,
+        net_orbitals_vmap=None,
+        burning_step=eval_burning_step,
+        walker_fn=eval_walker_fn,
+        update_param_fn=eval_update_param_fn,
+        get_amplitude_fn=get_amplitude_fn,
+        key=key,
         is_eval=True,
         is_pmapped=apply_pmap,
     )

@@ -82,9 +82,8 @@ def _get_InverseSchedule(init_value, decay_rate, offset=0.0):
 
 def initialize_optimizer(
     log_psi_apply_novmap: ModelApply[P],
-    local_energy_fn,
+    energy_and_statistics_fn,
     det_fn_novmap,
-    clipping_fn: Optional[ClippingFn],
     vmc_config: ConfigDict,
     params: P,
     data: D,
@@ -98,7 +97,7 @@ def initialize_optimizer(
         vmc_config.optimizer[vmc_config.optimizer_type]
     )
     optimizer_config=vmc_config.optimizer[vmc_config.optimizer_type]
-
+    local_energy_fn=None
     if vmc_config.optimizer_type == "kfac":
         energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
             log_psi_apply_novmap,
@@ -146,9 +145,7 @@ def initialize_optimizer(
             ),
             "multi_device": True,
         }
-        energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            local_energy_fn, clipping_fn, vmc_config.nan_safe
-        )
+
         loss_fn = make_value_and_grad(
             log_psi_apply_novmap,
             det_fn_novmap,
@@ -218,9 +215,7 @@ def initialize_optimizer(
 
     elif vmc_config.optimizer_type == "spring":
         damping_rate_schedule = _get_damping_rate_schedule(vmc_config)
-        energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            local_energy_fn, clipping_fn, vmc_config.nan_safe
-        )
+
         opt_kwargs = {}
         opt_kwargs["mu"] = optimizer_config.mu
         opt_kwargs["norm_constraint"] = optimizer_config.norm_constraint
@@ -234,9 +229,7 @@ def initialize_optimizer(
         return update_param_fn, optimizer_state, key
     
     elif vmc_config.optimizer_type == "gauss_newton":
-        energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            local_energy_fn, vmc_config.nchains, clipping_fn, vmc_config.nan_safe
-        )
+
         (
             update_param_fn,
             optimizer_state,

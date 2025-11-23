@@ -82,6 +82,7 @@ def get_default_config() -> ConfigDict:
                 "notes": "default",
                 "problem": get_default_molecular_config(),
                 "model": get_default_model_config(),
+                "pretrain": get_default_pretrain_config(),
                 "vmc": get_default_vmc_config(),
                 "eval": get_default_eval_config(),
                 "wfn_type":"gaoqiao",  #["gaoqiao","gq_ferminet","ll"]
@@ -298,8 +299,9 @@ def get_default_molecular_config() -> Dict:
     """Get a default molecular configuration (LiH)."""
     problem_config = {
         "ion_pos": ((0.0, 0.0, -1.5069621), (0.0, 0.0, 1.5069621)),
-        "ion_charges": (1.0, 3.0),
-        "nspins": (2, 2),
+        "ion_charges": (7.0, 7.0),
+        "atoms_symbol" : ("N", "N"),
+        "nspins": (7, 7),
         "single_nspins":((5,2),(2,5)),
         "ei_softening": 0.0,
         "ee_softening": 0.0,
@@ -404,6 +406,19 @@ def get_default_vmc_config() -> Dict:
     }
     return vmc_config
 
+def get_default_pretrain_config() -> Dict:
+    """Get a default VMC training configuration."""
+    pretrain_config = {
+        "method": "hf", #choices=["hf", ""]
+        "skip_burn": False,
+        "nburn": 5000,
+        "iterations": 1000,
+        "nsteps_per_param_update": 10,
+        "nmoves_per_width_update": 100,
+    }
+    return pretrain_config
+
+
 def get_default_gq_config() -> Dict:
     """Get a default attention configuration."""
     gq_config = {
@@ -444,6 +459,9 @@ def get_default_gq_config() -> Dict:
         "psiformer_mlp_hidden_dims": 256,
         "ferminet_multi": False, #choices=["default", "multi"]
         "lapnet_multi": False,
+        "lapnet_num_layers": 4,
+        "lapnet_num_heads": 4,
+        "lapnet_mlp_hidden_dims": 256,
     }
     return gq_config
 

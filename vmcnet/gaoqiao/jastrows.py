@@ -114,12 +114,13 @@ def make_simple_ee_jastrow(
   ) -> jnp.ndarray:
     """Jastrow factor for electron-electron cusps."""
     del he
-    return _jastrow_ee(r_ee, params, nspins, jastrow_fun=simple_ee_cusp_fun)
+    return jnp.exp(_jastrow_ee(r_ee, params, nspins, jastrow_fun=simple_ee_cusp_fun)/sum(nspins))
 
   return JastrowModel(init, apply)
 
 
 def make_mlp_jastrow(
+    nspins,
     hiddenlayers_num:int,
     hiddenlayers_size:int,
     activation_fn:Callable[[jnp.ndarray], jnp.ndarray],
@@ -173,7 +174,7 @@ def make_mlp_jastrow(
         jastrow = jastrow_f
     jastrow = network_blocks.linear_layer(jastrow, **params[-1])
     jastrow = jnp.sum(jastrow)
-    return jastrow
+    return jnp.exp(jastrow / sum(nspins))
 
   return JastrowModel(init, apply)
 

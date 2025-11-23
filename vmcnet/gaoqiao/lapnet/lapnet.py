@@ -315,6 +315,8 @@ def lapnet_orbitals(
     orbitals = [jnp.transpose(orbital, (1, 0, 2)) for orbital in orbitals]
     orbitals = jnp.concatenate(orbitals, axis=1)  # only support full_det
 
+    orbitals = orbitals * jastrow_factor(r_ee, nspins, **params['jastrow'])
+
   return [orbitals], (ae, r_ae, r_ee)
 
 
@@ -347,7 +349,7 @@ def jastrow_factor(r_ee: jnp.ndarray, nspins: Tuple[int,int], alpha_par: jnp.nda
   off_diag = r_ee[:nspins[0], nspins[0]:]  # upper triangle
   anti_jastrow = -0.5 * jnp.sum((alpha_anti**2)/(alpha_anti+off_diag))
 
-  return par_jastrow + anti_jastrow
+  return jnp.exp((par_jastrow + anti_jastrow)/sum(nspins))
 
 
 def lapnet_each_det(
@@ -417,9 +419,26 @@ def lapnet(
   orbitals = orbitals[0]
 
   # multiply Jastrow factor
-  output = output[0], output[1] + jastrow_factor(r_ee, nspins, **params['jastrow'])
+  # output = output[0], output[1] + jastrow_factor(r_ee, nspins, **params['jastrow'])
 
   return output
+
+def orbitals_fn(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    options: LapNetOptions = LapNetOptions(),
+):
+  orbitals, _ = lapnet_orbitals(
+      params,
+      pos,
+      atoms=atoms,
+      nspins=nspins,
+      options=options,
+  )
+
+  return orbitals
 
 
 def make_lapnet(
@@ -510,5 +529,11 @@ def make_lapnet(
       nspins=nspins,
       options=options,
   )
+  orb_fn = functools.partial(
+      orbitals_fn,
+      # atoms=atoms,
+      nspins=nspins,
+      options=options,
+  )
 
-  return init, network, options, network_each_det
+  return init, network, options, network_each_det, orb_fn

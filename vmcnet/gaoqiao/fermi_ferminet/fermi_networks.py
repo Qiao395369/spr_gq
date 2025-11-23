@@ -492,7 +492,7 @@ def make_ferminet_features(
 ) -> FeatureLayer:
   """Returns the init and apply functions for the standard features."""
 
-  del nspins
+  # del nspins
 
   def init() -> Tuple[Tuple[int, int], Param]:
     return (natoms * (ndim + 1), ndim + 1), {}
@@ -580,6 +580,8 @@ def construct_symmetric_features(
   """
   # Split features into spin up and spin down electrons
   # spin_partitions = fermi_network_blocks.array_partitions(nspins)
+  # print("h_one:",h_one.shape)
+  # print("h_two:",h_two.shape)
   spin_partitions=[nspins[0],nspins[0]+nspins[1]]
   h_ones = jnp.split(h_one, spin_partitions, axis=0)
   h_twos = jnp.split(h_two, spin_partitions, axis=0)
@@ -590,8 +592,13 @@ def construct_symmetric_features(
   g_one = [jnp.tile(g, [h_one.shape[0], 1]) for g in g_one]
 
   g_two = [jnp.mean(h, axis=0) for h in h_twos if h.size > 0]
-
+  # print("spin_partitions:",spin_partitions)
+  # print("h_ones:",[h.shape for h in h_ones])
+  # print("h_twos:",[h.shape for h in h_twos])
+  # print("g_one:",[g.shape for g in g_one])
+  # print("g_two:",[g.shape for g in g_two])
   features = [h_one] + g_one + g_two
+  # print("features:",[f.shape for f in features])
   if h_aux is not None:
     features.append(h_aux)
   return jnp.concatenate(features, axis=1)
@@ -1040,6 +1047,7 @@ def make_fermi_net_layers(
       output_dim, is given by init, and is suitable for projection into orbital
       space.
     """
+    del spins
     natoms = len(charges)
 
     ae_features, ee_features = options.feature_layer.apply(
@@ -1210,8 +1218,8 @@ def make_orbitals(
   def apply(
       params,
       pos: jnp.ndarray,
-      spins: jnp.ndarray,
       atoms: jnp.ndarray,
+      spins: jnp.ndarray,
       charges: jnp.ndarray,
   ) -> Sequence[jnp.ndarray]:
     """Forward evaluation of the Fermionic Neural Network up to the orbitals.
@@ -1566,7 +1574,7 @@ def make_fermi_net(
       of and log absolute of the network evaluated at x.
     """
 
-    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    orbitals = orbitals_apply(params, pos, atoms, spins, charges)
     if options.states:
       batch_logdet_matmul = jax.vmap(fermi_network_blocks.logdet_matmul, in_axes=0)
       orbitals = [
@@ -1588,8 +1596,10 @@ def make_fermi_net(
       spins: jnp.ndarray,
       charges: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    # print("pos:",pos.shape)
+    # print("atoms:",atoms.shape)
+    orbitals = orbitals_apply(params, pos, atoms, spins, charges)
     result = fermi_network_blocks.logdet_matmul(orbitals)
     return jax.nn.log_softmax(result[2])
 
-  return init, apply, options, network_each_det
+  return init, apply, options, network_each_det, orbitals_apply

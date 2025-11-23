@@ -449,7 +449,7 @@ def make_fermi_net(
       Output of antisymmetric neural network in log space, i.e. a tuple of sign
       of and log absolute value of the network evaluated at x.
     """
-    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    orbitals = orbitals_apply(params, pos, atoms, spins, charges)
     if options.states:
       batch_logdet_matmul = jax.vmap(network_blocks.logdet_matmul, in_axes=0)
       orbitals = [
@@ -471,8 +471,8 @@ def make_fermi_net(
       spins: jnp.ndarray,
       charges: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
+    orbitals = orbitals_apply(params, pos, atoms, spins, charges)
     result = network_blocks.logdet_matmul(orbitals)
     return jax.nn.log_softmax(result[2])
   
-  return network_init, network_apply, options, network_each_det
+  return network_init, network_apply, options, network_each_det, orbitals_apply
