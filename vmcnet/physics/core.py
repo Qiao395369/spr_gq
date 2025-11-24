@@ -319,8 +319,8 @@ def create_value_and_grad_energy_fn(
         energy_per_w, stats, grad_E = get_standard_contribution(
             local_energies_noclip, params, atoms_positions, positions
         )
-        energy = jnp.mean(energy_per_w)
-        multi_energy = energy_per_w.reshape((-1))
+        multi_energy = jnp.squeeze(energy_per_w, axis=-1)
+        energy = mean_grad_fn(multi_energy)
         stats.update({"multi_energy":multi_energy})
         return energy, stats, grad_E
 

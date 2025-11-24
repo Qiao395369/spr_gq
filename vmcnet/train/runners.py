@@ -1004,7 +1004,6 @@ def _compute_and_save_energy_statistics(
 import os
 def run_molecule() -> None:
     """Run VMC on a molecule."""
-    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=2'
     # jax.config.update("jax_debug_nans", True)  # 发现 NaN/Inf 的原语会报错
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
     
