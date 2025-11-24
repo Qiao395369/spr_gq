@@ -6,6 +6,8 @@ import chex
 import jax
 import jax.numpy as jnp
 import kfac_jax
+from vmcnet.updates.loss import flat_ansatz_call
+from vmcnet.utils.distribute import PMAP_AXIS_NAME
 
 import vmcnet.utils as utils
 from vmcnet.utils.typing import (
@@ -19,7 +21,6 @@ from vmcnet.utils.typing import (
     Dict,
     Any,
 )
-from vmcnet.utils.distribute import PMAP_AXIS_NAME
 EnergyAuxData = Dict[str, Any]
 ValueGradEnergyFn = Callable[[P, Array, Array], Tuple[Array, EnergyAuxData, P]]
 
@@ -219,8 +220,9 @@ def get_clipped_energies_and_stats(
 
 
 def create_value_and_grad_energy_fn(
-    log_psi_apply: ModelApply[P],
+    log_psi_apply_novmap: ModelApply[P],
     local_energy_fn,
+    repeat_single_mol,
     nchains: int,
     clipping_fn: Optional[ClippingFn] = None,
     nan_safe: bool = True,
@@ -261,8 +263,8 @@ def create_value_and_grad_energy_fn(
         where auxiliary_energy_data is the tuple
         (expected_variance, local_energies, unclipped_energy, unclipped_variance)
     """
-    # mean_grad_fn = utils.distribute.get_mean_over_first_axis_fn(nan_safe=nan_safe)
-    mean_grad_fn = utils.distribute.get_mean_over_first_and_second_axis_fn(nan_safe=nan_safe)
+    mean_grad_fn = utils.distribute.get_mean_over_first_axis_fn(nan_safe=nan_safe)
+    # mean_grad_fn = utils.distribute.get_mean_over_first_and_second_axis_fn(nan_safe=nan_safe)
 
     def standard_estimator_forward(
         params: P,
@@ -275,17 +277,17 @@ def create_value_and_grad_energy_fn(
         positions(W,B,nele,dim)
         centerd_local_energies:(W,B)
         '''
-        log_psi = log_psi_apply(params, atoms_positions, positions)  # log_psi:(W,B)
+        # log_psi = log_psi_apply(params, atoms_positions, positions)  # log_psi:(W,B)
+        log_psi = flat_ansatz_call(log_psi_apply_novmap, params, atoms_positions, positions) 
+        # logging.info("log_psi: %s", log_psi.shape)
+        # logging.info("centered_local_energies: %s", centered_local_energies.shape)
         kfac_jax.register_normal_predictive_distribution(log_psi[:, None])
         # NOTE: for the generic gradient estimator case it may be important to include
         # the (nchains / nchains -1) factor here to make sure the standard and generic
         # gradient terms aren't mismatched by a slight scale factor.
-        return (
-            2.0
-            * nchains
-            / (nchains - 1)
-            * mean_grad_fn(centered_local_energies * log_psi)
-        )  # shape:()
+        output = 2.0 * nchains / (nchains - 1) * mean_grad_fn(centered_local_energies * log_psi)  # shape:()
+        # logging.info("output: %s", output.shape)
+        return output
 
     def get_standard_contribution(local_energies_noclip, params, atoms_positions, positions):
         '''
@@ -293,29 +295,33 @@ def create_value_and_grad_energy_fn(
         atoms_position:(W,natom,dim)
         positions(W,B,nele,dim)
         '''
-        energy, local_energies, stats = get_clipped_energies_and_stats(
+        energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
             local_energies_noclip, clipping_fn, nan_safe
-        )  # energy:(W,1), local_energies:(W,B)
-        centered_local_energies = local_energies - energy  #(W,B)
+        )  #energy_per_w:(W,1), E_loc:(W,B)
+        if repeat_single_mol:
+            energy_per_w = jnp.mean(energy_per_w, axis=0, keepdims=True)  #(1,1)
+            energy_per_w = jax.lax.pmean(energy_per_w, axis_name=PMAP_AXIS_NAME) #(1,1)
+
+        centered_local_energies = (E_loc - energy_per_w).reshape(-1)  # (W*B,)
+        # logging.info("centered_local_energies: %s", centered_local_energies.shape)
         grad_E = jax.grad(standard_estimator_forward, argnums=0)(
             params, atoms_positions, positions, centered_local_energies
         )  # grad_E has the same shape as params.
-        return energy, stats, grad_E
+        return energy_per_w, stats, grad_E
 
-    def energy_val_and_grad(params,atoms_positions, positions):
+    def energy_val_and_grad(params, atoms_positions, positions):
         '''
         atoms_positions:(W,natom,dim)
         positions:(W,B,nele,dim)
         '''
-        local_energies_noclip=jax.vmap(jax.vmap(local_energy_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
+        local_energies_noclip = jax.vmap(jax.vmap(local_energy_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions) #(W,B)
 
-        kinetic,ei_potential,ee_potential,ii_potential = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
-
-        energy, stats, grad_E = get_standard_contribution(
+        energy_per_w, stats, grad_E = get_standard_contribution(
             local_energies_noclip, params, atoms_positions, positions
         )
-        multi_energy = energy.reshape((-1))
-        stats.update({"kinetic": kinetic, "ei_potential": ei_potential ,"ee_potential":ee_potential,"ii_potential":ii_potential,"multi_energy":multi_energy})
+        energy = jnp.mean(energy_per_w)
+        multi_energy = energy_per_w.reshape((-1))
+        stats.update({"multi_energy":multi_energy})
         return energy, stats, grad_E
 
     return energy_val_and_grad

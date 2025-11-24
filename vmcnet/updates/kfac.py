@@ -15,6 +15,7 @@ import vmcnet.utils as utils
 from vmcnet.utils.pytree_helpers import (
     tree_reduce_l1,
 )
+from vmcnet.updates.kfacext import make_graph_patterns
 
 import vmcnet.utils.curvature_tags_and_blocks as curvature_tags_and_blocks
 
@@ -46,9 +47,9 @@ def _get_traced_compute_param_norm(
 def construct_kfac_update_fn(
     optimizer: kfac_jax.Optimizer,
     damping: chex.Numeric,
-    get_position_fn: GetPositionFromData[D],
+    # get_position_fn: GetPositionFromData[D],
     update_data_fn: UpdateDataFn[D, P],
-    record_param_l1_norm: bool = False,
+    # record_param_l1_norm: bool = False,
 ) -> UpdateParamFn[P, D, OptimizerState]:
     """Create momentum-less KFAC update step function.
 
@@ -73,41 +74,32 @@ def construct_kfac_update_fn(
         damping = utils.distribute.replicate_all_local_devices(damping)
         update_data_fn = utils.distribute.pmap(update_data_fn)
 
-    traced_compute_param_norm = _get_traced_compute_param_norm(optimizer.multi_device)
+    # traced_compute_param_norm = _get_traced_compute_param_norm(optimizer.multi_device)
 
-    def update_param_fn(params, data, optimizer_state, key):
+    def update_param_fn(key, params, optimizer_state, data):
         key, subkey = utils.distribute.split_or_psplit_key(key, optimizer.multi_device)
         params, optimizer_state, stats = optimizer.step(
             params=params,
             state=optimizer_state,
             rng=subkey,
-            data_iterator=iter([get_position_fn(data)]),
+            # data_iterator=iter([(data["atoms_position"], data["walker_data"]["elec_position"])]),
+            batch=(data["atoms_position"], data["walker_data"]["elec_position"]),
             momentum=momentum,
             damping=damping,
         )
         data = update_data_fn(data, params)
 
-        energy = stats["loss"]
-        variance = stats["aux"]["variance"]
-        energy_noclip = stats["aux"]["energy_noclip"]
-        variance_noclip = stats["aux"]["variance_noclip"]
-        picked_stats = (energy, variance, energy_noclip, variance_noclip)
-
-        if record_param_l1_norm:
-            param_l1_norm = traced_compute_param_norm(params)
-            picked_stats = picked_stats + (param_l1_norm,)
-
-        stats_to_save = picked_stats
-        if optimizer.multi_device:
-            stats_to_save = [utils.distribute.get_first(stat) for stat in picked_stats]
-
-        metrics = {"energy": stats_to_save[0], "variance": stats_to_save[1]}
-        metrics = update_metrics_with_noclip(
-            stats_to_save[2], stats_to_save[3], metrics
-        )
-
-        if record_param_l1_norm:
-            metrics.update({"param_l1_norm": stats_to_save[4]})
+        # param_l1_norm = traced_compute_param_norm(params)
+        
+        metrics = {
+                    "energy": stats["loss"], "variance": stats["aux"]["variance"],
+                    "multi_energy": stats["aux"]["multi_energy"],
+                    "opt_param_norm": stats["param_norm"],
+                    "opt_grad_norm": stats["grad_norm"],
+                    "opt_update_norm": stats["update_norm"],
+                    "energy_noclip": stats["aux"]["energy_noclip"],
+                    "variance_noclip": stats["aux"]["variance_noclip"],
+            }
 
         return params, data, optimizer_state, metrics, key
 
@@ -123,7 +115,7 @@ def initialize_kfac(
     key: PRNGKey,
     learning_rate_schedule: LearningRateSchedule,
     optimizer_config: ConfigDict,
-    record_param_l1_norm: bool = False,
+    # record_param_l1_norm: bool = False,
     apply_pmap: bool = True,
 ) -> Tuple[UpdateParamFn[P, D, OptimizerState], OptimizerState, PRNGKey]:
     """Get an update param function, initial state, and key for KFAC.
@@ -157,9 +149,10 @@ def initialize_kfac(
         PRNGKey
     """
 
-    def kfac_value_and_grad_fn(params, rng, positions):
+    def kfac_value_and_grad_fn(params, rng, batch):
         del rng
-        energy, stats, grad_E = energy_data_val_and_grad(params, positions)
+        atoms_positions, positions = batch
+        energy, stats, grad_E = energy_data_val_and_grad(params, atoms_positions, positions)
         return (energy, stats), grad_E
 
     optimizer = kfac_jax.Optimizer(
@@ -169,30 +162,32 @@ def initialize_kfac(
         value_func_has_aux=True,
         value_func_has_rng=True,
         learning_rate_schedule=learning_rate_schedule,  # type:ignore
-        curvature_ema=optimizer_config.curvature_ema,
         inverse_update_period=optimizer_config.inverse_update_period,
         min_damping=optimizer_config.min_damping,
         num_burnin_steps=0,
-        register_only_generic=optimizer_config.register_only_generic,
         estimation_mode=optimizer_config.estimation_mode,
-        multi_device=apply_pmap,
         pmap_axis_name=utils.distribute.PMAP_AXIS_NAME,
         # Mypy can't find GRAPH_PATTERNS because we've ignored types in the curvature
         # tags file since it's not typed properly.
-        auto_register_kwargs=dict(
-            graph_patterns=curvature_tags_and_blocks.GRAPH_PATTERNS,  # type: ignore
-        ),
+        # auto_register_kwargs={"graph_patterns": curvature_tags_and_blocks.GRAPH_PATTERNS},
+        auto_register_kwargs={"graph_patterns": make_graph_patterns()},
+        multi_device=apply_pmap,
+        include_norms_in_stats=True,
+        curvature_ema=optimizer_config.curvature_ema,
+        register_only_generic=False,
+        batch_size_extractor= (lambda batch, *_: (int(batch[-1].shape[0])* int(batch[-1].shape[1]))),
+
     )
     key, subkey = utils.distribute.split_or_psplit_key(key, apply_pmap)
 
-    optimizer_state = optimizer.init(params, subkey, get_position_fn(data))
+    optimizer_state = optimizer.init(params, subkey, (data["atoms_position"], data["walker_data"]["elec_position"]))
 
     update_param_fn = construct_kfac_update_fn(
         optimizer,
         optimizer_config.damping,
-        pacore.get_position_from_data,
+        # pacore.get_position_from_data,
         update_data_fn,
-        record_param_l1_norm=record_param_l1_norm,
+        # record_param_l1_norm=record_param_l1_norm,
     )
 
     return update_param_fn, optimizer_state, key

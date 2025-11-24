@@ -156,8 +156,8 @@ def make_value_and_grad(
 
         centered = local_energies - energy_per_w         # (W,B)
 
-        weights_energy = centered.reshape(-1)
-        weights_energy = (weights_energy / (W*B)).astype(log_psi.dtype)
+        weights_energy = centered.reshape(-1)  #（W*B）
+        weights_energy = (weights_energy / (W*B)).astype(log_psi.dtype)  
         grad_params_energy = vjp_fun(weights_energy)[0]                # PyTree，与 params 同结构
 
         if det_dist_weight == 0:

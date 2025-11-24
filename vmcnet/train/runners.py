@@ -763,12 +763,22 @@ def _setup_vmc(
     else:
         data_down_sample = data
 
+    energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
+            log_psi_apply,
+            local_energy_fn,
+            config.vmc.repeat_single_mol ,
+            init_pos.shape[0]*init_pos.shape[1],
+            clipping_fn,
+            nan_safe=config.vmc.nan_safe,
+        )
+
     (   update_param_fn,
         optimizer_state,
         key,
     ) = updates.parse_optimizer_config.initialize_optimizer(
         log_psi_apply,
         energy_and_statistics_fn,
+        energy_data_val_and_grad,
         det_fn_novmap,
         config.vmc,
         params,
@@ -777,6 +787,7 @@ def _setup_vmc(
         update_data_fn,
         key,
         apply_pmap=apply_pmap,
+
     )
 
     return (
@@ -1167,6 +1178,8 @@ def run_molecule() -> None:
         optimizer_state=optimizer_state,
         data=data,
         net_orbitals_vmap=None,
+        net_wfn_novmap=None,
+        energy_and_statistics_fn=None,
         burning_step=eval_burning_step,
         walker_fn=eval_walker_fn,
         update_param_fn=eval_update_param_fn,

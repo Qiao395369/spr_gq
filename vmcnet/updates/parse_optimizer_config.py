@@ -83,6 +83,7 @@ def _get_InverseSchedule(init_value, decay_rate, offset=0.0):
 def initialize_optimizer(
     log_psi_apply_novmap: ModelApply[P],
     energy_and_statistics_fn,
+    energy_data_val_and_grad,
     det_fn_novmap,
     vmc_config: ConfigDict,
     params: P,
@@ -97,16 +98,15 @@ def initialize_optimizer(
         vmc_config.optimizer[vmc_config.optimizer_type]
     )
     optimizer_config=vmc_config.optimizer[vmc_config.optimizer_type]
-    local_energy_fn=None
     if vmc_config.optimizer_type == "kfac":
-        energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
-            log_psi_apply_novmap,
-            local_energy_fn,
-            vmc_config.nchains,
-            clipping_fn,
-            nan_safe=vmc_config.nan_safe,
-        )
-        return initialize_kfac(
+        # energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
+        #     log_psi_apply_novmap,
+        #     local_energy_fn,
+        #     nchains,
+        #     clipping_fn,
+        #     nan_safe=vmc_config.nan_safe,
+        # )
+        update_param_fn, optimizer_state, key = initialize_kfac(
             params,
             data,
             get_position_fn,
@@ -115,35 +115,33 @@ def initialize_optimizer(
             key,
             learning_rate_schedule,
             vmc_config.optimizer.kfac,
-            vmc_config.record_param_l1_norm,
+            # vmc_config.record_param_l1_norm,
             apply_pmap=apply_pmap,
         )
-    elif vmc_config.optimizer_type == "kfac_multi":
-        opt_kwargs={}
-        opt_kwargs["norm_constraint"] = optimizer_config.norm_constraint
-        opt_kwargs["learning_rate_schedule"] = learning_rate_schedule
-        opt_kwargs["damping_schedule"] = lambda n: optimizer_config.damping
+        return update_param_fn, optimizer_state, key
 
+    elif vmc_config.optimizer_type == "kfac_multi":
+        
         kfac_defaults = {
             "l2_reg": optimizer_config.l2_reg,
+            "norm_constraint" : optimizer_config.norm_constraint,
             "value_func_has_aux": False,
             "value_func_has_rng": False,
-            "auto_register_kwargs": {"graph_patterns": make_graph_patterns()},
-            # "use_automatic_registration": True,      # 保持自动注册
-            # "register_only_generic": True,           # ★ 仅注册 generic，不跑复杂模式匹配
-            # "auto_register_kwargs": None, 
-            "include_norms_in_stats": True,
-            "estimation_mode": optimizer_config.estimation_mode,
-            "num_burnin_steps": 0,
-            "min_damping": optimizer_config.min_damping,
+            "learning_rate_schedule" : learning_rate_schedule,
             "inverse_update_period": optimizer_config.inverse_update_period,
+            "min_damping": optimizer_config.min_damping,
+            "num_burnin_steps": 0,
+            "estimation_mode": optimizer_config.estimation_mode,
             "pmap_axis_name": utils.distribute.PMAP_AXIS_NAME,
             # KFAC will be flatbatched to combine leading two dims
+            "auto_register_kwargs": {"graph_patterns": make_graph_patterns()},
+            "multi_device": apply_pmap,
+            "include_norms_in_stats": True,
+            "damping_schedule" : lambda n: optimizer_config.damping,
             "batch_size_extractor": (lambda batch, *_: (int(batch[-1]["walker_data"]["elec_position"].shape[0])
                                                                   * int(batch[-1]["walker_data"]["elec_position"].shape[1])
                                                                 )
             ),
-            "multi_device": True,
         }
 
         loss_fn = make_value_and_grad(
@@ -157,7 +155,7 @@ def initialize_optimizer(
         # value_and_grad_fn = jax.value_and_grad(loss_fn)
 
         opt = kfac_wrapper(
-            kfac_jax.Optimizer(value_and_grad_func=loss_fn, **{**kfac_defaults, **opt_kwargs}),
+            kfac_jax.Optimizer(value_and_grad_func=loss_fn, **{**kfac_defaults}),
             energy_and_statistics_fn,
             update_data_fn,
         )
@@ -168,13 +166,13 @@ def initialize_optimizer(
         return update_param_fn, optimizer_state, key
 
     elif vmc_config.optimizer_type == "sgd":
-        energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
-            log_psi_apply_novmap,
-            local_energy_fn,
-            vmc_config.nchains,
-            clipping_fn,
-            nan_safe=vmc_config.nan_safe,
-        )
+        # energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
+        #     log_psi_apply_novmap,
+        #     local_energy_fn,
+        #     vmc_config.nchains,
+        #     clipping_fn,
+        #     nan_safe=vmc_config.nan_safe,
+        # )
         (
             update_param_fn,
             optimizer_state,
@@ -191,13 +189,13 @@ def initialize_optimizer(
         return update_param_fn, optimizer_state, key
     
     elif vmc_config.optimizer_type == "adam":
-        energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
-            log_psi_apply_novmap,
-            local_energy_fn,
-            vmc_config.nchains,
-            clipping_fn,
-            nan_safe=vmc_config.nan_safe,
-        )
+        # energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
+        #     log_psi_apply_novmap,
+        #     local_energy_fn,
+        #     vmc_config.nchains,
+        #     clipping_fn,
+        #     nan_safe=vmc_config.nan_safe,
+        # )
         (
             update_param_fn,
             optimizer_state,

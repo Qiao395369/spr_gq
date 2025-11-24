@@ -89,10 +89,6 @@ def kfac_wrapper(
         data = update_data_fn(data, params)
         metrics = {
                     "energy": opt_stats["loss"], "variance": stats["variance"],
-                    # "kinetic": stats["kinetic"],
-                    # "ei_potential": stats["ei_potential"],
-                    # "ee_potential": stats["ee_potential"],
-                    # "ii_potential": stats["ii_potential"],
                     "multi_energy": stats["multi_energy"],
                     "opt_param_norm": opt_stats["param_norm"],
                     "opt_grad_norm": opt_stats["grad_norm"],
