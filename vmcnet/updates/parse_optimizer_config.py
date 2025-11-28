@@ -215,6 +215,7 @@ def initialize_optimizer(
         damping_rate_schedule = _get_damping_rate_schedule(vmc_config)
 
         opt_kwargs = {}
+        opt_kwargs["spr_type"] = optimizer_config.type
         opt_kwargs["mu"] = optimizer_config.mu
         opt_kwargs["norm_constraint"] = optimizer_config.norm_constraint
         opt_kwargs["learning_rate_schedule"] = learning_rate_schedule

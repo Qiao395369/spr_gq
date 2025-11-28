@@ -112,12 +112,14 @@ class Spring:
 
     def __init__(
         self,
+        spr_type: str,
         mu: float,
         norm_constraint: float,
         learning_rate_schedule: Callable[[int], float],
         damping_schedule: Callable[[int], float],
         repeat_single_mol: bool = False,
     ):
+        self.spr_type = spr_type
         self.mu = mu
         self.norm_constraint = norm_constraint
         self.lr_schedule = learning_rate_schedule
@@ -131,7 +133,7 @@ class Spring:
         }
         return opt_state
     
-    def get_grad(
+    def get_grad_1(
         self,
         log_psi_grads,
         E_loc: P,
@@ -143,7 +145,7 @@ class Spring:
         # check_nan("log_psi_grads",log_psi_grads)
         Ohat = (log_psi_grads - jnp.mean(log_psi_grads, axis=-2, keepdims=True)) / jnp.sqrt(electron_batch_size)  #(W,B,np)-(W,1,np)/sqrt(B)->(W,B,np)
         # check_nan("Ohat",Ohat)
-        T = jnp.einsum("mjk, mlk  -> mjl", Ohat, Ohat)  #(W,B,np),(W,B,np)->(W,B,B)
+        T = jnp.einsum("mjk,  mlk -> mjl", Ohat, Ohat)  #(W,B,np),(W,B,np)->(W,B,B)
         # check_nan("T",T)
         ones = jnp.ones_like(T) / electron_batch_size
         T_reg = T + ones + self.dp_schedule(opt_state["step"]) * jnp.eye(electron_batch_size)[None,:,:] #(W,B,B)
@@ -164,10 +166,38 @@ class Spring:
         dtheta_residual = jax.lax.pmean(jnp.einsum("mjk, mj -> k", Ohat, epsilon_projected) ,axis_name=PMAP_AXIS_NAME)/walker_batch_this_process
         # check_nan("dtheta_residual",dtheta_residual)
         grad = dtheta_residual + self.mu * prev_grad
-        # scaled_grad = self.apply_norm_constraint(grad)
-        scaled_grad = grad
+        scaled_grad = self.apply_norm_constraint(grad)
         # check_nan("grad",grad)
         return unravel_fn(grad), unravel_fn(scaled_grad), jnp.squeeze(E_mean)
+
+    def get_grad_2(
+        self,
+        log_psi_grads,
+        E_loc: P,
+        E_mean_per_mol,
+        opt_state,
+    ) -> Tuple[Array, P]:
+        prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(opt_state["prev_grad"])
+        prev_grad_decayed = self.mu * prev_grad  #(nparams,)
+        W,B,nparams=log_psi_grads.shape
+        nchains = W*B
+        log_psi_grads=log_psi_grads.reshape((W*B,nparams)) /jnp.sqrt(nchains)  #(W*B,nparams)
+        Ohat = log_psi_grads - jnp.mean(log_psi_grads, axis=0, keepdims=True)  #(W*B,nparams)
+        T = Ohat @ Ohat.T  #(W*B,W*B)
+        ones = jnp.ones((nchains, 1)) #(W*B,1)
+        T_reg = T + ones @ ones.T / nchains + self.dp_schedule(opt_state["step"]) * jnp.eye(nchains)  #(W*B,W*B)
+        E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,1)
+        E_mean = jax.lax.pmean(E_mean, axis_name=PMAP_AXIS_NAME)  #(1,1)
+        if self.repeat_single_mol:
+            E_mean_per_mol = E_mean
+        centered_energies = (E_loc - E_mean_per_mol)
+        epsilon_bar = centered_energies.reshape((-1,)) / jnp.sqrt(nchains) #(W*B,)
+        epsion_tilde = epsilon_bar - Ohat @ prev_grad_decayed   #(W*B,)
+        dtheta_residual = Ohat.T @ jax.scipy.linalg.solve(T_reg, epsion_tilde, assume_a="pos") #(nparams,)
+        dtheta_residual = jax.lax.pmean(dtheta_residual, axis_name=PMAP_AXIS_NAME)
+        SR_G = dtheta_residual + prev_grad_decayed
+        scaled_grad = self.apply_norm_constraint(SR_G)
+        return unravel_fn(SR_G),  unravel_fn(scaled_grad), jnp.squeeze(E_mean)
 
     def apply_norm_constraint(self, grad: WavefunctionParams) -> WavefunctionParams:
         """Scales update to have L2 norm <= norm_constraint."""
@@ -176,11 +206,19 @@ class Spring:
         coefficient = jnp.minimum(1, jnp.sqrt(self.norm_constraint / (sq_norm_grads + eps)))
         return grad * coefficient
 
+    
+
     def update(
         self, grad_psi, E_loc, energy_per_w, opt_state: OptimizerState
     ) -> tuple[WavefunctionParams, OptimizerState]:
-
-        grad, scaled_grad, E_mean = self.get_grad(grad_psi, E_loc, energy_per_w, opt_state)
+        if self.spr_type=="1":
+            get_grad = self.get_grad_1
+        elif self.spr_type=="2":
+            get_grad = self.get_grad_2
+        else:
+            raise ValueError("Invalid SPRING type")
+        
+        grad, scaled_grad, E_mean = get_grad(grad_psi, E_loc, energy_per_w, opt_state)
         update = jax.tree_util.tree_map(lambda x: -self.lr_schedule(opt_state["step"]) * x, scaled_grad)
 
         return update, E_mean, {
