@@ -169,17 +169,14 @@ def construct_eval_update_param_fn(
             local_energies, nan_safe=nan_safe
         )
 
-        metrics = {"energy": utils.distribute.nanmean_all_local_devices(energy_per_w,axis=(0,1)), "variance": variance}
-        metrics.update({""
-                        # "kinetic":kinetic, 
-                        # "ei_potential":ei_potential, 
-                        # "ee_potential":ee_potential, 
-                        # "ii_potential":ii_potential,
-                        "multi_energy": local_energies,
-                        })
+        metrics = {"energy": utils.distribute.nanmean_all_local_devices(energy_per_w,axis=(0,1)), 
+                   "variance": variance,
+                   "multi_energy": local_energies,
+                   }
         return params, data, optimizer_state, metrics, key
 
     # traced_fn = make_traced_fn_with_single_metrics(eval_update_param_fn, apply_pmap, {"energy", "variance"})
-    pmapped_update_param_fn = utils.distribute.pmap(eval_update_param_fn)
-
-    return pmapped_update_param_fn
+    if not apply_pmap:
+        return jax.jit(eval_update_param_fn)
+    else:
+        return utils.distribute.pmap(eval_update_param_fn)

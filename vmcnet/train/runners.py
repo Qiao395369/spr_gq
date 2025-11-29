@@ -1026,7 +1026,7 @@ def run_molecule() -> None:
 
     show_devices()
 
-    apply_pmap = True
+    apply_pmap = config.distribute
 
     dtype_to_use = _get_dtype(config)
 

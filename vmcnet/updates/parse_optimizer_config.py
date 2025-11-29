@@ -22,6 +22,7 @@ from .optax_utils import (
     initialize_adam,
     initialize_sgd,
 )
+import vmcnet.updates.spring_old as spring_old
 from .spring import spring_wrapper, Spring
 from .kfac import initialize_kfac
 from .gauss_newton import initialize_gauss_newton
@@ -227,6 +228,24 @@ def initialize_optimizer(
         update_param_fn = opt.step
         return update_param_fn, optimizer_state, key
     
+    elif vmc_config.optimizer_type == "spring_old":
+        (
+            update_param_fn,
+            optimizer_state,
+        ) = spring_old.initialize_spring(
+            log_psi_apply_novmap,
+            energy_and_statistics_fn,
+            params,
+            get_position_fn,
+            update_data_fn,
+            learning_rate_schedule,
+            vmc_config.optimizer.spring_old,
+            vmc_config.record_param_l1_norm,
+            apply_pmap=apply_pmap,
+        )
+        return update_param_fn, optimizer_state, key
+
+
     elif vmc_config.optimizer_type == "gauss_newton":
 
         (

@@ -97,7 +97,7 @@ def get_default_config() -> ConfigDict:
                 "subfolder_name": NO_NAME,
                 "logging_level": "INFO",
                 "dtype": "float32",
-                # "distribute": False,
+                "distribute": False,
                 "debug_nans": False,  # If true, OVERRIDES config.distribute to be False
                 "initial_seed": 0,
                 "wandb": {
@@ -390,6 +390,16 @@ def get_default_vmc_config() -> Dict:
                 "constrain_norm": True,
                 "norm_constraint": 0.001,
                 "type": "1",
+            },
+            "spring_old": {
+                "schedule_type": "inverse_time",  # constant or inverse_time
+                "learning_rate": 5e-2,
+                "learning_decay_rate": 1e-4,
+                # SPRING hyperparams
+                "mu": 0.99,
+                "damping": 0.001,
+                "constrain_norm": True,
+                "norm_constraint": 0.001,
             },
             "gauss_newton": {
                 # Learning rate settings
