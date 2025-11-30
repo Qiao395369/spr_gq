@@ -23,7 +23,7 @@ from .optax_utils import (
     initialize_sgd,
 )
 import vmcnet.updates.spring_old as spring_old
-from .spring import spring_wrapper, Spring
+from .spring_o import spring_wrapper, Spring
 from .kfac import initialize_kfac
 from .gauss_newton import initialize_gauss_newton
 from vmcnet.updates.loss import flat_ansatz_call, make_loss, make_value_and_grad

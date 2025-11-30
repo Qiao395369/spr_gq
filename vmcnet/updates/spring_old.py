@@ -4,7 +4,6 @@ from typing import Callable, Dict
 import jax
 import jax.flatten_util
 import jax.numpy as jnp
-import neural_tangents as nt  # type: ignore
 from ml_collections import ConfigDict
 import chex
 import optax
