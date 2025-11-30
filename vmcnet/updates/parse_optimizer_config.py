@@ -22,8 +22,9 @@ from .optax_utils import (
     initialize_adam,
     initialize_sgd,
 )
+import logging
 import vmcnet.updates.spring_old as spring_old
-from .spring_o import spring_wrapper, Spring
+from .spring import spring_wrapper, Spring
 from .kfac import initialize_kfac
 from .gauss_newton import initialize_gauss_newton
 from vmcnet.updates.loss import flat_ansatz_call, make_loss, make_value_and_grad
@@ -99,6 +100,7 @@ def initialize_optimizer(
         vmc_config.optimizer[vmc_config.optimizer_type]
     )
     optimizer_config=vmc_config.optimizer[vmc_config.optimizer_type]
+    logging.info("Using optimizer type: {}".format(vmc_config.optimizer_type))
     if vmc_config.optimizer_type == "kfac":
         # energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
         #     log_psi_apply_novmap,
@@ -223,9 +225,15 @@ def initialize_optimizer(
         opt_kwargs["damping_schedule"] = damping_rate_schedule
         opt_kwargs["repeat_single_mol"] = vmc_config.repeat_single_mol
         opt = spring_wrapper(Spring(**opt_kwargs), log_psi_apply_novmap, update_data_fn, energy_and_statistics_fn)
-        optimizer_state = opt.init(params)
-        from jax.experimental import checkify as cf
-        update_param_fn = opt.step
+        # init_fn = opt.init
+        # update_param_fn = opt.step
+        if apply_pmap:
+            update_param_fn = utils.distribute.pmap(opt.step)
+            init_fn = utils.distribute.pmap(opt.init)
+        else:
+            update_param_fn = jax.jit(opt.step)
+            init_fn = jax.jit(opt.init)
+        optimizer_state = init_fn(params)
         return update_param_fn, optimizer_state, key
     
     elif vmc_config.optimizer_type == "spring_old":

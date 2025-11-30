@@ -8,7 +8,7 @@ from ml_collections import ConfigDict
 import chex
 import optax
 from functools import partial
-
+import logging
 from vmcnet.utils.typing import Array, D, ModelApply, P, S
 from vmcnet.utils.pytree_helpers import (
     multiply_tree_by_scalar,
@@ -57,7 +57,6 @@ class Optimizer(NamedTuple):
 def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statistics_fn) -> Optimizer:
     """Wrap the spring optimizer to make it compatible with the optimizer interface."""
 
-    @partial(jax.pmap, axis_name=PMAP_AXIS_NAME)
     def init(
         params: P,
     ) -> OptimizerState:
@@ -68,22 +67,18 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
     def raveled_log_psi_grad(params: P,ion_pos: Array, positions: Array) -> Array:
         log_grads = jax.grad(log_psi_apply)(params,ion_pos, positions)
         return jax.flatten_util.ravel_pytree(log_grads)[0]
-    
 
-    @partial(jax.pmap, axis_name=PMAP_AXIS_NAME)
     def step(
         key,
         params: P,
         opt_state: OptimizerState,
         data:D ,
     ) -> tuple[P,D, OptimizerState, Dict]:
-        log_psi_grads = raveled_log_psi_grad(params, data["atoms_position"], data["walker_data"]["elec_position"])
-        # check_nan("log_psi_grads",log_psi_grads)
-        energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
-        # check_nan("E_loc",E_loc)
-        # check_nan("energy_per_w",energy_per_w)
+        position = data["walker_data"]["elec_position"]
+        atoms_position = data["atoms_position"]
+        log_psi_grads = raveled_log_psi_grad(params, atoms_position, position)
+        energy_per_w, E_loc, stats = energy_and_statistics_fn(params, atoms_position, position)
         updates, E_mean, opt_state = spring_opt.update(log_psi_grads, E_loc, energy_per_w, opt_state)
-        # check_nan("E_mean",E_mean)
         gradient = opt_state["prev_grad"]
         param_norm, update_norm, grad_norm = map(tree_norm, [params, updates, gradient])
         params = apply_updates(params, updates)
@@ -91,10 +86,6 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
 
         metrics = {
                     "energy": E_mean, "variance": stats["variance"],
-                    # "kinetic": stats["kinetic"],
-                    # "ei_potential": stats["ei_potential"],
-                    # "ee_potential": stats["ee_potential"],
-                    # "ii_potential": stats["ii_potential"],
                     "multi_energy": stats["multi_energy"],
                     "opt_param_norm": param_norm,
                     "opt_grad_norm": grad_norm,
@@ -102,13 +93,11 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
                     "energy_noclip": stats["energy_noclip"],
                     "variance_noclip": stats["variance_noclip"],
             }
-        # metrics = jax.tree_map(lambda x: jnp.asarray(x, dtype=jnp.float32), metrics)
         return params,data, opt_state, metrics, key
 
     return Optimizer(init=init, step=step)
 
 class Spring:
-    """Implements the SPRING optimizer from arXiv:2401.10190."""
 
     def __init__(
         self,
@@ -140,35 +129,25 @@ class Spring:
         E_mean_per_mol,
         opt_state,
     ) -> Tuple[Array, P]:
-        walker_batch_this_process, electron_batch_size = E_loc.shape
         prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(opt_state["prev_grad"])
-        # check_nan("log_psi_grads",log_psi_grads)
+        prev_grad_decayed = self.mu * prev_grad  #(nparams,)
+        walker_batch_this_process, electron_batch_size = E_loc.shape
         Ohat = (log_psi_grads - jnp.mean(log_psi_grads, axis=-2, keepdims=True)) / jnp.sqrt(electron_batch_size)  #(W,B,np)-(W,1,np)/sqrt(B)->(W,B,np)
-        # check_nan("Ohat",Ohat)
         T = jnp.einsum("mjk,  mlk -> mjl", Ohat, Ohat)  #(W,B,np),(W,B,np)->(W,B,B)
-        # check_nan("T",T)
         ones = jnp.ones_like(T) / electron_batch_size
-        T_reg = T + ones + self.dp_schedule(opt_state["step"]) * jnp.eye(electron_batch_size)[None,:,:] #(W,B,B)
-        # check_nan("step",opt_state["step"])
-        # check_nan("dp",self.dp_schedule(opt_state["step"]))
-        # check_nan("T_reg",T_reg)
-        # E_mean_per_mol = jnp.mean(E_loc, axis=-1, keepdims=True)  #(W,B)->(W,1)
+        T_reg = T + ones + self.dp_schedule(opt_state["step"]) * jnp.eye(electron_batch_size) #(W,B,B)
         E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,1)
-        E_mean = jax.lax.pmean(E_mean, axis_name=PMAP_AXIS_NAME)  #(1,1)
+        E_mean = pmean_if_pmap(E_mean)  #(1,1)
         if self.repeat_single_mol:
             E_mean_per_mol = E_mean
         epsilon_bar = (E_loc - E_mean_per_mol) / jnp.sqrt(electron_batch_size)
-        # check_nan("epsilon_bar",epsilon_bar)
-        epsilon_tilde = epsilon_bar - jnp.einsum("mjk, k -> mj", Ohat, self.mu * prev_grad)  #(W,B,np),(np)->(W,B)
-        # check_nan("epsilon_tilde",epsilon_tilde)
+        epsilon_tilde = epsilon_bar - jnp.einsum("mjk, k -> mj", Ohat, prev_grad_decayed)  #(W,B,np),(np)->(W,B)
         epsilon_projected = jax.scipy.linalg.solve(T_reg, epsilon_tilde[..., None])[..., 0]  #(W,B,B)(W,B,1)-->(W,B,1)-->(W,B)
-        # check_nan("epsilon_projected",epsilon_projected)
-        dtheta_residual = jax.lax.pmean(jnp.einsum("mjk, mj -> k", Ohat, epsilon_projected) ,axis_name=PMAP_AXIS_NAME)/walker_batch_this_process
-        # check_nan("dtheta_residual",dtheta_residual)
-        grad = dtheta_residual + self.mu * prev_grad
-        scaled_grad = self.apply_norm_constraint(grad)
-        # check_nan("grad",grad)
-        return unravel_fn(grad), unravel_fn(scaled_grad), jnp.squeeze(E_mean)
+        dtheta_residual = jnp.einsum("mjk, mj -> k", Ohat, epsilon_projected)/walker_batch_this_process
+        dtheta_residual = pmean_if_pmap(dtheta_residual)
+        grad = dtheta_residual + prev_grad_decayed
+        # scaled_grad = self.apply_norm_constraint(grad)
+        return unravel_fn(grad), None, jnp.squeeze(E_mean)
 
     def get_grad_2(
         self,
@@ -187,17 +166,45 @@ class Spring:
         ones = jnp.ones((nchains, 1)) #(W*B,1)
         T_reg = T + ones @ ones.T / nchains + self.dp_schedule(opt_state["step"]) * jnp.eye(nchains)  #(W*B,W*B)
         E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,1)
-        E_mean = jax.lax.pmean(E_mean, axis_name=PMAP_AXIS_NAME)  #(1,1)
+        E_mean = pmean_if_pmap(E_mean)  #(1,1)
         if self.repeat_single_mol:
             E_mean_per_mol = E_mean
         centered_energies = (E_loc - E_mean_per_mol)
         epsilon_bar = centered_energies.reshape((-1,)) / jnp.sqrt(nchains) #(W*B,)
         epsion_tilde = epsilon_bar - Ohat @ prev_grad_decayed   #(W*B,)
         dtheta_residual = Ohat.T @ jax.scipy.linalg.solve(T_reg, epsion_tilde, assume_a="pos") #(nparams,)
-        dtheta_residual = jax.lax.pmean(dtheta_residual, axis_name=PMAP_AXIS_NAME)
+        dtheta_residual = pmean_if_pmap(dtheta_residual)
         SR_G = dtheta_residual + prev_grad_decayed
-        scaled_grad = self.apply_norm_constraint(SR_G)
-        return unravel_fn(SR_G),  unravel_fn(scaled_grad), jnp.squeeze(E_mean)
+        # scaled_grad = self.apply_norm_constraint(SR_G)
+        return unravel_fn(SR_G),  None, jnp.squeeze(E_mean)
+    
+    def get_grad_3(
+            self,
+            prev_grad,
+            log_psi_grads,
+            E_loc: P,
+            E_mean_per_mol,
+            opt_state,
+        ) -> Tuple[Array, P]:
+        prev_grad_decayed = self.mu * prev_grad  #(nparams,)
+        logging.info("log_psi_grads shape: {}".format(log_psi_grads.shape))
+        B,nparams=log_psi_grads.shape
+        nchains = B
+        Ohat = (log_psi_grads - jnp.mean(log_psi_grads, axis=-2, keepdims=True)) / jnp.sqrt(nchains)
+        T = Ohat @ Ohat.T
+        ones = jnp.ones_like(T) / nchains
+        T_reg = T + ones + self.dp_schedule(opt_state["step"]) * jnp.eye(nchains)
+        E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,1)
+        E_mean = pmean_if_pmap(E_mean)  #(1,1)
+        if self.repeat_single_mol:
+            E_mean_per_mol = E_mean
+        epsilon_bar = (E_loc - E_mean_per_mol) / jnp.sqrt(nchains)
+        epsilon_tilde = epsilon_bar - Ohat @ prev_grad_decayed
+        epsilon_projected = jax.scipy.linalg.solve(T_reg, epsilon_tilde, assume_a="pos")
+        dtheta_residual = Ohat.T @ epsilon_projected
+        dtheta_residual = pmean_if_pmap(dtheta_residual)
+        grad = dtheta_residual + prev_grad_decayed
+        return grad,jnp.squeeze(E_mean)
 
     def apply_norm_constraint(self, grad: WavefunctionParams) -> WavefunctionParams:
         """Scales update to have L2 norm <= norm_constraint."""
@@ -215,11 +222,24 @@ class Spring:
             get_grad = self.get_grad_1
         elif self.spr_type=="2":
             get_grad = self.get_grad_2
+        elif self.spr_type=="3":
+            def get_grad(
+                log_psi_grads,
+                E_loc: P,
+                E_mean_per_mol,
+                opt_state,
+            ) -> Tuple[Array, P]:
+                prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(opt_state["prev_grad"])
+                grad, E_mean = jax.vmap(self.get_grad_3,in_axes=(None, 0, 0, 0, None))(prev_grad, log_psi_grads, E_loc, E_mean_per_mol, opt_state)
+                grad = jnp.mean(grad, axis=0)
+                E_mean = jnp.mean(E_mean, axis=0)
+                return unravel_fn(grad), None, E_mean
         else:
             raise ValueError("Invalid SPRING type")
-        
-        grad, scaled_grad, E_mean = get_grad(grad_psi, E_loc, energy_per_w, opt_state)
-        update = jax.tree_util.tree_map(lambda x: -self.lr_schedule(opt_state["step"]) * x, scaled_grad)
+        # logging.info("grad_psi shape: {}".format(grad_psi.shape))
+        grad, _, E_mean = get_grad(grad_psi, E_loc, energy_per_w, opt_state)
+        update = jax.tree_util.tree_map(lambda x: -self.lr_schedule(opt_state["step"]) * x, grad)
+        update = constrain_norm(update, self.norm_constraint)
 
         return update, E_mean, {
             "prev_grad": grad,
@@ -264,3 +284,21 @@ def check_nan(name, x):
         )
 
     return x
+
+
+def constrain_norm(
+    grad: P,
+    norm_constraint: chex.Numeric = 0.001,
+) -> P:
+    """Euclidean norm constraint."""
+    sq_norm_scaled_grads = tree_inner_product(grad, grad)
+
+    # Sync the norms here, see:
+    # https://github.com/deepmind/deepmind-research/blob/30799687edb1abca4953aec507be87ebe63e432d/kfac_ferminet_alpha/optimizer.py#L585
+    sq_norm_scaled_grads = pmean_if_pmap(sq_norm_scaled_grads)
+
+    norm_scale_factor = jnp.sqrt(norm_constraint / sq_norm_scaled_grads)
+    coefficient = jnp.minimum(norm_scale_factor, 1)
+    constrained_grads = multiply_tree_by_scalar(grad, coefficient)
+
+    return constrained_grads
