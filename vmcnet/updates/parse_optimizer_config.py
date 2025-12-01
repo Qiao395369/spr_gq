@@ -161,8 +161,9 @@ def initialize_optimizer(
             kfac_jax.Optimizer(value_and_grad_func=loss_fn, **{**kfac_defaults}),
             energy_and_statistics_fn,
             update_data_fn,
+            apply_pmap,
         )
-        key, subkey = utils.distribute.split_or_psplit_key(key, multi_device = True)
+        key, subkey = utils.distribute.split_or_psplit_key(key, multi_device = apply_pmap)
 
         optimizer_state = opt.init(subkey,params,data)
         update_param_fn = opt.step

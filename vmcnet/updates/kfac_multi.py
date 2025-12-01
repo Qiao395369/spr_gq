@@ -41,13 +41,15 @@ def kfac_wrapper(
     kfac_opt, 
     energy_and_statistics_fn,
     update_data_fn: UpdateDataFn[D, P],
+    apply_pmap: bool = False,
 )-> Optimizer:
     """Wrap a KFAC optimizer to make it compatible with the optimizer interface."""
 
     momentum = jnp.asarray(0.0)
-    momentum = utils.distribute.replicate_all_local_devices(momentum)
-    update_data_fn = utils.distribute.pmap(update_data_fn)
-    energy_and_statistics_fn = utils.distribute.pmap(energy_and_statistics_fn)
+    if apply_pmap:
+        momentum = utils.distribute.replicate_all_local_devices(momentum)
+        update_data_fn = utils.distribute.pmap(update_data_fn)
+        energy_and_statistics_fn = utils.distribute.pmap(energy_and_statistics_fn)
 
 
     def init(
@@ -68,7 +70,7 @@ def kfac_wrapper(
         opt_state: OptimizerState,
         data,
     ) -> tuple[P,D, OptimizerState, Dict]:
-        key, subkey = utils.distribute.split_or_psplit_key(key, multi_device = True)
+        key, subkey = utils.distribute.split_or_psplit_key(key, multi_device = apply_pmap)
         energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
         batch = (E_loc, energy_per_w, data)
         # check_nan("energy_per_w",energy_per_w)
