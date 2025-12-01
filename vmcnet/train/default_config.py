@@ -421,6 +421,8 @@ def get_default_pretrain_config() -> Dict:
     """Get a default VMC training configuration."""
     pretrain_config = {
         "method": "hf", #choices=["hf", ""]
+        "optim": "adam", #choices=["adam", "lamb"]
+        "sample_type": "half_wfn_and_hf", #choices=["half_wfn_and_hf", "hf", "wfn"]
         "skip_burn": False,
         "nburn": 5000,
         "iterations": 1000,

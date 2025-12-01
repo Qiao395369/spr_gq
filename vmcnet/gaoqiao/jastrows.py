@@ -174,7 +174,7 @@ def make_mlp_jastrow(
         jastrow = jastrow_f
     jastrow = network_blocks.linear_layer(jastrow, **params[-1])
     jastrow = jnp.sum(jastrow)
-    return jastrow
+    return jnp.exp(jastrow/sum(nspins))
 
   return JastrowModel(init, apply)
 

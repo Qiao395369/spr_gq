@@ -108,8 +108,7 @@ def create_hf_data_single(ion_pos, symbol, nspins):
             basis = "ccpvdz",
             states = 0,
         )
-    hf_wfn_novmap = train.pretrain.get_hf_wfn(hartree_fock, nspins)
-    hf_novmap = lambda xe : hf_wfn_novmap(xe)[1]
+    hf_novmap = train.pretrain.get_hf_wfn(hartree_fock, nspins)
     
     return hartree_fock, hf_novmap
 
@@ -729,7 +728,12 @@ def _setup_vmc(
     data = _make_initial_data(
         log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
     )
+    data_1 = _make_initial_data(
+        log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
+    )
     logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
+    logging.info("data_1 shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data_1))
+
 
     get_amplitude_fn = pacore.get_amplitude_from_data
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
@@ -763,7 +767,7 @@ def _setup_vmc(
     else:
         data_down_sample = data
 
-    energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(
+    energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(   #for kfac
             log_psi_apply,
             local_energy_fn,
             config.vmc.repeat_single_mol ,
@@ -801,6 +805,7 @@ def _setup_vmc(
         get_amplitude_fn,
         params,
         data,
+        data_1,
         optimizer_state,
         key,
     )
@@ -888,15 +893,10 @@ def _make_new_data_for_eval(
 
 def _burn_and_run_vmc(
     config: ConfigDict,
-    ion_pos: Array,
-    nspins,
     logdir: str,
     params: P,
     optimizer_state: S,
     data: D,
-    net_orbitals_vmap,
-    net_wfn_novmap,
-    energy_and_statistics_fn,
     burning_step: mcmc.metropolis.BurningStep[P, D],
     walker_fn: mcmc.metropolis.WalkerFn[P, D],
     update_param_fn: updates.update_param_fns.UpdateParamFn[P, D, S],
@@ -923,43 +923,6 @@ def _burn_and_run_vmc(
         checkpoint_variance_scale = 0
         nhistory_max = 0
         check_for_nans = False
-
-    config_pretrain = config.pretrain
-    if config_pretrain.method == "hf" and config_pretrain.iterations > 0 and not is_eval:
-        hartree_fock, hf_novmap = create_hf_data_single(ion_pos, config.problem.atoms_symbol, nspins)
-
-        def hf_and_net_sum(params,xp,xe):
-            result1 = jnp.exp(hf_novmap(xe))
-            result2 = jnp.exp(net_wfn_novmap(params,xp,xe))
-            result = jnp.log((result1+result2)/2)
-            return result
-
-        def hf_net(params,xp,xe):
-            del params,xp
-            return hf_novmap(xe)
-        
-        hf_wfn_sum_vmap = jax.vmap(jax.vmap(hf_and_net_sum, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
-
-        pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, hf_wfn_sum_vmap, apply_pmap=is_pmapped)
-
-        key, subkeys = kfac_jax.utils.p_split(key)
-
-        if not config_pretrain.skip_burn:
-            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
-
-        params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
-            params=params,
-            data=data,
-            net_orbitals_vmap=net_orbitals_vmap,
-            energy_and_statistics_fn=energy_and_statistics_fn,
-            pretrain_walker_fn=pretrain_walker_fn,
-            walker_fn=walker_fn,
-            burning_step=burning_step,
-            key=key,
-            nspins=nspins,
-            scf_approx=hartree_fock,
-            iterations=config_pretrain.iterations,
-            )
 
     if not skip_burn:
         data, key = mcmc.metropolis.burn_data(burning_step, run_config.nburn, params, data, key)
@@ -1050,6 +1013,7 @@ def run_molecule() -> None:
         get_amplitude_fn,
         params,
         data,
+        data_1,
         optimizer_state,
         key,
     ) = _setup_vmc(
@@ -1101,17 +1065,57 @@ def run_molecule() -> None:
 
     logging.info("Saving to %s", logdir)
 
+    config_pretrain = config.pretrain
+    if config_pretrain.method == "hf" and config_pretrain.iterations > 0:
+        hartree_fock, hf_novmap = create_hf_data_single(ion_pos, config.problem.atoms_symbol, nspins)
+
+        if config_pretrain.sample_type == "half_wfn_and_hf":
+            def hf_and_net_sum(params,xp,xe):
+                result1 = jnp.exp(hf_novmap(xe))
+                result2 = jnp.exp(log_psi_apply_novmap(params,xp,xe))
+                result = jnp.log((result1+result2)/2)
+                return result
+            sample_pretrain = jax.vmap(jax.vmap(hf_and_net_sum, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+            pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
+        elif config_pretrain.sample_type == "hf":
+            sample_pretrain = jax.vmap(jax.vmap(hf_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+            pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
+        elif config_pretrain.sample_type == "wfn":
+            pretrain_burn_step, pretrain_walker_fn = burning_step, walker_fn
+        else:
+            raise ValueError("unknown pretrain sample_type: %s"%(config_pretrain.sample_type))
+
+        local_energy_fn_hf = _assemble_mol_local_energy_fn(ion_charges,config.problem.ei_softening,config.problem.ee_softening,hf_novmap,)
+        clipping_fn = _get_clipping_fn(config.vmc)
+        energy_and_statistics_fn_hf = physics.core.create_energy_and_statistics_fn(local_energy_fn_hf, clipping_fn, config.vmc.nan_safe)
+
+        if not config_pretrain.skip_burn:
+            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
+            # data_1, key = mcmc.metropolis.burn_data(burning_step, config_pretrain.nburn, params, data_1, key)
+
+        params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
+            params=params,
+            data=data,
+            data_1=data_1,
+            net_orbitals_vmap=orb_fn_vmap,
+            energy_and_statistics_fn=energy_and_statistics_fn,
+            pretrain_walker_fn=pretrain_walker_fn,
+            walker_fn=walker_fn,
+            burning_step=burning_step,
+            key=key,
+            nspins=nspins,
+            scf_approx=hartree_fock,
+            iterations=config_pretrain.iterations,
+            optim=config_pretrain.optim,
+            apply_pmap=apply_pmap,
+            )
+
     params, optimizer_state, data, key, nans_detected = _burn_and_run_vmc(
         config=config,
-        ion_pos=ion_pos,
-        nspins=nspins,
         logdir=logdir,
         params=params,
         optimizer_state=optimizer_state,
         data=data,
-        net_orbitals_vmap=orb_fn_vmap,
-        net_wfn_novmap=log_psi_apply_novmap,
-        energy_and_statistics_fn=energy_and_statistics_fn,
         burning_step=burning_step,
         walker_fn=walker_fn,
         update_param_fn=update_param_fn,
@@ -1170,15 +1174,10 @@ def run_molecule() -> None:
 
     _burn_and_run_vmc(
         config=config,
-        ion_pos=None,
-        nspins=None,
         logdir=eval_logdir,
         params=params,
         optimizer_state=optimizer_state,
         data=data,
-        net_orbitals_vmap=None,
-        net_wfn_novmap=None,
-        energy_and_statistics_fn=None,
         burning_step=eval_burning_step,
         walker_fn=eval_walker_fn,
         update_param_fn=eval_update_param_fn,
@@ -1187,7 +1186,7 @@ def run_molecule() -> None:
         is_eval=True,
         is_pmapped=apply_pmap,
     )
-
+    logging.info("Saving to %s", logdir)
     # need to check for local_energy.txt because when config.eval.nepochs=0 the file is
     # not created regardless of config.eval.record_local_energies
     local_es_were_recorded = os.path.exists(
