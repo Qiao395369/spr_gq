@@ -344,7 +344,7 @@ def make_pretrain_step_gaoqiao_2(
     optimizer_update: optax.TransformUpdateFn,
     scf_approx,
     nspins: Tuple[int, int],
-    # apply_pmap: bool = True,
+    apply_pmap: bool = True,
 ):
   def loss_fn(params, data):
     xp = data["atoms_position"]
@@ -369,8 +369,19 @@ def make_pretrain_step_gaoqiao_2(
     updates, state = optimizer_update(grad, state, params)
     params = optax.apply_updates(params, updates)
     return data, params, state, loss_val
+  
+  if not apply_pmap:
+    return jax.jit(pretrain_step)
 
-  return pretrain_step
+  pmapped_pretrain_step = utils.distribute.pmap(pretrain_step)
+
+
+  def pmapped_pretrain_step_with_single_loss_val(data, params, state):
+      data, params, state, loss_val = pmapped_pretrain_step(data, params, state)
+      loss_val = utils.distribute.get_first(loss_val)
+      return data, params, state, loss_val 
+  
+  return pmapped_pretrain_step_with_single_loss_val
 
 def pretrain_hartree_fock_gaoqiao_2(
     params,
@@ -400,12 +411,12 @@ def pretrain_hartree_fock_gaoqiao_2(
       optimizer.update,
       scf_approx=scf_approx,
       nspins=nspins,
-      # apply_pmap=apply_pmap,
+      apply_pmap=apply_pmap,
   )
   if apply_pmap:
-    pretrain_step = utils.distribute.pmap(pretrain_step)
     energy_and_statistics_fn = utils.distribute.pmap(energy_and_statistics_fn)
     optimizer_init = utils.distribute.pmap(optimizer.init)
+
   else :
     pretrain_step = jax.jit(pretrain_step)
     energy_and_statistics_fn = jax.jit(energy_and_statistics_fn)
@@ -413,7 +424,7 @@ def pretrain_hartree_fock_gaoqiao_2(
 
   opt_state = optimizer_init(params)
 
-  for t in range(1,iterations-100):
+  for t in range(1,iterations):
     accept_ratio_0, data, key = pretrain_walker_fn(params, data, key)
     # accept_ratio_1, data_1, key = walker_fn(params, data_1, key)
     data, params, opt_state, loss = pretrain_step(data, params, opt_state)
@@ -425,12 +436,11 @@ def pretrain_hartree_fock_gaoqiao_2(
     # logging.info(f'Pretrain iter: {t:05d}, loss: {loss:g}, acc_r: {accept_ratio}, logprob: {jnp.mean(2 * data["walker_data"]["amplitude"])}, move: {data["move_metadata"]["std_move"]}, acc_sum: {data["move_metadata"]["move_acceptance_sum"]}')
 
   data, key = mcmc.metropolis.burn_data(burning_step, 3000, params, data, key)
-  for t in range(iterations-100,iterations):
+  for t in range(100):
     accept_ratio, data, key = walker_fn(params, data, key)
     data, params, opt_state, loss = pretrain_step(data, params, opt_state)
     energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
     # Energy = jax.pmap(lambda x: jax.lax.pmean(jnp.mean(x),axis_name="ii"),axis_name="ii")(energy_per_w)
     Energy = jnp.mean(energy_per_w)
-    logging.info(f'Pretrain iter: {t:05d}, loss: {loss}, E: {Energy}, acc_r: {accept_ratio}')
-
+    logging.info(f'Pretrain iter: {t:05d}, loss: {loss}')
   return params, data, key
