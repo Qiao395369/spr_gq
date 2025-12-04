@@ -674,6 +674,7 @@ def _setup_vmc(
     key: PRNGKey,
     dtype=jnp.float32,
     apply_pmap: bool = True,
+    reload_from_checkpoint: bool = False,
 ) -> Tuple[
     ModelApply[flax.core.FrozenDict],
     mcmc.metropolis.BurningStep[flax.core.FrozenDict, dwpa.DWPAData],
@@ -723,34 +724,31 @@ def _setup_vmc(
         )
     else:
         raise ValueError("unknown gq_wfn_type: %s "%(config.wfn_type))
-
-    # Make initial data
-    data = _make_initial_data(
-        log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
-    )
-
-    logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
-
-
+    
     get_amplitude_fn = pacore.get_amplitude_from_data
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
 
     # Setup metropolis step
     burning_step, walker_fn = _get_mcmc_fns(config.vmc, log_psi_apply_vmap, apply_pmap=apply_pmap)
-
+    
     local_energy_fn = _assemble_mol_local_energy_fn(
         ion_charges,
         config.problem.ei_softening,
         config.problem.ee_softening,
         log_psi_apply,
     )
-
     clipping_fn = _get_clipping_fn(config.vmc)
+    energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(local_energy_fn, clipping_fn, config.vmc.nan_safe)
 
-    energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(
-            local_energy_fn, clipping_fn, config.vmc.nan_safe
+    if not reload_from_checkpoint:
+        # Make initial data
+        data = _make_initial_data(
+            log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
         )
-    
+        logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
+    else:
+        data = None
+
     # Setup parameter updates
     if apply_pmap:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
@@ -1021,6 +1019,7 @@ def run_molecule() -> None:
         key,
         dtype=dtype_to_use,
         apply_pmap=apply_pmap,
+        reload_from_checkpoint=reload_from_checkpoint,
     )
 
     start_epoch = 0
@@ -1066,6 +1065,7 @@ def run_molecule() -> None:
             ) = utils.distribute.distribute_vmc_state_from_checkpoint(
                 data, params, reloaded_optimizer_state, key
             )
+        logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
 
         if not reload_config.new_optimizer_state:
             optimizer_state = reloaded_optimizer_state
