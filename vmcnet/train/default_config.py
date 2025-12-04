@@ -61,6 +61,7 @@ def get_default_reload_config() -> ConfigDict:
             "reburn": False,
             "append": True,
             "same_logdir": False,
+            "to_pmap": False,
         }
     )
 

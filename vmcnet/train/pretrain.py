@@ -386,7 +386,6 @@ def make_pretrain_step_gaoqiao_2(
 def pretrain_hartree_fock_gaoqiao_2(
     params,
     data,
-    data_1,
     net_orbitals_vmap,
     energy_and_statistics_fn,
     pretrain_walker_fn,

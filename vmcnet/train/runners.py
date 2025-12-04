@@ -728,11 +728,8 @@ def _setup_vmc(
     data = _make_initial_data(
         log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
     )
-    data_1 = _make_initial_data(
-        log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
-    )
+
     logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
-    logging.info("data_1 shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data_1))
 
 
     get_amplitude_fn = pacore.get_amplitude_from_data
@@ -805,7 +802,6 @@ def _setup_vmc(
         get_amplitude_fn,
         params,
         data,
-        data_1,
         optimizer_state,
         key,
     )
@@ -989,7 +985,7 @@ def run_molecule() -> None:
 
     show_devices()
 
-    apply_pmap = config.distribute
+    apply_pmap = config.distribute or reload_config.to_pmap
 
     dtype_to_use = _get_dtype(config)
 
@@ -1013,7 +1009,6 @@ def run_molecule() -> None:
         get_amplitude_fn,
         params,
         data,
-        data_1,
         optimizer_state,
         key,
     ) = _setup_vmc(
@@ -1048,6 +1043,19 @@ def run_molecule() -> None:
             utils.io.copy_txt_stats(
                 reload_config.logdir, logdir, truncate=reload_at_epoch
             )
+        if reload_config.to_pmap:
+            # logging.info("pmap the unpmapped checkpoint and continue")
+            # logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
+            # logging.info("params.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, params))
+            # logging.info("optimizer_state.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, reloaded_optimizer_state))
+            # logging.info("key.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, key))
+            logging.info("pmap data and key")
+            key = utils.distribute.make_different_rng_key_on_all_devices(key)
+            data = utils.distribute.replicate_all_local_devices(data)
+            logging.info("pmap data and key complete")
+            # logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
+            # logging.info("key.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, key))
+
 
         if apply_pmap:
             (
@@ -1066,7 +1074,7 @@ def run_molecule() -> None:
     logging.info("Saving to %s", logdir)
 
     config_pretrain = config.pretrain
-    if config_pretrain.method == "hf" and config_pretrain.iterations > 0:
+    if config_pretrain.method == "hf" and config_pretrain.iterations > 0 and start_epoch == 0 :
         hartree_fock, hf_novmap = create_hf_data_single(ion_pos, config.problem.atoms_symbol, nspins)
 
         if config_pretrain.sample_type == "half_wfn_and_hf":
@@ -1091,12 +1099,10 @@ def run_molecule() -> None:
 
         if not config_pretrain.skip_burn:
             data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
-            # data_1, key = mcmc.metropolis.burn_data(burning_step, config_pretrain.nburn, params, data_1, key)
 
         params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
             params=params,
             data=data,
-            data_1=data_1,
             net_orbitals_vmap=orb_fn_vmap,
             energy_and_statistics_fn=energy_and_statistics_fn,
             pretrain_walker_fn=pretrain_walker_fn,

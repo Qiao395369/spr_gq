@@ -187,7 +187,7 @@ class Spring:
             opt_state,
         ) -> Tuple[Array, P]:
         prev_grad_decayed = self.mu * prev_grad  #(nparams,)
-        logging.info("log_psi_grads shape: {}".format(log_psi_grads.shape))
+        # logging.info("log_psi_grads shape: {}".format(log_psi_grads.shape))
         B,nparams=log_psi_grads.shape
         nchains = B
         Ohat = (log_psi_grads - jnp.mean(log_psi_grads, axis=-2, keepdims=True)) / jnp.sqrt(nchains)
