@@ -346,18 +346,44 @@ def make_pretrain_step_gaoqiao_2(
     nspins: Tuple[int, int],
     apply_pmap: bool = True,
 ):
-  def loss_fn(params, data):
-    xp = data["atoms_position"]
-    xe = data["walker_data"]["elec_position"]
-    pos = xe.reshape(xe.shape[:-2]+(-1,)) 
-    target = scf_approx.eval_orbitals(pos,nspins)
-    target_full_det = create_full_det(target)
-    orbitals = net_orbitals_vmap(params,xp,xe) #(w_per_device, B, ndet, nele, nele)
-    # result = jnp.mean(cnorm(target_full_det[:,:,None,...],orbitals)).real
-    # result = jnp.mean((target_full_det[:,:, None, ...] - orbitals)**2)
-    result = jnp.mean(jnp.abs(target_full_det[:,:, None, ...] - orbitals))
+  if type(scf_approx)==list:
+    def wrap_eval_orbitals(scf_instance):
+      def pure_eval_orbitals(x):
+        res_ = scf_instance.eval_orbitals(x, nspins)
+        res = create_full_det(res_)
+        return res
+      return pure_eval_orbitals
+    hf_orbital = [wrap_eval_orbitals(scf) for scf in scf_approx]
 
-    return result
+    def loss_fn(params, data):
+      xp = data["atoms_position"]
+      xe = data["walker_data"]["elec_position"]
+      pos = xe.reshape(xe.shape[:-2]+(-1,))   #(w_per_device, B, ne*3)
+      pos_gather = jax.lax.all_gather(pos, axis_name=utils.distribute.PMAP_AXIS_NAME).reshape((-1,)+pos.shape[-2:])
+      target_ = [hf(pos) for hf,pos in zip(hf_orbital,pos_gather)]
+      target = jnp.stack(target_,axis=0)
+      # logging.info(f"target:{target.shape}")
+      # device_idx = jax.lax.axis_index(utils.distribute.PMAP_AXIS_NAME)
+      orbitals_ = net_orbitals_vmap(params,xp,xe) #(w_per_device, B, ndet, nele, nele)
+      orbitals = jax.lax.all_gather(orbitals_, axis_name=utils.distribute.PMAP_AXIS_NAME).reshape((-1,)+orbitals_.shape[-4:])
+      # logging.info(f"orbitals:{orbitals.shape}")
+      # result = jnp.mean(cnorm(target_full_det[:,:,None,...],orbitals)).real
+      # result = jnp.mean((target_full_det[:,:, None, ...] - orbitals)**2)
+      result = jnp.mean(jnp.abs(target[:,:, None, ...] - orbitals))
+      return result
+  else:
+    hf_orbital = scf_approx.eval_orbitals
+    def loss_fn(params, data):
+      xp = data["atoms_position"]
+      xe = data["walker_data"]["elec_position"]
+      pos = xe.reshape(xe.shape[:-2]+(-1,)) 
+      target = hf_orbital(pos,nspins)
+      target_full_det = create_full_det(target)
+      orbitals = net_orbitals_vmap(params,xp,xe) #(w_per_device, B, ndet, nele, nele)
+      # result = jnp.mean(cnorm(target_full_det[:,:,None,...],orbitals)).real
+      # result = jnp.mean((target_full_det[:,:, None, ...] - orbitals)**2)
+      result = jnp.mean(jnp.abs(target_full_det[:,:, None, ...] - orbitals))
+      return result
 
   def pretrain_step(data, params, state):
     """One iteration of pretraining to match HF."""
@@ -404,7 +430,7 @@ def pretrain_hartree_fock_gaoqiao_2(
     optimizer = optax.lamb(1e-2)
   else:
     raise NotImplementedError
-  
+
   pretrain_step = make_pretrain_step_gaoqiao_2(
       net_orbitals_vmap,
       optimizer.update,
@@ -412,10 +438,10 @@ def pretrain_hartree_fock_gaoqiao_2(
       nspins=nspins,
       apply_pmap=apply_pmap,
   )
+
   if apply_pmap:
     energy_and_statistics_fn = utils.distribute.pmap(energy_and_statistics_fn)
     optimizer_init = utils.distribute.pmap(optimizer.init)
-
   else :
     pretrain_step = jax.jit(pretrain_step)
     energy_and_statistics_fn = jax.jit(energy_and_statistics_fn)
@@ -434,12 +460,12 @@ def pretrain_hartree_fock_gaoqiao_2(
     logging.info(f'Pretrain iter: {t:05d},loss: {loss:g}')
     # logging.info(f'Pretrain iter: {t:05d}, loss: {loss:g}, acc_r: {accept_ratio}, logprob: {jnp.mean(2 * data["walker_data"]["amplitude"])}, move: {data["move_metadata"]["std_move"]}, acc_sum: {data["move_metadata"]["move_acceptance_sum"]}')
 
-  data, key = mcmc.metropolis.burn_data(burning_step, 3000, params, data, key)
-  for t in range(100):
+  data, key = mcmc.metropolis.burn_data(burning_step, (iterations//2) , params, data, key)
+  for t in range(iterations//2):
     accept_ratio, data, key = walker_fn(params, data, key)
     data, params, opt_state, loss = pretrain_step(data, params, opt_state)
-    energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
+    # energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
     # Energy = jax.pmap(lambda x: jax.lax.pmean(jnp.mean(x),axis_name="ii"),axis_name="ii")(energy_per_w)
-    Energy = jnp.mean(energy_per_w)
+    # Energy = jnp.mean(energy_per_w)
     logging.info(f'Pretrain iter: {t:05d}, loss: {loss}')
   return params, data, key

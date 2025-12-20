@@ -85,9 +85,6 @@ def make_open_features_ef(
 	else:
 		raise RuntimeError(f'unknow act func {act_func}')
 
-
-
-
 	def init() -> Tuple[Tuple[int,int],networks.Param]:
 		dim0,dim1=0,0
 		dim0+=(ndim+1)*num_scales

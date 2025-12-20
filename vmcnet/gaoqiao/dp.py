@@ -50,34 +50,34 @@ def switch_func_poly(
 
 class ManyElectronSystem():
   def __init__(
-      self,
-      charges,
-      nspins,
+      self,     #以CONH3为例
+      charges,  #[6, 8, 7, 1, 1, 1]
+      nspins,   #(12,12)
   ):
-    self.natoms = charges.shape[0]
-    self.nelecs = sum(nspins)
-    self.nparts = self.natoms + self.nelecs
-    self.np_spin = list(nspins) + [self.natoms]
-    self.np = [self.nelecs, self.natoms]
-    self.charges = np.array(charges, dtype = np.int32)
+    self.natoms = charges.shape[0]   #6
+    self.nelecs = sum(nspins)        #24
+    self.nparts = self.natoms + self.nelecs             #30
+    self.np_spin = list(nspins) + [self.natoms]         #[12,12,6]
+    self.np = [self.nelecs, self.natoms]                #[24,6]
+    self.charges = np.array(charges, dtype = np.int32)  #[6, 8, 7, 1, 1, 1]
 
-    self.uniq_charges = np.unique(np.sort(self.charges))
-    self.n_uniq_charges = self.uniq_charges.size
-    self.types = np.zeros(self.natoms, dtype = np.int32)
+    self.uniq_charges = np.unique(np.sort(self.charges))  #[1,6,7,8]   (得到升序、无重复的电荷列表)
+    self.n_uniq_charges = self.uniq_charges.size          #4
+    self.types = np.zeros(self.natoms, dtype = np.int32)  #[0,0,0,0,0,0]
     for ii in range(len(self.uniq_charges)):
-      self.types += (charges == self.uniq_charges[ii]) * ii
-    self.non_zero_spin_channels = np.sum(np.array(nspins,dtype=int) != 0)
-    self.types += self.non_zero_spin_channels
+      self.types += (charges == self.uniq_charges[ii]) * ii  #[1,3,2,0,0,0]
+    self.non_zero_spin_channels = np.sum(np.array(nspins,dtype=int) != 0)  #2
+    self.types += self.non_zero_spin_channels                 #[3,5,4,2,2,2]
     self.types = jnp.concatenate([
-        np.zeros(nspins[0]), np.ones(nspins[1]), self.types])
+        np.zeros(nspins[0]), np.ones(nspins[1]), self.types])  #[0,...0,1,...,1,3,5,4,2,2,2]
     
-    self.dim_one_hot = self.n_uniq_charges + self.non_zero_spin_channels
-    self.type_one_hot = jax.nn.one_hot(self.types, self.dim_one_hot)
+    self.dim_one_hot = self.n_uniq_charges + self.non_zero_spin_channels  #4+2=6 
+    self.type_one_hot = jax.nn.one_hot(self.types, self.dim_one_hot)#dim_one_hot:类别总数(独热向量长度) type_one_hot:(30,6)
     ta = self.type_one_hot
     self.pair_one_hot = jnp.concatenate([
-        jnp.tile(ta.reshape([self.nparts, 1, -1]), [1, self.nparts, 1]),
-        jnp.tile(ta.reshape([1, self.nparts, -1]), [self.nparts, 1, 1]),
-    ], axis=-1)
+        jnp.tile(ta.reshape([self.nparts, 1, -1]), [1, self.nparts, 1]),  #(30,6)->(30,1,6)->(30,30,6)
+        jnp.tile(ta.reshape([1, self.nparts, -1]), [self.nparts, 1, 1]),  #(30,6)->(1,30,6)->(30,30,6)
+    ], axis=-1)     #->(30,30,12)
 
   def get_dim_one_hot(self):
     return self.dim_one_hot

@@ -80,12 +80,11 @@ def create_hf_data(ion_pos, symbol, nspins):
         )
         hartree_focks.append(hartree_fock)
 
-    hf_wfn = []
+    hf_novmaps = []
     for hartree_fock in hartree_focks:
-        hf_wfn_novmap = train.pretrain.get_hf_wfn(hartree_fock, nspins)
-        hf_novmap = lambda xe : hf_wfn_novmap(xe)[1]
-        hf_wfn.append(hf_novmap)
-    return hartree_focks, hf_wfn
+        hf_novmap = train.pretrain.get_hf_wfn(hartree_fock, nspins)
+        hf_novmaps.append(hf_novmap)
+    return hartree_focks, hf_novmaps
 
 def create_hf_data_single(ion_pos, symbol, nspins):
     """
@@ -1074,7 +1073,7 @@ def run_molecule() -> None:
     logging.info("Saving to %s", logdir)
 
     config_pretrain = config.pretrain
-    if config_pretrain.method == "hf" and config_pretrain.iterations > 0 and start_epoch == 0 :
+    if config_pretrain.method == "hf_one" and config_pretrain.iterations > 0 and start_epoch == 0 :
         hartree_fock, hf_novmap = create_hf_data_single(ion_pos, config.problem.atoms_symbol, nspins)
 
         if config_pretrain.sample_type == "half_wfn_and_hf":
@@ -1093,9 +1092,9 @@ def run_molecule() -> None:
         else:
             raise ValueError("unknown pretrain sample_type: %s"%(config_pretrain.sample_type))
 
-        local_energy_fn_hf = _assemble_mol_local_energy_fn(ion_charges,config.problem.ei_softening,config.problem.ee_softening,hf_novmap,)
-        clipping_fn = _get_clipping_fn(config.vmc)
-        energy_and_statistics_fn_hf = physics.core.create_energy_and_statistics_fn(local_energy_fn_hf, clipping_fn, config.vmc.nan_safe)
+        # local_energy_fn_hf = _assemble_mol_local_energy_fn(ion_charges,config.problem.ei_softening,config.problem.ee_softening,hf_novmap,)
+        # clipping_fn = _get_clipping_fn(config.vmc)
+        # energy_and_statistics_fn_hf = physics.core.create_energy_and_statistics_fn(local_energy_fn_hf, clipping_fn, config.vmc.nan_safe)
 
         if not config_pretrain.skip_burn:
             data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
@@ -1115,6 +1114,35 @@ def run_molecule() -> None:
             optim=config_pretrain.optim,
             apply_pmap=apply_pmap,
             )
+    elif config_pretrain.method == "hf_all" and config_pretrain.iterations > 0 and start_epoch == 0:
+        hartree_fock, hf_novmaps = create_hf_data(ion_pos, config.problem.atoms_symbol, nspins)
+        def hf_novmap(params,xp,xe):
+            result1 = [jnp.exp(hf_novmap(params,xp,xe)) for hf_novmap in hf_novmaps]
+            result1_jnp = jnp.array(result1)
+            result = jnp.log(jnp.mean(result1_jnp))
+            return result
+        sample_pretrain = jax.vmap(jax.vmap(hf_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+        pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
+
+        if not config_pretrain.skip_burn:
+            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
+
+        params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
+            params=params,
+            data=data,
+            net_orbitals_vmap=orb_fn_vmap,
+            energy_and_statistics_fn=energy_and_statistics_fn,
+            pretrain_walker_fn=pretrain_walker_fn,
+            walker_fn=walker_fn,
+            burning_step=burning_step,
+            key=key,
+            nspins=nspins,
+            scf_approx=hartree_fock,
+            iterations=config_pretrain.iterations,
+            optim=config_pretrain.optim,
+            apply_pmap=apply_pmap,
+            )
+
 
     params, optimizer_state, data, key, nans_detected = _burn_and_run_vmc(
         config=config,
