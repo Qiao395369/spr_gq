@@ -25,6 +25,7 @@ aaa_server_data/
 aaa_test/
 aaa_results/
 eval.sh/
+reload_restore/
 wandb/
 test*.py
 eval.sh
