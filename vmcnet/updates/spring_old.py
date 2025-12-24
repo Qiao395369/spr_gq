@@ -23,8 +23,7 @@ from .update_param_fns import (
     update_metrics_with_noclip,
 )
 from .optax_utils import initialize_optax_optimizer
-import psutil
-import logging
+
 
 def construct_spring_update_param_fn(
     energy_and_statistics_fn,

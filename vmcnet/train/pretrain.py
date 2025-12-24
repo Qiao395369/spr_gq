@@ -31,6 +31,7 @@ import pyscf
 import vmcnet.utils as utils
 import logging
 import vmcnet.mcmc as mcmc
+import time
 
 def get_hf(molecule: Optional[Sequence[fermi_system.Atom]] = None,
            nspins: Optional[Tuple[int, int]] = None,
@@ -449,23 +450,24 @@ def pretrain_hartree_fock_gaoqiao_2(
 
   opt_state = optimizer_init(params)
 
+  start_time = time.time()
   for t in range(1,iterations):
     accept_ratio_0, data, key = pretrain_walker_fn(params, data, key)
     # accept_ratio_1, data_1, key = walker_fn(params, data_1, key)
     data, params, opt_state, loss = pretrain_step(data, params, opt_state)
+    total_elapsed = time.time() - start_time
+    avg_speed = int((t + 1) / total_elapsed * 3600) # 平均每秒迭代数
     # loss=0
     # energy_per_w, _, _ = energy_and_statistics_fn(params, data_1["atoms_position"], data_1["walker_data"]["elec_position"])
     # Energy = jnp.mean(energy_per_w)
     # logging.info(f'Pretrain iter: {t:05d},loss: {loss:g}, E: {Energy}, acc_r_0: {accept_ratio_0}, acc_r_1: {accept_ratio_1}')
-    logging.info(f'Pretrain iter: {t:05d},loss: {loss:g}')
+    logging.info(f'Pretrain iter: {t:05d},loss: {loss:g},speed: {avg_speed:d}')
     # logging.info(f'Pretrain iter: {t:05d}, loss: {loss:g}, acc_r: {accept_ratio}, logprob: {jnp.mean(2 * data["walker_data"]["amplitude"])}, move: {data["move_metadata"]["std_move"]}, acc_sum: {data["move_metadata"]["move_acceptance_sum"]}')
 
-  data, key = mcmc.metropolis.burn_data(burning_step, (iterations//2) , params, data, key)
-  for t in range(iterations//2):
+  data, key = mcmc.metropolis.burn_data(burning_step, (iterations//4) , params, data, key)
+  for t in range(iterations//4):
     accept_ratio, data, key = walker_fn(params, data, key)
     data, params, opt_state, loss = pretrain_step(data, params, opt_state)
-    # energy_per_w, E_loc, stats = energy_and_statistics_fn(params, data["atoms_position"], data["walker_data"]["elec_position"])
-    # Energy = jax.pmap(lambda x: jax.lax.pmean(jnp.mean(x),axis_name="ii"),axis_name="ii")(energy_per_w)
-    # Energy = jnp.mean(energy_per_w)
+    
     logging.info(f'Pretrain iter: {t:05d}, loss: {loss}')
   return params, data, key

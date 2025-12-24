@@ -26,6 +26,7 @@ aaa_test/
 aaa_results/
 eval.sh/
 reload_restore/
+7_15_RFMtest/
 wandb/
 test*.py
 eval.sh
