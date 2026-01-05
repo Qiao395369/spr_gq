@@ -64,7 +64,8 @@ def update_metrics_with_noclip(
 
 
 def construct_default_update_param_fn(
-    energy_data_val_and_grad: physics.core.ValueGradEnergyFn[P],
+    # energy_data_val_and_grad: physics.core.ValueGradEnergyFn[P],
+    energy_data_val_and_grad,
     optimizer_apply: Callable[[P, P, S, D], Tuple[P, S]],
     get_position_fn: GetPositionFromData[D],
     update_data_fn: UpdateDataFn[D, P],
@@ -165,13 +166,14 @@ def construct_eval_update_param_fn(
         local_energies=jax.vmap(jax.vmap(local_energy_fn, in_axes=(None,None,0)),in_axes=(None,0,0))(params, atoms_positions, positions) #(W,B)
         # kinetic,ei_potential,ee_potential,ii_potential = physics.core.get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
 
-        energy_per_w, variance = physics.core.get_statistics_from_local_energy(
+        energy_per_w, var_per_w, variance = physics.core.get_statistics_from_local_energy(
             local_energies, nan_safe=nan_safe
         )
 
-        metrics = {"energy": utils.distribute.nanmean_all_local_devices(energy_per_w,axis=(0,1)), 
-                   "variance": variance,
-                   "multi_energy": local_energies,
+        metrics = {"energy": utils.distribute.nanmean_all_local_devices(energy_per_w,axis=(0,1)),  #()
+                   "variance": variance,  #()
+                   "multi_variance": var_per_w,  #(W,)
+                   "multi_energy": local_energies,  #(W,B)
                    }
         return params, data, optimizer_state, metrics, key
 

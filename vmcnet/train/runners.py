@@ -23,7 +23,7 @@ from functools import partial
 import vmcnet.mcmc as mcmc
 import vmcnet.mcmc.dynamic_width_position_amplitude as dwpa
 import vmcnet.mcmc.position_amplitude_core as pacore
-from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data_and_metrics
+# from vmcnet.mcmc.position_amplitude_core import make_down_sample_data_fn, make_reform_data_and_metrics_fn
 import vmcnet.models as models
 import vmcnet.physics as physics
 import vmcnet.train as train
@@ -752,14 +752,16 @@ def _setup_vmc(
     if apply_pmap:
         key = utils.distribute.make_different_rng_key_on_all_devices(key)
 
-    down_sample_num = config.vmc.down_sample_num
-    if down_sample_num != 0:
-        if apply_pmap:
-            assert down_sample_num % jax.device_count() == 0, "down_sample_num must be divisible by number of devices"
-            down_sample_num = down_sample_num//jax.device_count()
-        data_down_sample, _ , _, key = down_sample_data(key, data, down_sample_num, apply_pmap)
-    else:
-        data_down_sample = data
+    # down_sample_num = config.vmc.down_sample_num
+    # if down_sample_num != 0:
+    #     down_sample_data = make_down_sample_data_fn(apply_pmap)
+    #     if apply_pmap:
+    #         assert down_sample_num % jax.device_count() == 0, "down_sample_num must be divisible by number of devices"
+    #         down_sample_num = down_sample_num//jax.device_count()
+    #     data_down_sample, _ , _, key = down_sample_data(key, data, down_sample_num, apply_pmap)
+    # else:
+    #     data_down_sample = data
+    
 
     energy_data_val_and_grad = physics.core.create_value_and_grad_energy_fn(   #for kfac
             log_psi_apply,
@@ -769,7 +771,7 @@ def _setup_vmc(
             clipping_fn,
             nan_safe=config.vmc.nan_safe,
         )
-
+    data_down_sample=None
     (   update_param_fn,
         optimizer_state,
         key,
@@ -780,7 +782,7 @@ def _setup_vmc(
         det_fn_novmap,
         config.vmc,
         params,
-        data_down_sample,
+        data_down_sample,   #only needed in kfac
         pacore.get_position_from_data,
         update_data_fn,
         key,
@@ -883,6 +885,50 @@ def _make_new_data_for_eval(
 
     return key, data
 
+def _make_new_data_for_reload(
+    config: ConfigDict,
+    reload_config: ConfigDict,
+    log_psi_apply: ModelApply[P],
+    params: P,
+    ion_pos: Array,
+    ion_charges: Array,
+    nelec: Array,
+    single_nspins: Array,
+    key: PRNGKey,
+    is_pmapped: bool,
+    dtype=jnp.float32,
+) -> Tuple[PRNGKey, dwpa.DWPAData]:
+    nelec_total = int(jnp.sum(nelec))
+    # grab the first key if distributed
+    if is_pmapped:
+        key = utils.distribute.get_first(key)
+
+    key, init_pos = physics.core.initialize_molecular_pos(
+        key,
+        reload_config.nchains,
+        ion_pos,
+        ion_charges,
+        nelec_total,
+        single_nspins,
+        config.vmc.init_width,
+        dtype=dtype,
+    )
+    # redistribute if needed
+    if is_pmapped:
+        key = utils.distribute.make_different_rng_key_on_all_devices(key)
+
+    data = _make_initial_data(
+        log_psi_apply,
+        config.vmc,
+        ion_pos,
+        init_pos,
+        params,
+        dtype=dtype,
+        apply_pmap=is_pmapped,
+    )
+
+    return key, data
+
 
 def _burn_and_run_vmc(
     config: ConfigDict,
@@ -891,6 +937,7 @@ def _burn_and_run_vmc(
     optimizer_state: S,
     data: D,
     burning_step: mcmc.metropolis.BurningStep[P, D],
+    nburn: int,
     walker_fn: mcmc.metropolis.WalkerFn[P, D],
     update_param_fn: updates.update_param_fns.UpdateParamFn[P, D, S],
     get_amplitude_fn: GetAmplitudeFromData[D],
@@ -899,6 +946,9 @@ def _burn_and_run_vmc(
     is_pmapped: bool,
     skip_burn: bool = False,
     start_epoch: int = 0,
+    end_epochs: int = 0,
+    down_sample_num: int =0,
+    n_inner: int =0,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     if not is_eval:
         run_config = config.vmc
@@ -908,6 +958,7 @@ def _burn_and_run_vmc(
         checkpoint_variance_scale = run_config.checkpoint_variance_scale
         nhistory_max = run_config.nhistory_max
         check_for_nans = run_config.check_for_nans
+        n_inner = run_config.n_inner
     else:
         run_config = config.eval
         checkpoint_every = None
@@ -916,16 +967,18 @@ def _burn_and_run_vmc(
         checkpoint_variance_scale = 0
         nhistory_max = 0
         check_for_nans = False
+        down_sample_num = 0
+        n_inner = 0
 
     if not skip_burn:
-        data, key = mcmc.metropolis.burn_data(burning_step, run_config.nburn, params, data, key)
+        data, key = mcmc.metropolis.burn_data(burning_step, nburn, params, data, key)
     nchains = math.prod(data["atoms_position"].shape[:-2])
     return train.vmc.vmc_loop(
         params,
         optimizer_state,
         data,
         nchains,
-        run_config.nepochs,
+        end_epochs,
         walker_fn,
         update_param_fn,
         key,
@@ -940,7 +993,8 @@ def _burn_and_run_vmc(
         nhistory_max=nhistory_max,
         is_pmapped=is_pmapped,
         start_epoch=start_epoch,
-        down_sample_num=(0 if is_eval else run_config.down_sample_num),
+        down_sample_num=down_sample_num,
+        n_inner=n_inner,
         is_eval=is_eval,
     )
 
@@ -1022,11 +1076,17 @@ def run_molecule() -> None:
     )
 
     start_epoch = 0
+    end_epochs = config.vmc.nepochs
+    nburn = config.vmc.nburn
+    down_sample_num = config.vmc.down_sample_num
+    n_inner = config.vmc.n_inner
 
     if reload_from_checkpoint:
         checkpoint_file_path = os.path.join(
             reload_config.logdir, reload_config.checkpoint_relative_file_path
         )
+        logging.info("Reloading from %s", checkpoint_file_path)
+
         directory, filename = os.path.split(checkpoint_file_path)
 
         (
@@ -1041,19 +1101,12 @@ def run_molecule() -> None:
             utils.io.copy_txt_stats(
                 reload_config.logdir, logdir, truncate=reload_at_epoch
             )
+
         if reload_config.to_pmap:
-            # logging.info("pmap the unpmapped checkpoint and continue")
-            # logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
-            # logging.info("params.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, params))
-            # logging.info("optimizer_state.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, reloaded_optimizer_state))
-            # logging.info("key.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, key))
             logging.info("pmap data and key")
             key = utils.distribute.make_different_rng_key_on_all_devices(key)
             data = utils.distribute.replicate_all_local_devices(data)
             logging.info("pmap data and key complete")
-            # logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
-            # logging.info("key.shape: %s", jax.tree_util.tree_map(lambda x: x.shape, key))
-
 
         if apply_pmap:
             (
@@ -1064,11 +1117,37 @@ def run_molecule() -> None:
             ) = utils.distribute.distribute_vmc_state_from_checkpoint(
                 data, params, reloaded_optimizer_state, key
             )
+
+        if reload_config.new_data:
+            logging.info("creating new data for reload ...")
+            key, data = _make_new_data_for_reload(
+                config,
+                reload_config,
+                log_psi_apply_vmap,
+                params,
+                ion_pos,
+                ion_charges,
+                nelec,
+                single_nspins,
+                key,
+                is_pmapped=apply_pmap,
+                dtype=dtype_to_use,
+            )
+
+        
         logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
 
         if not reload_config.new_optimizer_state:
             optimizer_state = reloaded_optimizer_state
             start_epoch = reload_at_epoch
+        
+        end_epochs = reload_config.end_epochs
+        nburn = reload_config.nburn
+        logging.info("start_epoch: %d, end_epochs: %d, nburn: %d", start_epoch, end_epochs, nburn)
+
+        if reload_config.down_sample_num != 0:
+            down_sample_num = reload_config.down_sample_num
+            n_inner = reload_config.n_inner
 
     logging.info("Saving to %s", logdir)
 
@@ -1151,14 +1230,18 @@ def run_molecule() -> None:
         optimizer_state=optimizer_state,
         data=data,
         burning_step=burning_step,
+        nburn=nburn,
         walker_fn=walker_fn,
         update_param_fn=update_param_fn,
         get_amplitude_fn=get_amplitude_fn,
         key=key,
         is_eval=False,
         is_pmapped=apply_pmap,
-        skip_burn=reload_from_checkpoint and not reload_config.reburn,
+        skip_burn=reload_from_checkpoint and not reload_config.reburn and not reload_config.new_data,
         start_epoch=start_epoch,
+        end_epochs=end_epochs,
+        down_sample_num=down_sample_num,
+        n_inner=n_inner,
     )
 
     if nans_detected:
@@ -1213,12 +1296,14 @@ def run_molecule() -> None:
         optimizer_state=optimizer_state,
         data=data,
         burning_step=eval_burning_step,
+        nburn=config.eval.nburn,
         walker_fn=eval_walker_fn,
         update_param_fn=eval_update_param_fn,
         get_amplitude_fn=get_amplitude_fn,
         key=key,
         is_eval=True,
         is_pmapped=apply_pmap,
+        end_epochs = config.eval.nepochs,
     )
     logging.info("Saving to %s", logdir)
     # need to check for local_energy.txt because when config.eval.nepochs=0 the file is
@@ -1326,44 +1411,19 @@ def do_inference()-> None:
 
 def vmc_statistics() -> None:
     """Calculate statistics from a VMC evaluation run and write them to disc."""
-    parser = argparse.ArgumentParser(
-        description="Calculate statistics from a VMC evaluation run and write them "
-        "to disc."
-    )
-    parser.add_argument(
-        "local_energies_file_path",
-        type=str,
-        help="File path to load local energies from",
-    )
-    parser.add_argument(
-        "output_file_path",
-        type=str,
-        help="File path to which to write the output statistics. The '.json' suffix "
-        "will be appended to the supplied path.",
-    )
-    parser.add_argument(
-        "nchains",
-        type=int,
-        help="nchains",
-    )
-    parser.add_argument(
-        "walkers",
-        type=int,
-        help="walkers",
-    )
-    parser.add_argument(
-        "nn",
-        type=int,
-        help="from nn to the end",
-    )
 
-    args = parser.parse_args()
-
-    output_dir, output_filename = os.path.split(os.path.abspath(args.output_file_path))
+    local_energies_file_path="../local_energy/multi_energy40244.txt"
+    output_file_path="../local_energy/statistic40244"
+    nchains=256
+    walkers=24
+    repeat_single_mol=False
+    output_dir, output_filename = os.path.split(os.path.abspath(output_file_path))
     _compute_and_save_energy_statistics(
-        args.local_energies_file_path, output_dir, output_filename, args.nchains, args.walkers,args.nn
-    )
+            local_energies_file_path, output_dir, output_filename, nchains, walkers, repeat_single_mol
+        )
+    logging.info("Done!")
 
 
 if __name__ == "__main__":
     run_molecule()
+    # vmc_statistics()

@@ -317,41 +317,59 @@ def shuffle_and_split_data(x, idx, down_sample_num):
     x0, x1 = jnp.split(x, [down_sample_num], axis=0)
     return x0, x1
 
-def down_sample_data_pre(key, data, down_sample_num):
-    xp = data["atoms_position"]
-    xe = data["walker_data"]["elec_position"]
+# def down_sample_data_pre(key, data, down_sample_num):
+#     xp = data["atoms_position"]
+#     xe = data["walker_data"]["elec_position"]
+#     amp = data["walker_data"]["amplitude"]
+
+#     key, subkey = jax.random.split(key)
+#     walker_num = xp.shape[0]
+#     idx = jax.random.permutation(subkey, jnp.arange(walker_num))
+
+#     (xp0,xp1), (xe0,xe1), (amp0,amp1) = map(functools.partial(shuffle_and_split_data, idx=idx, down_sample_num=down_sample_num) , [xp, xe, amp])
+
+#     return (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, key
+
+def down_sample_data_pre(data, down_sample_num, variance, multi_energy):
+    xp  = data["atoms_position"]
+    xe  = data["walker_data"]["elec_position"]
     amp = data["walker_data"]["amplitude"]
 
-    key, subkey = jax.random.split(key)
-    walker_num = xp.shape[0]
-    idx = jax.random.permutation(subkey, jnp.arange(walker_num))
+    idx_sorted = jnp.argsort(-variance)
+    idx0 = idx_sorted[:down_sample_num]      # 方差最大的那几个
+    idx1 = idx_sorted[down_sample_num:]      # 剩余
 
-    (xp0,xp1), (xe0,xe1), (amp0,amp1) = map(functools.partial(shuffle_and_split_data, idx=idx, down_sample_num=down_sample_num) , [xp, xe, amp])
+    xp0, xp1 = xp[idx0], xp[idx1]
+    xe0, xe1 = xe[idx0], xe[idx1]
+    amp0, amp1 = amp[idx0], amp[idx1]
+    variance0, variance1 = variance[idx0], variance[idx1]
+    multi_energy0, multi_energy1 = multi_energy[idx0], multi_energy[idx1]
 
-    return (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, key
+    return (xp0, xp1), (xe0, xe1), (amp0, amp1), idx_sorted, variance1, multi_energy1
 
-def down_sample_data(key, data, down_sample_num, apply_pmap):
-    move_metadata = data["move_metadata"]
+
+def make_down_sample_data_fn(apply_pmap):
     if apply_pmap:
-        (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, key = jax.pmap(down_sample_data_pre,
+        def down_sample_data(data, down_sample_num, variance, multi_energy):
+            move_metadata = data["move_metadata"]
+            (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, variance1, multi_energy1 = jax.pmap(down_sample_data_pre,
                                                                axis_name=PMAP_AXIS_NAME,
-                                                               in_axes=(0, 0, None),
-                                                               static_broadcasted_argnums=(2,),
-                                                               )(key, data, down_sample_num)
+                                                               in_axes=(0, None, 0, 0),
+                                                               static_broadcasted_argnums=(1,),
+                                                               )(data, down_sample_num, variance, multi_energy)
+            data = make_position_amplitude_data(xp0, xe0, amp0, move_metadata)
+            rest_data = make_position_amplitude_data(xp1, xe1, amp1, move_metadata)
+            return data, rest_data, idx, variance1, multi_energy1
     else:
-        (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, key = jax.jit(down_sample_data_pre,
-                                                               static_argnums=(2,),
-                                                               )(key, data, down_sample_num)
-    data = make_position_amplitude_data(xp0, xe0, amp0, move_metadata)
-    rest_data = make_position_amplitude_data(xp1, xe1, amp1, move_metadata)
-    return data, rest_data, idx, key
-
-
-def scatter_to_original_order_energy(x0, idx):
-
-    out = jnp.zeros((idx.shape[0], *x0.shape[1:]), dtype=x0.dtype)
-    n0 = x0.shape[0]
-    return out.at[idx[:n0]].set(x0)
+        def down_sample_data(data, down_sample_num, variance, multi_energy):
+            move_metadata = data["move_metadata"]
+            (xp0,xp1), (xe0,xe1), (amp0,amp1), idx, variance1, multi_energy1 = jax.jit(down_sample_data_pre,
+                                                                static_argnums=(1,),
+                                                                )(data, down_sample_num, variance, multi_energy)
+            data = make_position_amplitude_data(xp0, xe0, amp0, move_metadata)
+            rest_data = make_position_amplitude_data(xp1, xe1, amp1, move_metadata)
+            return data, rest_data, idx, variance1, multi_energy1
+    return down_sample_data
 
 def scatter_to_original_order_data(x0,x1,idx):
     n0 = x0.shape[0]
@@ -362,32 +380,51 @@ def scatter_to_original_order_data(x0,x1,idx):
     x = x.at[idx[n0:]].set(x1)
     return x
 
-def reform_data_and_metrics(data, rest_data, metrics, idx, apply_pmap):
-
-    xp0 = data["atoms_position"]                   # 选中子集（大小 n0）
-    xe0 = data["walker_data"]["elec_position"]
-    amp0 = data["walker_data"]["amplitude"]
-
-    xp1 = rest_data["atoms_position"]              # 剩余子集（大小 n1）
-    xe1 = rest_data["walker_data"]["elec_position"]
-    amp1 = rest_data["walker_data"]["amplitude"]
-
+def make_reform_data_and_metrics_fn(apply_pmap):
     if apply_pmap:
         reform_data = jax.pmap(scatter_to_original_order_data, axis_name=PMAP_AXIS_NAME,in_axes=(0,0,0))
-        reform_energy = jax.pmap(scatter_to_original_order_energy, axis_name=PMAP_AXIS_NAME,in_axes=(0,0))
     else:
         reform_data = jax.jit(scatter_to_original_order_data)
-        reform_energy = jax.jit(scatter_to_original_order_energy)
+    def reform_data_and_metrics(data, rest_data, metrics, idx, variance1, multi_energy1):
+        xp0 = data["atoms_position"]                   # 选中子集（大小 n0）
+        xe0 = data["walker_data"]["elec_position"]
+        amp0 = data["walker_data"]["amplitude"]
 
-    xp  = reform_data(xp0,  xp1,  idx)
-    xe  = reform_data(xe0,  xe1,  idx)
-    amp = reform_data(amp0, amp1, idx)
+        xp1 = rest_data["atoms_position"]              # 剩余子集（大小 n1）
+        xe1 = rest_data["walker_data"]["elec_position"]
+        amp1 = rest_data["walker_data"]["amplitude"]
+
+        xp  = reform_data(xp0,  xp1,  idx)
+        xe  = reform_data(xe0,  xe1,  idx)
+        amp = reform_data(amp0, amp1, idx)
+        data_out = make_position_amplitude_data(xp, xe, amp, data["move_metadata"])
+        
+        multi_energy0 = metrics["multi_energy"]    # 形状 [n0, ...]
+        multi_energy = reform_data(multi_energy0, multi_energy1, idx)
+
+        variance0 = metrics["multi_variance"]
+        multi_variance = reform_data(variance0,  variance1,  idx)
+
+        new_metrics = dict(metrics)
+        new_metrics["multi_energy"] = multi_energy
+        new_metrics["multi_variance"] = multi_variance
+
+        return data_out, new_metrics
+    return reform_data_and_metrics
+
+
+
+
+def init_dummy_metrics_for_downsample(is_pmapped: bool):
+    def aaa(atoms):
+        W = atoms.shape[0]
+        # multi_variance = jnp.zeros((W,), dtype=atoms.dtype)        # (W,)
+        multi_variance = jnp.full((W,), jnp.inf, dtype=atoms.dtype)
+        multi_energy = jnp.zeros((W,), dtype=atoms.dtype)        # (W,)
+        return multi_variance, multi_energy
     
-    multi_energy_part = metrics["multi_energy"]    # 形状 [n0, ...]
-    multi_energy_full = reform_energy(multi_energy_part, idx)
-
-    new_metrics = dict(metrics)
-    new_metrics["multi_energy"] = multi_energy_full
-
-    data_out = make_position_amplitude_data(xp, xe, amp, data["move_metadata"])
-    return data_out, new_metrics
+    if is_pmapped:
+        create_dummy = jax.pmap(aaa, axis_name=PMAP_AXIS_NAME)
+    else:
+        create_dummy = aaa
+    return create_dummy

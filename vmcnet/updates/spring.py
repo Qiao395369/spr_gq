@@ -86,12 +86,14 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
 
         metrics = {
                     "energy": E_mean, "variance": stats["variance"],
+                    "variance_noclip": stats["variance_noclip"],
+                    "multi_variance": stats["multi_variance"],
+                    "energy_noclip": stats["energy_noclip"],
                     "multi_energy": stats["multi_energy"],
                     "opt_param_norm": param_norm,
                     "opt_grad_norm": grad_norm,
                     "opt_update_norm": update_norm,
-                    "energy_noclip": stats["energy_noclip"],
-                    "variance_noclip": stats["variance_noclip"],
+
             }
         return params,data, opt_state, metrics, key
 
@@ -180,10 +182,10 @@ class Spring:
     
     def get_grad_3(
             self,
-            prev_grad,
-            log_psi_grads,
-            E_loc: P,
-            E_mean_per_mol,
+            prev_grad,  #(np,)
+            log_psi_grads,  #(B,np)
+            E_loc: P,    #(B,)
+            E_mean_per_mol,   #(1,)
             opt_state,
         ) -> Tuple[Array, P]:
         prev_grad_decayed = self.mu * prev_grad  #(nparams,)
@@ -194,8 +196,8 @@ class Spring:
         T = Ohat @ Ohat.T
         ones = jnp.ones_like(T) / nchains
         T_reg = T + ones + self.dp_schedule(opt_state["step"]) * jnp.eye(nchains)
-        E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,1)
-        E_mean = pmean_if_pmap(E_mean)  #(1,1)
+        E_mean = jnp.mean(E_mean_per_mol, keepdims=True)  #(1,)
+        E_mean = pmean_if_pmap(E_mean)  #(1,)
         if self.repeat_single_mol:
             E_mean_per_mol = E_mean
         epsilon_bar = (E_loc - E_mean_per_mol) / jnp.sqrt(nchains)

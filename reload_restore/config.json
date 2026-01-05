@@ -156,6 +156,7 @@
         "down_sample_num": 0,
         "nepochs": 150000,
         "nburn": 4000,
+        "n_inner": 2,
         "det_penalty_weight": 1.0,
         "nsteps_per_param_update": 10,
         "nmoves_per_width_update": 100,

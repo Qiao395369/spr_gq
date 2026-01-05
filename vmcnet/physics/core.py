@@ -6,7 +6,6 @@ import chex
 import jax
 import jax.numpy as jnp
 import kfac_jax
-from vmcnet.updates.loss import flat_ansatz_call
 from vmcnet.utils.distribute import PMAP_AXIS_NAME
 
 import vmcnet.utils as utils
@@ -24,6 +23,16 @@ from vmcnet.utils.typing import (
 EnergyAuxData = Dict[str, Any]
 ValueGradEnergyFn = Callable[[P, Array, Array], Tuple[Array, EnergyAuxData, P]]
 
+def flat_ansatz_call(
+    ansatz, params, atoms_position, elec_position
+) -> jax.Array:
+    """Call the function with batch dimensions flattened."""
+    n_elec_batch = elec_position.shape[1]
+    elecs_flat = elec_position.reshape(-1, *elec_position.shape[2:])
+    atoms_flat = jnp.repeat(atoms_position[:, None, ...], repeats=n_elec_batch, axis=1).reshape(-1, *atoms_position.shape[1:])
+
+
+    return jax.vmap(ansatz, (None, 0, 0))(params, atoms_flat, elecs_flat)
 
 # def initialize_molecular_pos(
 #     key: PRNGKey,
@@ -161,7 +170,7 @@ def get_statistics_from_other_energy(
 
 def get_statistics_from_local_energy(
     local_energies: Array, nan_safe: bool ,
-) -> Tuple[Array, Array]:
+) -> Tuple[Array, Array, Array]:
     """Collectively reduce local energies to an average energy and variance.
 
     Args:
@@ -193,7 +202,7 @@ def get_statistics_from_local_energy(
     var_per_w = jnp.sum(jnp.square(local_energies - energy_per_w), axis=1) / jnp.maximum(B - 1, 1)  # (W,)
     variance = allreduce_mean(var_per_w, axis=0)  # ()
     
-    return energy_per_w, variance 
+    return energy_per_w, var_per_w ,variance
 
 
 def get_clipped_energies_and_stats(
@@ -202,18 +211,20 @@ def get_clipped_energies_and_stats(
     nan_safe: bool,
 ) -> Tuple[Array, Array, EnergyAuxData]:
     """Clip local energies if requested and return auxiliary data."""
-    energy_noclip, variance_noclip = get_statistics_from_local_energy(local_energies_noclip, nan_safe=False)
+    energy_per_w_noclip, var_per_w_noclip, variance_noclip = get_statistics_from_local_energy(local_energies_noclip, nan_safe=nan_safe)
 
     if clipping_fn is not None:
-        local_energies = clipping_fn(local_energies_noclip, energy_noclip)  #local_energies_noclip:(W,B)， energy_noclip:(W,1)-->local_energies: (W,B)
-        energy_per_w, variance = get_statistics_from_local_energy(local_energies, nan_safe=nan_safe)  #energy: (W,1)  variance:(1,)
+        local_energies = clipping_fn(local_energies_noclip, energy_per_w_noclip)  #local_energies_noclip:(W,B)， energy_noclip:(W,1)-->local_energies: (W,B)
+        energy_per_w, var_per_w, variance = get_statistics_from_local_energy(local_energies, nan_safe=nan_safe)  #energy: (W,1)  variance:(1,)
     else:
-        local_energies, energy_per_w, variance= local_energies_noclip, energy_noclip, variance_noclip
+        local_energies, energy_per_w, var_per_w, variance= local_energies_noclip, energy_per_w_noclip, var_per_w_noclip, variance_noclip
     
     energy_stats = dict(
         variance=variance,  #()
-        energy_noclip=utils.distribute.nanmean_all_local_devices(energy_noclip,axis=(0,1)),  #()
         variance_noclip=variance_noclip,  #()
+        multi_variance = jnp.maximum(var_per_w_noclip, var_per_w),    #(w,)
+        energy_noclip=utils.distribute.nanmean_all_local_devices(energy_per_w_noclip,axis=(0,1)),  #()
+        multi_energy = jnp.squeeze(energy_per_w_noclip, axis=-1)
     )
 
     return energy_per_w, local_energies, energy_stats
@@ -367,18 +378,10 @@ def create_energy_and_statistics_fn(
         local_energies_noclip = jax.vmap(jax.vmap(local_energy_fn,in_axes=(None,None,0)),in_axes=(None,0,0))(params,atoms_positions, positions)  #(W,B)
         # kinetic_pmean,ei_potential_pmean,ee_potential_pmean,ii_potential_pmean = get_statistics_from_other_energy(kinetic,ei_potential,ee_potential,ii_potential, nan_safe=nan_safe) #()
 
-
-        energy_per_w, E_loc, stats = get_clipped_energies_and_stats(
+        energy_per_w, local_energies, energy_stats = get_clipped_energies_and_stats(
             local_energies_noclip, clipping_fn, nan_safe
         )
-        multi_energy = jnp.squeeze(energy_per_w, axis=-1)
-        stats.update({
-            # "kinetic": kinetic_pmean, 
-            # "ei_potential": ei_potential_pmean ,
-            # "ee_potential":ee_potential_pmean ,
-            # "ii_potential":ii_potential_pmean ,
-            "multi_energy":multi_energy})
 
-        return energy_per_w, E_loc, stats
+        return energy_per_w, local_energies, energy_stats
 
     return energy_and_statistics

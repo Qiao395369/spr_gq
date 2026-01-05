@@ -9,5 +9,11 @@ python -m vmcnet.train.runners \
 --reload.new_optimizer_state=False \
 --reload.reburn=False \
 --reload.append=True \
---reload.to_pmap=True \
---reload.same_logdir=False 
+--reload.to_pmap=False \
+--reload.same_logdir=False \
+--reload.new_data=True \
+--reload.nchains=44 \
+--reload.end_epochs=120100 \
+--reload.nburn=100 \
+--reload.down_sample_num=4 \
+--reload.n_inner=2 \

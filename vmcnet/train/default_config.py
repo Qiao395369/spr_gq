@@ -62,6 +62,12 @@ def get_default_reload_config() -> ConfigDict:
             "append": True,
             "same_logdir": False,
             "to_pmap": False,
+            "new_data": False,
+            "nchains": 512,
+            "end_epochs": 150000,
+            "nburn":8000,
+            "down_sample_num": 0,
+            "n_inner": 2,
         }
     )
 
@@ -317,6 +323,7 @@ def get_default_vmc_config() -> Dict:
         "repeat_single_mol": False,
         "repeat_single_molecule_walker": 0,
         "down_sample_num": 3,
+        "n_inner": 1,
         "nepochs": 200000,
         "nburn": 5000,
         "det_penalty_weight": 1.0,
@@ -449,7 +456,7 @@ def get_default_gq_config() -> Dict:
         "feat_act_func": 'tanh',
         "feat_numb_divid": 1,
         "scale": 1.0,
-        "type":"ef",  #["ef","fermi","shrd","ef_shrd","ef_shrd_sym"]
+        "type":"ef_shrd_sym",  #["ef","fermi","shrd","ef_shrd","ef_shrd_sym"]
         "envelope_type": "ds_hz", #["ds_hz","iso"]
         "ndet":16,
         "wfn_depth":4,
@@ -460,13 +467,13 @@ def get_default_gq_config() -> Dict:
         "density_plot": False,
         "density_plot_filename": NO_PATH,
         "density_plot_nepochs": 0,
-        "jastrow_type": "mlp", #choices=["mlp", "mlp_res", "simple_ee","none"]
-        "jastrow_mlp_nlayer": 2,
+        "jastrow_type": "mlp_res", #choices=["mlp", "mlp_res", "simple_ee","none"]
+        "jastrow_mlp_nlayer": 4,
         "jastrow_mlp_ndim": 32,
         "rescale_input": "all", #choices=["all", "all_eps", "e-a", "None"]
         "RHF": False,
         "activation_type": "tanh", #choices=["tanh", "relu", "silu]
-        "psiformer_multi": False, 
+        "psiformer_multi": True, 
         "psiformer_num_layers": 4,
         "psiformer_num_heads": 4,
         "psiformer_heads_dim": 64,

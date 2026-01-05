@@ -4,14 +4,14 @@ from typing import Tuple, Optional
 
 import jax
 # import wandb
-
+import jax.numpy as jnp
 import time
 from vmcnet.mcmc.metropolis import WalkerFn
 from vmcnet.updates.update_param_fns import UpdateParamFn
 from vmcnet.utils.checkpoint import CheckpointWriter, MetricsWriter
 import vmcnet.utils as utils
 from vmcnet.utils.typing import D, GetAmplitudeFromData, P, PRNGKey, S
-from vmcnet.mcmc.position_amplitude_core import down_sample_data, reform_data_and_metrics
+from vmcnet.mcmc.position_amplitude_core import make_down_sample_data_fn, make_reform_data_and_metrics_fn, init_dummy_metrics_for_downsample
 import logging
 def vmc_loop(
     params: P,
@@ -34,6 +34,7 @@ def vmc_loop(
     is_pmapped=True,
     start_epoch: int = 0,
     down_sample_num: int = None,
+    n_inner: int = 1,
     is_eval: bool = False,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     """Main Variational Monte Carlo loop routine.
@@ -107,6 +108,13 @@ def vmc_loop(
     if is_pmapped and down_sample:
         assert down_sample_num % jax.device_count() == 0, "down_sample_num must be divisible by number of devices"
         down_sample_num = down_sample_num//jax.device_count()
+    
+    if down_sample:
+        down_sample_data = make_down_sample_data_fn(is_pmapped)
+        reform_data_and_metrics = make_reform_data_and_metrics_fn(is_pmapped)
+        create_dummy = init_dummy_metrics_for_downsample(is_pmapped)
+        variance , multi_energy = create_dummy(data["atoms_position"])
+        logging.info("Downsample data with down_sample_num = %d, n_inner = %d "%(down_sample_num, n_inner))
 
     with CheckpointWriter(is_pmapped) as checkpoint_writer, MetricsWriter() as metrics_writer:
         time_mark=time.time()
@@ -123,10 +131,11 @@ def vmc_loop(
             old_key = key.copy()
 
             if down_sample :
-                data, rest_data, idx, key = down_sample_data(key, data, down_sample_num, is_pmapped)
-                accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
-                data, metrics = reform_data_and_metrics(data, rest_data, metrics, idx, is_pmapped)
+                data, rest_data, idx, variance1, multi_energy1 = down_sample_data(data, down_sample_num, variance, multi_energy)
+                for _ in range(n_inner):
+                    accept_ratio, data, key = walker_fn(params, data, key)
+                    params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
+                data, metrics = reform_data_and_metrics(data, rest_data, metrics, idx, variance1, multi_energy1)
             else:
                 accept_ratio, data, key = walker_fn(params, data, key)
                 params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
@@ -135,12 +144,19 @@ def vmc_loop(
             if metrics is None :
                 continue
             
+            variance = metrics["multi_variance"]
+            multi_energy = metrics["multi_energy"]
+
             metrics["accept_ratio"] = accept_ratio
-            
+
             if is_pmapped:
-                metrics["multi_energy"] = jax.device_get(metrics["multi_energy"])[None,...]
-                metrics = jax.tree_map(lambda x: x[0], metrics)
-                metrics = jax.device_put(metrics, jax.devices("cpu")[0])
+                metrics_cpu = dict(metrics)
+                metrics_cpu["multi_energy"] = jax.device_get(metrics["multi_energy"])[None, ...]
+                metrics_cpu["multi_variance"] = jax.device_get(metrics["multi_variance"])[None, ...]
+                metrics_cpu = jax.tree_map(lambda x: x[0], metrics_cpu)
+                metrics_cpu = jax.device_put(metrics_cpu, jax.devices("cpu")[0])
+            else:
+                metrics_cpu = metrics  
 
             (
                 checkpoint_metric,
@@ -156,7 +172,7 @@ def vmc_loop(
                 old_data,
                 data,
                 old_key,
-                metrics,
+                metrics_cpu,
                 nchains,
                 running_energy_and_variance,
                 checkpoint_writer,
