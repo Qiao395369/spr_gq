@@ -67,7 +67,7 @@ def get_default_reload_config() -> ConfigDict:
             "end_epochs": 150000,
             "nburn":8000,
             "down_sample_num": 0,
-            "n_inner": 2,
+            "n_inner": 1,
         }
     )
 
@@ -322,7 +322,7 @@ def get_default_vmc_config() -> Dict:
         "nchains": 1000,
         "repeat_single_mol": False,
         "repeat_single_molecule_walker": 0,
-        "down_sample_num": 3,
+        "down_sample_num": 0,
         "n_inner": 1,
         "nepochs": 200000,
         "nburn": 5000,

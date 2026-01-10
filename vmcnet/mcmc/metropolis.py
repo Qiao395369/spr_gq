@@ -55,21 +55,21 @@ def make_metropolis_step(
     ) -> Tuple[chex.Numeric, D, PRNGKey]:
         """Take a single metropolis step."""
         key, subkey = jax.random.split(key)
-        # jax.debug.print("marker_0")
+
         proposed_data, key = proposal_fn(params, data, key)
-        # jax.debug.print("marker_1")
-        accept_prob = acceptance_fn(params, data, proposed_data)  #accept_prob:(W,B)
+
+        accept_prob = acceptance_fn(params, data, proposed_data)  #accept_prob:(B,)
         # jax.debug.print(f"accept_prob:{accept_prob.shape}")
         move_mask = cast(
             Array,
             jax.random.uniform(subkey, shape=accept_prob.shape) < accept_prob,
         )
         # jax.debug.print(f"move_mask:{move_mask.shape}")
-        new_data = update_data_fn(data, proposed_data, move_mask)
-        # jax.debug.print("marker_4")
+        new_data = update_data_fn(data, proposed_data, move_mask)  #move_mask:(B,)
+
         return jnp.mean(accept_prob), new_data, key
 
-    return metrop_step_fn
+    return jax.vmap(metrop_step_fn,in_axes=(None,0,0))
 
 
 def walk_data(
@@ -78,6 +78,7 @@ def walk_data(
     data: D,
     key: PRNGKey,
     metrop_step_fn: MetropolisStep[P, D],
+    _accept_prob: jnp.ndarray,
 ) -> Tuple[chex.Numeric, D, PRNGKey]:
     """Take multiple Metropolis-Hastings steps.
 
@@ -114,7 +115,8 @@ def walk_data(
         accept_prob, data, key = metrop_step_fn(params, carry[1], carry[2])
         return (carry[0] + accept_prob, data, key), None
 
-    out = jax.lax.scan(step_fn, (0.0, data, key), xs=None, length=nsteps)
+    out = jax.lax.scan(step_fn, (_accept_prob, data, key), xs=None, length=nsteps)
+    # logging.info("Acceptance ratio11: %s", out[0][0].shape)
     accept_sum, data, key = out[0]
     return accept_sum / nsteps, data, key
 
@@ -183,15 +185,19 @@ def make_jitted_walker_fn(
         apply_pmap is False.
     """
 
-    def walker_fn(params: P, data: D, key: PRNGKey) -> Tuple[chex.Numeric, D, PRNGKey]:
-        accept_ratio, data, key = walk_data(nsteps, params, data, key, metrop_step_fn)
-        accept_ratio = utils.distribute.pmean_if_pmap(accept_ratio)
-        return accept_ratio, data, key
+    def _walker_fn(params: P, data: D, key: PRNGKey) -> Tuple[chex.Numeric, D, PRNGKey]:
+        W = data["walker_data"]["elec_position"].shape[0]
+        key, batch_key = jax.random.split(key)
+        keys = jax.random.split(batch_key, W)
+        _accept_prob = jnp.full((W,),0.0)
+        accept_ratio, data, keys = walk_data(nsteps, params, data, keys, metrop_step_fn, _accept_prob)
+        # logging.info("Acceptance ratio: %s", accept_ratio.shape)
+        return accept_ratio, data, keys[0]
 
     if not apply_pmap:
-        return jax.jit(walker_fn)
+        return jax.jit(_walker_fn)
 
-    pmapped_walker_fn = utils.distribute.pmap(walker_fn)
+    pmapped_walker_fn = utils.distribute.pmap(_walker_fn)
 
     return pmapped_walker_fn
     # def pmapped_walker_fn_with_single_accept_ratio(  #后面会统一get_first的
@@ -210,6 +216,7 @@ def burn_data(
     params: P,
     data: D,
     key: PRNGKey,
+    apply_pmap: bool = False,
 ) -> Tuple[D, PRNGKey]:
     """Repeatedly apply a burning step.
 
@@ -227,8 +234,17 @@ def burn_data(
         (pytree-like, PRNGKey): new data, new key
     """
     logging.info("Burning data for %d steps", nsteps_to_burn)
+    if apply_pmap:
+        W = data["walker_data"]["elec_position"].shape[1]
+        keys = jax.pmap(lambda key: jax.random.split(key,W))(key)
+    else:
+        W = data["walker_data"]["elec_position"].shape[0]
+        key, batch_key = jax.random.split(key)
+        keys = jax.random.split(batch_key, W)
+
     for _ in range(nsteps_to_burn):
-        data, key = burning_step(params, data, key)
+        data, keys = burning_step(params, data, keys)
+    
     return data, key
 
 

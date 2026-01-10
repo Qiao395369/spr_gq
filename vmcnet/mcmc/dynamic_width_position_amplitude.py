@@ -145,23 +145,20 @@ def make_update_move_metadata_fn(
     """
 
     def update_move_metadata(
-        move_metadata: MoveMetadata, current_move_mask: Array
+        move_metadata: MoveMetadata, current_move_mask: Array  
     ) -> MoveMetadata:
         std_move = move_metadata["std_move"]
         move_acceptance_sum = move_metadata["move_acceptance_sum"]
         moves_since_update = move_metadata["moves_since_update"]
-        # jax.debug.print("marker_14")
-        # current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(jnp.float64),axis=(0,1))
-        current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(move_acceptance_sum.dtype), axis=(0, 1))
-        # jax.debug.print("marker_15")
+        # current_avg_acceptance = mean_all_local_devices(current_move_mask.astype(move_acceptance_sum.dtype), axis=(0, 1))
+        # current_avg_acceptance = mean_all_local_devices(current_move_mask)
+        current_avg_acceptance = jnp.mean(current_move_mask)  #current_move_mask: B 
         move_acceptance_sum = move_acceptance_sum + current_avg_acceptance
-        # jax.debug.print("marker_16")
-        moves_since_update = moves_since_update + jnp.asarray(1, dtype=moves_since_update.dtype)
-        # jax.debug.print("marker_17")
+        moves_since_update = moves_since_update + 1
 
         def update_std_move(_):
             move_acceptance_avg = move_acceptance_sum / moves_since_update
-            return (adjust_std_move_fn(std_move, move_acceptance_avg), jnp.asarray(0, dtype=moves_since_update.dtype), jnp.zeros_like(move_acceptance_sum))
+            return (adjust_std_move_fn(std_move, move_acceptance_avg), 0, 0.0)
 
         def skip_update_std_move(_):
             return (std_move, moves_since_update, move_acceptance_sum)

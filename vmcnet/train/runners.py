@@ -465,9 +465,12 @@ def _get_gaoqiao_model(
         return logabsdet
 
     # @jax.jit
-    def log_psi_apply_vmap(params, xp, xe):
+    def log_psi_apply_vmap_two_dim(params, xp, xe):
         return jax.vmap(jax.vmap(log_psi_apply_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))(params, xp, xe)
         
+    def log_psi_apply_vmap_one_dim(params, xp, xe):
+        return jax.vmap(log_psi_apply_novmap, in_axes=(None, None, 0))(params, xp, xe)
+
     def det_fn_novmap(params,xp,xe):
         det = det_fn(params,xe,xp) #xe(ne,3),xp(na,3)
         return det
@@ -488,7 +491,7 @@ def _get_gaoqiao_model(
     # print("log_psi.shape:", log_psi.shape)
     # sys.exit()
 
-    return log_psi_apply_vmap, log_psi_apply_novmap, det_fn_novmap, orb_fn_vmap, params, key
+    return log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply_novmap, det_fn_novmap, orb_fn_vmap, params, key
 
 
 # TODO: figure out how to merge this and other distributing logic with the current
@@ -524,11 +527,12 @@ def _make_initial_distributed_data(
     sharded_ion_pos = utils.distribute.default_distribute_data(ion_pos)
     sharded_init_pos = utils.distribute.default_distribute_data(init_pos)
     sharded_amplitudes = distributed_log_psi_apply(params,sharded_ion_pos, sharded_init_pos)
+    W = sharded_init_pos.shape[1]
     move_metadata = utils.distribute.replicate_all_local_devices(
         dwpa.MoveMetadata(
-            std_move=run_config.std_move,
-            move_acceptance_sum=dtype(0.0),
-            moves_since_update=0,
+            std_move=jnp.full((W,), run_config.std_move, dtype=dtype),
+            move_acceptance_sum=jnp.full((W,), 0.0, dtype=dtype),
+            moves_since_update=jnp.full((W,), 0),
         )
     )
     return pacore.make_position_amplitude_data(
@@ -545,13 +549,14 @@ def _make_initial_single_device_data(
     dtype=jnp.float32,
 ) -> dwpa.DWPAData:
     amplitudes = log_psi_apply(params, ion_pos, init_pos)
+    W = ion_pos.shape[0]
     return dwpa.make_dynamic_width_position_amplitude_data(
         ion_pos,
         init_pos,
         amplitudes,
-        std_move=run_config.std_move,
-        move_acceptance_sum=dtype(0.0),
-        moves_since_update=0,
+        std_move=jnp.full((W,), run_config.std_move, dtype=dtype),
+        move_acceptance_sum=jnp.full((W,), 0.0, dtype=dtype),
+        moves_since_update=jnp.full((W,), 0),
     )
 
 
@@ -701,7 +706,7 @@ def _setup_vmc(
 
     # Make the model
     if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer","lapnet"]:
-        log_psi_apply_vmap, log_psi_apply, det_fn_novmap, orb_fn_vmap, params, key =  _get_gaoqiao_model(
+        log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply, det_fn_novmap, orb_fn_vmap, params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
@@ -725,10 +730,10 @@ def _setup_vmc(
         raise ValueError("unknown gq_wfn_type: %s "%(config.wfn_type))
     
     get_amplitude_fn = pacore.get_amplitude_from_data
-    update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap)
+    update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap_two_dim)
 
     # Setup metropolis step
-    burning_step, walker_fn = _get_mcmc_fns(config.vmc, log_psi_apply_vmap, apply_pmap=apply_pmap)
+    burning_step, walker_fn = _get_mcmc_fns(config.vmc, log_psi_apply_vmap_one_dim, apply_pmap=apply_pmap)
     
     local_energy_fn = _assemble_mol_local_energy_fn(
         ion_charges,
@@ -742,7 +747,7 @@ def _setup_vmc(
     if not reload_from_checkpoint:
         # Make initial data
         data = _make_initial_data(
-            log_psi_apply_vmap, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
+            log_psi_apply_vmap_two_dim, config.vmc, ion_pos, init_pos, params, dtype=dtype, apply_pmap=apply_pmap
         )
         logging.info("data shapes: %s", jax.tree_util.tree_map(lambda x: getattr(x, "shape", None), data))
     else:
@@ -791,7 +796,8 @@ def _setup_vmc(
     )
 
     return (
-        log_psi_apply_vmap,
+        log_psi_apply_vmap_two_dim,
+        log_psi_apply_vmap_one_dim,
         log_psi_apply,
         orb_fn_vmap,
         energy_and_statistics_fn,
@@ -971,7 +977,7 @@ def _burn_and_run_vmc(
         n_inner = 0
 
     if not skip_burn:
-        data, key = mcmc.metropolis.burn_data(burning_step, nburn, params, data, key)
+        data, key = mcmc.metropolis.burn_data(burning_step, nburn, params, data, key, is_pmapped)
     nchains = math.prod(data["atoms_position"].shape[:-2])
     return train.vmc.vmc_loop(
         params,
@@ -1050,7 +1056,8 @@ def run_molecule() -> None:
     key = jax.random.PRNGKey(config.initial_seed)
 
     (
-        log_psi_apply_vmap,
+        log_psi_apply_vmap_two_dim,
+        log_psi_apply_vmap_one_dim,
         log_psi_apply_novmap,
         orb_fn_vmap,
         energy_and_statistics_fn,
@@ -1123,7 +1130,7 @@ def run_molecule() -> None:
             key, data = _make_new_data_for_reload(
                 config,
                 reload_config,
-                log_psi_apply_vmap,
+                log_psi_apply_vmap_two_dim,
                 params,
                 ion_pos,
                 ion_charges,
@@ -1161,10 +1168,10 @@ def run_molecule() -> None:
                 result2 = jnp.exp(log_psi_apply_novmap(params,xp,xe))
                 result = jnp.log((result1+result2)/2)
                 return result
-            sample_pretrain = jax.vmap(jax.vmap(hf_and_net_sum, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+            sample_pretrain = jax.vmap(hf_and_net_sum, in_axes=(None, None, 0))
             pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
         elif config_pretrain.sample_type == "hf":
-            sample_pretrain = jax.vmap(jax.vmap(hf_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+            sample_pretrain = jax.vmap(hf_novmap, in_axes=(None, None, 0))
             pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
         elif config_pretrain.sample_type == "wfn":
             pretrain_burn_step, pretrain_walker_fn = burning_step, walker_fn
@@ -1176,7 +1183,7 @@ def run_molecule() -> None:
         # energy_and_statistics_fn_hf = physics.core.create_energy_and_statistics_fn(local_energy_fn_hf, clipping_fn, config.vmc.nan_safe)
 
         if not config_pretrain.skip_burn:
-            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
+            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key, apply_pmap)
 
         params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
             params=params,
@@ -1266,7 +1273,7 @@ def run_molecule() -> None:
         config,
         ion_pos,
         ion_charges,
-        log_psi_apply_vmap,
+        log_psi_apply_vmap_one_dim,
         log_psi_apply_novmap,
         pacore.get_position_from_data,
         apply_pmap=apply_pmap,
@@ -1278,7 +1285,7 @@ def run_molecule() -> None:
         logging.info("creating new data ...")
         key, data = _make_new_data_for_eval(
             config,
-            log_psi_apply_vmap,
+            log_psi_apply_vmap_two_dim,
             params,
             ion_pos,
             ion_charges,

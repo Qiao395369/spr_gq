@@ -464,7 +464,7 @@ def pretrain_hartree_fock_gaoqiao_2(
     logging.info(f'Pretrain iter: {t:05d},loss: {loss:g},speed: {avg_speed:d}')
     # logging.info(f'Pretrain iter: {t:05d}, loss: {loss:g}, acc_r: {accept_ratio}, logprob: {jnp.mean(2 * data["walker_data"]["amplitude"])}, move: {data["move_metadata"]["std_move"]}, acc_sum: {data["move_metadata"]["move_acceptance_sum"]}')
 
-  data, key = mcmc.metropolis.burn_data(burning_step, (iterations//4) , params, data, key)
+  data, key = mcmc.metropolis.burn_data(burning_step, (iterations//4) , params, data, key, apply_pmap)
   for t in range(iterations//4):
     accept_ratio, data, key = walker_fn(params, data, key)
     data, params, opt_state, loss = pretrain_step(data, params, opt_state)

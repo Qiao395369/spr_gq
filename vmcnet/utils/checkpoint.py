@@ -638,7 +638,7 @@ def log_vmc_loop_state(epoch: int, metrics: Dict, checkpoint_str: str, rate :str
     epoch_str = "i: %(epoch)5d"
     energy_str = "E: %(energy).5e"
     variance_str = "Var: %(variance).5e"
-    accept_ratio_str = "Acc_r: %(accept_ratio).5f"
+    accept_ratio_str = "Acc_r: %(accept_ratio_mean).5f"
     amplitude_str = "amplitude: %(amplitude).5e"
     # kinetic="k:%(kinetic).5e"
     # ei_potential="ei:%(ei_potential).5e"

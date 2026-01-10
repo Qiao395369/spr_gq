@@ -113,7 +113,7 @@ def vmc_loop(
         down_sample_data = make_down_sample_data_fn(is_pmapped)
         reform_data_and_metrics = make_reform_data_and_metrics_fn(is_pmapped)
         create_dummy = init_dummy_metrics_for_downsample(is_pmapped)
-        variance , multi_energy = create_dummy(data["atoms_position"])
+        variance , multi_energy , accept_ratio= create_dummy(data["atoms_position"])
         logging.info("Downsample data with down_sample_num = %d, n_inner = %d "%(down_sample_num, n_inner))
 
     with CheckpointWriter(is_pmapped) as checkpoint_writer, MetricsWriter() as metrics_writer:
@@ -131,28 +131,37 @@ def vmc_loop(
             old_key = key.copy()
 
             if down_sample :
-                data, rest_data, idx, variance1, multi_energy1 = down_sample_data(data, down_sample_num, variance, multi_energy)
+                data, rest_data, idx, variance1, multi_energy1, accept_ratio1 = down_sample_data(data, down_sample_num, variance, multi_energy, accept_ratio)
+                # logging.info(f"{accept_ratio1.shape}")
                 for _ in range(n_inner):
-                    accept_ratio, data, key = walker_fn(params, data, key)
+                    accept_ratio0, data, key = walker_fn(params, data, key)
                     params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
-                data, metrics = reform_data_and_metrics(data, rest_data, metrics, idx, variance1, multi_energy1)
+                data, metrics = reform_data_and_metrics(data, rest_data, metrics, idx, variance1, multi_energy1, accept_ratio0, accept_ratio1)
+                variance = metrics["multi_variance"]
+                multi_energy = metrics["multi_energy"]
+                accept_ratio = metrics["accept_ratio"]
             else:
                 accept_ratio, data, key = walker_fn(params, data, key)
                 params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
-
+                # logging.info(f"accept_ratio: {accept_ratio.shape}")
+                metrics["accept_ratio"] = accept_ratio
+                metrics["accept_ratio_mean"] = utils.distribute.pmap(lambda x: jnp.mean(x))(accept_ratio)
+                metrics["std_move"] = data["move_metadata"]["std_move"]
+                metrics["move_acceptance_sum"] = data["move_metadata"]["move_acceptance_sum"]
+                metrics["moves_since_update"] = data["move_metadata"]["moves_since_update"]
             # Don't checkpoint if no metrics to checkpoint
             if metrics is None :
                 continue
-            
-            variance = metrics["multi_variance"]
-            multi_energy = metrics["multi_energy"]
-
-            metrics["accept_ratio"] = accept_ratio
 
             if is_pmapped:
                 metrics_cpu = dict(metrics)
+                # logging.info(f"metrics_cpu: {metrics_cpu}")
                 metrics_cpu["multi_energy"] = jax.device_get(metrics["multi_energy"])[None, ...]
                 metrics_cpu["multi_variance"] = jax.device_get(metrics["multi_variance"])[None, ...]
+                metrics_cpu["accept_ratio"] = jax.device_get(metrics["accept_ratio"])[None, ...]
+                metrics_cpu["std_move"] = jax.device_get(metrics["std_move"])[None, ...]
+                metrics_cpu["move_acceptance_sum"] = jax.device_get(metrics["move_acceptance_sum"])[None, ...]
+                metrics_cpu["moves_since_update"] = jax.device_get(metrics["moves_since_update"])[None, ...]
                 metrics_cpu = jax.tree_map(lambda x: x[0], metrics_cpu)
                 metrics_cpu = jax.device_put(metrics_cpu, jax.devices("cpu")[0])
             else:
