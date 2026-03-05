@@ -224,7 +224,7 @@ def get_clipped_energies_and_stats(
         variance_noclip=variance_noclip,  #()
         multi_variance = jnp.maximum(var_per_w_noclip, var_per_w),    #(w,)
         energy_noclip=utils.distribute.nanmean_all_local_devices(energy_per_w_noclip,axis=(0,1)),  #()
-        multi_energy = jnp.squeeze(energy_per_w_noclip, axis=-1)
+        multi_energy = jnp.squeeze(energy_per_w, axis=-1)
     )
 
     return energy_per_w, local_energies, energy_stats

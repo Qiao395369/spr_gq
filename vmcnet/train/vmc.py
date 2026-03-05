@@ -20,6 +20,7 @@ def vmc_loop(
     nchains: int,
     nepochs: int,
     walker_fn: WalkerFn[P, D],
+    get_grad_and_E: UpdateParamFn[P, D, S],
     update_param_fn: UpdateParamFn[P, D, S],
     key: PRNGKey,
     logdir: Optional[str] = None,
@@ -34,7 +35,9 @@ def vmc_loop(
     is_pmapped=True,
     start_epoch: int = 0,
     down_sample_num: int = None,
+    down_sample_mode: str = "sto",
     n_inner: int = 1,
+    acc_steps: int=1,
     is_eval: bool = False,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     """Main Variational Monte Carlo loop routine.
@@ -104,13 +107,13 @@ def vmc_loop(
         checkpoint_dir, nhistory_max, logdir, checkpoint_every
     )
     nans_detected = False
-    down_sample=(not is_eval and down_sample_num != 0)
+    down_sample = (not is_eval) and (down_sample_num is not None) and (down_sample_num != 0)
     if is_pmapped and down_sample:
         assert down_sample_num % jax.device_count() == 0, "down_sample_num must be divisible by number of devices"
         down_sample_num = down_sample_num//jax.device_count()
     
     if down_sample:
-        down_sample_data = make_down_sample_data_fn(is_pmapped)
+        down_sample_data = make_down_sample_data_fn(is_pmapped, down_sample_mode)
         reform_data_and_metrics = make_reform_data_and_metrics_fn(is_pmapped)
         create_dummy = init_dummy_metrics_for_downsample(is_pmapped)
         variance , multi_energy , accept_ratio= create_dummy(data["atoms_position"])
@@ -131,8 +134,7 @@ def vmc_loop(
             old_key = key.copy()
 
             if down_sample :
-                data, rest_data, idx, variance1, multi_energy1, accept_ratio1 = down_sample_data(data, down_sample_num, variance, multi_energy, accept_ratio)
-                # logging.info(f"{accept_ratio1.shape}")
+                key, data, rest_data, idx, variance1, multi_energy1, accept_ratio1 = down_sample_data(key, data, down_sample_num, variance, multi_energy, accept_ratio)
                 for _ in range(n_inner):
                     accept_ratio0, data, key = walker_fn(params, data, key)
                     params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
@@ -141,14 +143,33 @@ def vmc_loop(
                 multi_energy = metrics["multi_energy"]
                 accept_ratio = metrics["accept_ratio"]
             else:
-                accept_ratio, data, key = walker_fn(params, data, key)
-                params, data, optimizer_state, metrics ,key = update_param_fn(key, params, optimizer_state, data)
-                # logging.info(f"accept_ratio: {accept_ratio.shape}")
+                def zeros_like_tree(tree):
+                    return jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), tree)
+
+                metrics_template = {k: jnp.array(0.0, dtype=jnp.float32) for k in [
+                                        "energy","variance","variance_noclip","multi_variance","energy_noclip","multi_energy"
+                                    ]}
+                if is_pmapped:
+                    grad_acc = utils.distribute.replicate_all_local_devices(zeros_like_tree(optimizer_state["prev_grad"]))
+                    metrics_acc = utils.distribute.replicate_all_local_devices(zeros_like_tree(metrics_template))
+                else:
+                    grad_acc = zeros_like_tree(optimizer_state["prev_grad"])
+                    metrics_acc = zeros_like_tree(metrics_template)
+
+                for _ in range(acc_steps):
+                    accept_ratio, data, key = walker_fn(params, data, key)
+                    grad_acc, metrics_acc, optimizer_state, data, key = get_grad_and_E(key, params, optimizer_state, data, grad_acc, metrics_acc)
+                    
+                grad = jax.tree_util.tree_map(lambda acc: acc / acc_steps, grad_acc)
+                params, data, optimizer_state, key = update_param_fn(key, params, optimizer_state, data, grad)
+                
+                metrics = jax.tree_util.tree_map(lambda acc: acc / acc_steps, metrics_acc)
                 metrics["accept_ratio"] = accept_ratio
-                metrics["accept_ratio_mean"] = utils.distribute.pmap(lambda x: jnp.mean(x))(accept_ratio)
+                metrics["accept_ratio_mean"] = utils.distribute.pmap(lambda x: jnp.mean(x))(accept_ratio) if is_pmapped else jnp.mean(accept_ratio)
                 metrics["std_move"] = data["move_metadata"]["std_move"]
                 metrics["move_acceptance_sum"] = data["move_metadata"]["move_acceptance_sum"]
                 metrics["moves_since_update"] = data["move_metadata"]["moves_since_update"]
+        
             # Don't checkpoint if no metrics to checkpoint
             if metrics is None :
                 continue

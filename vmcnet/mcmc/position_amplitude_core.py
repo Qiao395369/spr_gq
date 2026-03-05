@@ -328,40 +328,60 @@ def shuffle_and_split_data(x, idx, down_sample_num):
 
 
 
-def make_down_sample_data_fn(apply_pmap):
-    def down_sample_data_pre(data, down_sample_num, variance, multi_energy, accept_ratio):
+def make_down_sample_data_fn(apply_pmap, mode):
+    def down_sample_data_pre_variance(key, data, down_sample_num, variance, multi_energy, accept_ratio):
 
-        # xp  = data["atoms_position"]
-        # xe  = data["walker_data"]["elec_position"]
-        # amp = data["walker_data"]["amplitude"]
-        # move_metadata = data["move_metadata"]
-        
         idx_sorted = jnp.argsort(-variance)
         idx0 = idx_sorted[:down_sample_num]      # 方差最大的那几个
         idx1 = idx_sorted[down_sample_num:]      # 剩余
 
         data0 = jax.tree_util.tree_map(lambda x: x[idx0],data)
         data1 = jax.tree_util.tree_map(lambda x: x[idx1],data)
-        # xp0, xp1 = xp[idx0], xp[idx1]
-        # xe0, xe1 = xe[idx0], xe[idx1]
-        # amp0, amp1 = amp[idx0], amp[idx1]
-        # move_metadata0, move_metadata1 = move_metadata[idx0], move_metadata[idx1]
+
         variance0, variance1 = variance[idx0], variance[idx1]
         multi_energy0, multi_energy1 = multi_energy[idx0], multi_energy[idx1]
         accept_ratio0, accept_ratio1 = accept_ratio[idx0], accept_ratio[idx1]
 
-        # data0 = make_position_amplitude_data(xp0, xe0, amp0, move_metadata0)
-        # data1 = make_position_amplitude_data(xp1, xe1, amp1, move_metadata1)
+        return key, data0, data1, idx_sorted, variance1, multi_energy1, accept_ratio1
 
-        return data0, data1, idx_sorted, variance1, multi_energy1, accept_ratio1
+    def down_sample_data_pre_sto(key, data, down_sample_num, variance, multi_energy, accept_ratio):
+
+        key, subkey = jax.random.split(key)
+        walker_num = data["walker_data"]["elec_position"].shape[0]
+        idx_sorted = jax.random.permutation(subkey, jnp.arange(walker_num))
+
+        idx0 = idx_sorted[:down_sample_num]
+        idx1 = idx_sorted[down_sample_num:]
+
+        data0 = jax.tree_util.tree_map(lambda x: x[idx0],data)
+        data1 = jax.tree_util.tree_map(lambda x: x[idx1],data)
+
+        variance0, variance1 = variance[idx0], variance[idx1]
+        multi_energy0, multi_energy1 = multi_energy[idx0], multi_energy[idx1]
+        accept_ratio0, accept_ratio1 = accept_ratio[idx0], accept_ratio[idx1]
+
+        return key, data0, data1, idx_sorted, variance1, multi_energy1, accept_ratio1
 
     if apply_pmap:
-        down_sample_data = jax.pmap(down_sample_data_pre,
-                                        axis_name=PMAP_AXIS_NAME,
-                                        in_axes=(0, None, 0, 0),
-                                        static_broadcasted_argnums=(1,),)
+        if mode == "var":
+            down_sample_data = jax.pmap(down_sample_data_pre_variance,
+                                            axis_name=PMAP_AXIS_NAME,
+                                            in_axes=(0, 0, None, 0, 0, 0),
+                                            static_broadcasted_argnums=(2,),)
+        elif mode == "sto":
+            down_sample_data = jax.pmap(down_sample_data_pre_sto,
+                                            axis_name=PMAP_AXIS_NAME,
+                                            in_axes=(0, 0, None, 0, 0, 0),
+                                            static_broadcasted_argnums=(2,),)
+        else:
+            raise ValueError("mode must be 'var' or 'sto'")
     else:
-        down_sample_data = jax.jit(down_sample_data_pre,static_argnums=(1,),)
+        if mode == "var":
+            down_sample_data = jax.jit(down_sample_data_pre_variance,static_argnums=(2,),)
+        elif mode == "sto":
+            down_sample_data = jax.jit(down_sample_data_pre_sto,static_argnums=(2,),)
+        else:
+            raise ValueError("mode must be 'var' or 'sto'")
 
     return down_sample_data
 

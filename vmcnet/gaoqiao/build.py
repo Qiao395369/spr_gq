@@ -60,7 +60,7 @@ def build_network(
 		)  # type: networks.FeatureLayer
 	
 	if envelope_type=="ds_hz":
-			envelope = envelopes.make_ds_hz_envelope(**make_envelope_kwargs)  # type: envelopes.Envelope
+		envelope = envelopes.make_ds_hz_envelope(**make_envelope_kwargs)  # type: envelopes.Envelope
 	elif envelope_type=="iso":
 		envelope = envelopes.make_isotropic_envelope()
 	else :

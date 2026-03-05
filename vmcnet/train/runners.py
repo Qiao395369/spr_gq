@@ -777,7 +777,8 @@ def _setup_vmc(
             nan_safe=config.vmc.nan_safe,
         )
     data_down_sample=None
-    (   update_param_fn,
+    (   get_grad_and_E,
+        update_param_fn,
         optimizer_state,
         key,
     ) = updates.parse_optimizer_config.initialize_optimizer(
@@ -803,6 +804,7 @@ def _setup_vmc(
         energy_and_statistics_fn,
         burning_step,
         walker_fn,
+        get_grad_and_E,
         update_param_fn,
         get_amplitude_fn,
         params,
@@ -837,7 +839,7 @@ def _setup_eval(
         ee_softening,
         log_psi_apply,
     )
-    eval_update_param_fn = updates.update_param_fns.construct_eval_update_param_fn(
+    eval_get_grad_and_E, eval_update_param_fn = updates.update_param_fns.construct_eval_update_param_fn(
         local_energy_fn,
         nan_safe=eval_config.nan_safe,
         apply_pmap=apply_pmap,
@@ -845,7 +847,7 @@ def _setup_eval(
     eval_burning_step, eval_walker_fn = _get_mcmc_fns(
         eval_config, log_psi_apply_vmap, apply_pmap=apply_pmap
     )
-    return eval_update_param_fn, eval_burning_step, eval_walker_fn
+    return eval_get_grad_and_E, eval_update_param_fn, eval_burning_step, eval_walker_fn
 
 
 def _make_new_data_for_eval(
@@ -945,6 +947,7 @@ def _burn_and_run_vmc(
     burning_step: mcmc.metropolis.BurningStep[P, D],
     nburn: int,
     walker_fn: mcmc.metropolis.WalkerFn[P, D],
+    get_grad_and_E,
     update_param_fn: updates.update_param_fns.UpdateParamFn[P, D, S],
     get_amplitude_fn: GetAmplitudeFromData[D],
     key: PRNGKey,
@@ -954,7 +957,6 @@ def _burn_and_run_vmc(
     start_epoch: int = 0,
     end_epochs: int = 0,
     down_sample_num: int =0,
-    n_inner: int =0,
 ) -> Tuple[P, S, D, PRNGKey, bool]:
     if not is_eval:
         run_config = config.vmc
@@ -965,6 +967,8 @@ def _burn_and_run_vmc(
         nhistory_max = run_config.nhistory_max
         check_for_nans = run_config.check_for_nans
         n_inner = run_config.n_inner
+        acc_steps = run_config.acc_steps
+        down_sample_mode = run_config.down_sample_mode
     else:
         run_config = config.eval
         checkpoint_every = None
@@ -975,6 +979,8 @@ def _burn_and_run_vmc(
         check_for_nans = False
         down_sample_num = 0
         n_inner = 0
+        acc_steps = 1
+        down_sample_mode = ""
 
     if not skip_burn:
         data, key = mcmc.metropolis.burn_data(burning_step, nburn, params, data, key, is_pmapped)
@@ -986,6 +992,7 @@ def _burn_and_run_vmc(
         nchains,
         end_epochs,
         walker_fn,
+        get_grad_and_E,
         update_param_fn,
         key,
         logdir=logdir,
@@ -1000,7 +1007,9 @@ def _burn_and_run_vmc(
         is_pmapped=is_pmapped,
         start_epoch=start_epoch,
         down_sample_num=down_sample_num,
+        down_sample_mode=down_sample_mode,
         n_inner=n_inner,
+        acc_steps=acc_steps,
         is_eval=is_eval,
     )
 
@@ -1063,6 +1072,7 @@ def run_molecule() -> None:
         energy_and_statistics_fn,
         burning_step,
         walker_fn,
+        get_grad_and_E,
         update_param_fn,
         get_amplitude_fn,
         params,
@@ -1239,6 +1249,7 @@ def run_molecule() -> None:
         burning_step=burning_step,
         nburn=nburn,
         walker_fn=walker_fn,
+        get_grad_and_E=get_grad_and_E,
         update_param_fn=update_param_fn,
         get_amplitude_fn=get_amplitude_fn,
         key=key,
@@ -1248,7 +1259,6 @@ def run_molecule() -> None:
         start_epoch=start_epoch,
         end_epochs=end_epochs,
         down_sample_num=down_sample_num,
-        n_inner=n_inner,
     )
 
     if nans_detected:
@@ -1269,7 +1279,7 @@ def run_molecule() -> None:
         repeat_single_molecule_walker=config.eval.repeat_single_molecule_walker,
         )
 
-    eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
+    eval_get_grad_and_E, eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
         config,
         ion_pos,
         ion_charges,
@@ -1305,6 +1315,7 @@ def run_molecule() -> None:
         burning_step=eval_burning_step,
         nburn=config.eval.nburn,
         walker_fn=eval_walker_fn,
+        get_grad_and_E=eval_get_grad_and_E,
         update_param_fn=eval_update_param_fn,
         get_amplitude_fn=get_amplitude_fn,
         key=key,
@@ -1419,10 +1430,10 @@ def do_inference()-> None:
 def vmc_statistics() -> None:
     """Calculate statistics from a VMC evaluation run and write them to disc."""
 
-    local_energies_file_path="../local_energy/multi_energy40244.txt"
-    output_file_path="../local_energy/statistic40244"
-    nchains=256
-    walkers=24
+    local_energies_file_path="../local_energy/multi_energyCH4.txt"
+    output_file_path="../local_energy/statisticCH4"
+    nchains=512
+    walkers=1
     repeat_single_mol=False
     output_dir, output_filename = os.path.split(os.path.abspath(output_file_path))
     _compute_and_save_energy_statistics(

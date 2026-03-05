@@ -52,7 +52,8 @@ class Optimizer(NamedTuple):
     """Optimizer interface with init and step function."""
 
     init: OptInitFunction
-    step: OptStepFunction
+    grad_and_E: OptInitFunction
+    update: OptStepFunction
 
 def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statistics_fn) -> Optimizer:
     """Wrap the spring optimizer to make it compatible with the optimizer interface."""
@@ -67,6 +68,50 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
     def raveled_log_psi_grad(params: P,ion_pos: Array, positions: Array) -> Array:
         log_grads = jax.grad(log_psi_apply)(params,ion_pos, positions)
         return jax.flatten_util.ravel_pytree(log_grads)[0]
+
+    def grad_and_E(
+        key,
+        params: P,
+        opt_state: OptimizerState,
+        data:D ,
+        grad_acc,
+        metrics_acc,
+    ) -> tuple[P,D, OptimizerState, Dict]:
+        position = data["walker_data"]["elec_position"]
+        atoms_position = data["atoms_position"]
+        log_psi_grads = raveled_log_psi_grad(params, atoms_position, position)
+        energy_per_w, E_loc, stats = energy_and_statistics_fn(params, atoms_position, position)
+        grad, _, E_mean = spring_opt.get_grad_2(log_psi_grads, E_loc, energy_per_w, opt_state)
+        metrics = {
+                    "energy": E_mean, "variance": stats["variance"],
+                    "variance_noclip": stats["variance_noclip"],
+                    "multi_variance": stats["multi_variance"],
+                    "energy_noclip": stats["energy_noclip"],
+                    "multi_energy": stats["multi_energy"],}
+        grad_acc = jax.tree_util.tree_map(lambda acc, i: acc + i, grad_acc, grad)
+        metrics_acc = jax.tree_util.tree_map(lambda acc, i: acc + i, metrics_acc, metrics)
+        return grad_acc, metrics_acc, opt_state, data, key
+
+
+    def update(
+        key,
+        params: P,
+        opt_state: OptimizerState,
+        data:D ,
+        grad,
+    ) -> tuple[P,D, OptimizerState, Dict]:
+
+        updates, opt_state = spring_opt.update(grad, opt_state)
+        param_norm, update_norm, grad_norm = map(tree_norm, [params, updates, grad])
+        params = apply_updates(params, updates)
+        data = update_data_fn(data, params)
+
+        # metrics = {
+        #             "opt_param_norm": param_norm,
+        #             "opt_grad_norm": grad_norm,
+        #             "opt_update_norm": update_norm,
+        #     }
+        return params, data, opt_state, key
 
     def step(
         key,
@@ -83,7 +128,6 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
         param_norm, update_norm, grad_norm = map(tree_norm, [params, updates, gradient])
         params = apply_updates(params, updates)
         data = update_data_fn(data, params)
-
         metrics = {
                     "energy": E_mean, "variance": stats["variance"],
                     "variance_noclip": stats["variance_noclip"],
@@ -97,7 +141,7 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
             }
         return params,data, opt_state, metrics, key
 
-    return Optimizer(init=init, step=step)
+    return Optimizer(init=init, grad_and_E=grad_and_E, update=update)
 
 class Spring:
 
@@ -218,32 +262,32 @@ class Spring:
     
 
     def update(
-        self, grad_psi, E_loc, energy_per_w, opt_state: OptimizerState
+        self, grad, opt_state: OptimizerState
     ) -> tuple[WavefunctionParams, OptimizerState]:
-        if self.spr_type=="1":
-            get_grad = self.get_grad_1
-        elif self.spr_type=="2":
-            get_grad = self.get_grad_2
-        elif self.spr_type=="3":
-            def get_grad(
-                log_psi_grads,
-                E_loc: P,
-                E_mean_per_mol,
-                opt_state,
-            ) -> Tuple[Array, P]:
-                prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(opt_state["prev_grad"])
-                grad, E_mean = jax.vmap(self.get_grad_3,in_axes=(None, 0, 0, 0, None))(prev_grad, log_psi_grads, E_loc, E_mean_per_mol, opt_state)
-                grad = jnp.mean(grad, axis=0)
-                E_mean = jnp.mean(E_mean, axis=0)
-                return unravel_fn(grad), None, E_mean
-        else:
-            raise ValueError("Invalid SPRING type")
+        # if self.spr_type=="1":
+        #     get_grad = self.get_grad_1
+        # elif self.spr_type=="2":
+        #     get_grad = self.get_grad_2
+        # elif self.spr_type=="3":
+        #     def get_grad(
+        #         log_psi_grads,
+        #         E_loc: P,
+        #         E_mean_per_mol,
+        #         opt_state,
+        #     ) -> Tuple[Array, P]:
+        #         prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(opt_state["prev_grad"])
+        #         grad, E_mean = jax.vmap(self.get_grad_3,in_axes=(None, 0, 0, 0, None))(prev_grad, log_psi_grads, E_loc, E_mean_per_mol, opt_state)
+        #         grad = jnp.mean(grad, axis=0)
+        #         E_mean = jnp.mean(E_mean, axis=0)
+        #         return unravel_fn(grad), None, E_mean
+        # else:
+        #     raise ValueError("Invalid SPRING type")
         # logging.info("grad_psi shape: {}".format(grad_psi.shape))
-        grad, _, E_mean = get_grad(grad_psi, E_loc, energy_per_w, opt_state)
+        # grad, _, E_mean = get_grad(grad_psi, E_loc, energy_per_w, opt_state)
         update = jax.tree_util.tree_map(lambda x: -self.lr_schedule(opt_state["step"]) * x, grad)
         update = constrain_norm(update, self.norm_constraint)
 
-        return update, E_mean, {
+        return update, {
             "prev_grad": grad,
             "step": opt_state["step"] + 1,  # How is the step handled with other optimizers?
         }

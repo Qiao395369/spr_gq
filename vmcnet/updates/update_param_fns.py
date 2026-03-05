@@ -159,7 +159,7 @@ def construct_eval_update_param_fn(
         updating the parameters
     """
 
-    def eval_update_param_fn(key, params, optimizer_state, data):
+    def eval_get_grad_and_E(key, params, optimizer_state, data, grad_acc, metrics_acc):
         positions = data["walker_data"]["elec_position"]
         atoms_positions = data["atoms_position"]
 
@@ -175,10 +175,15 @@ def construct_eval_update_param_fn(
                    "multi_variance": var_per_w,  #(W,)
                    "multi_energy": local_energies,  #(W,B)
                    }
-        return params, data, optimizer_state, metrics, key
-
+        
+        return grad_acc, metrics, optimizer_state, data, key
+    
+    def eval_update_param_fn(key, params, optimizer_state, data, grad):
+        return params, data, optimizer_state, key
+    
     # traced_fn = make_traced_fn_with_single_metrics(eval_update_param_fn, apply_pmap, {"energy", "variance"})
+
     if not apply_pmap:
-        return jax.jit(eval_update_param_fn)
+        return jax.jit(eval_get_grad_and_E), jax.jit(eval_update_param_fn)
     else:
-        return utils.distribute.pmap(eval_update_param_fn)
+        return utils.distribute.pmap(eval_get_grad_and_E), utils.distribute.pmap(eval_update_param_fn)

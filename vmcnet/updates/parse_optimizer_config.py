@@ -229,13 +229,15 @@ def initialize_optimizer(
         # init_fn = opt.init
         # update_param_fn = opt.step
         if apply_pmap:
-            update_param_fn = utils.distribute.pmap(opt.step)
+            get_grad_and_E = utils.distribute.pmap(opt.grad_and_E)
+            update_param_fn = utils.distribute.pmap(opt.update)
             init_fn = utils.distribute.pmap(opt.init)
         else:
-            update_param_fn = jax.jit(opt.step)
+            get_grad_and_E = jax.jit(opt.grad_and_E)
+            update_param_fn = jax.jit(opt.update)
             init_fn = jax.jit(opt.init)
         optimizer_state = init_fn(params)
-        return update_param_fn, optimizer_state, key
+        return get_grad_and_E, update_param_fn, optimizer_state, key
     
     elif vmc_config.optimizer_type == "spring_old":
         (
