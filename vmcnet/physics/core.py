@@ -117,11 +117,10 @@ def initialize_molecular_pos(
         for i in range(2):
             for j in range(natoms):
                 position = jnp.asarray(ion_pos[k][j])
-                electron_positions.append(jnp.tile(position, single_spins[j][i]))
-        electron_positions = jnp.concatenate(electron_positions)
+                electron_positions.append(jnp.repeat(position[None, :], single_spins[j][i], axis=0))
         # print(electron_positions)
         # print(electron_positions.shape)
-        ppp.append(electron_positions.reshape((-1,3)))
+        ppp.append(jnp.concatenate(electron_positions,axis=0))
     ppp=jnp.stack(ppp,axis=0)
     ppp=ppp[:,None,...]
     key, subkey = jax.random.split(key)
@@ -224,7 +223,8 @@ def get_clipped_energies_and_stats(
         variance_noclip=variance_noclip,  #()
         multi_variance = jnp.maximum(var_per_w_noclip, var_per_w),    #(w,)
         energy_noclip=utils.distribute.nanmean_all_local_devices(energy_per_w_noclip,axis=(0,1)),  #()
-        multi_energy = jnp.squeeze(energy_per_w, axis=-1)
+        multi_energy = jnp.squeeze(energy_per_w, axis=-1),
+        multi_energy_noclip = jnp.squeeze(energy_per_w_noclip, axis=-1)
     )
 
     return energy_per_w, local_energies, energy_stats

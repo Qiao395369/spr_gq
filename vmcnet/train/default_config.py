@@ -399,7 +399,8 @@ def get_default_vmc_config() -> Dict:
                 "damping": 0.001,
                 "constrain_norm": True,
                 "norm_constraint": 0.001,
-                "type": "1",
+                "type": "2",
+                "det_regularization_scale" :0,  #0.001
             },
             "spring_old": {
                 "schedule_type": "inverse_time",  # constant or inverse_time
@@ -430,14 +431,18 @@ def get_default_vmc_config() -> Dict:
 def get_default_pretrain_config() -> Dict:
     """Get a default VMC training configuration."""
     pretrain_config = {
-        "method": "hf_one", #choices=["hf_one", "hf_all"]
+        # "method": "hf_one", #choices=["hf_one", "hf_all"]
         "optim": "adam", #choices=["adam", "lamb"]
-        "sample_type": "half_wfn_and_hf", #choices=["half_wfn_and_hf", "hf", "wfn"]
-        "skip_burn": False,
+        # "sample_type": "half_wfn_and_hf", #choices=["half_wfn_and_hf", "hf", "wfn"]
+        # "skip_burn": False,
         "nburn": 5000,
         "iterations": 1000,
         "nsteps_per_param_update": 10,
         "nmoves_per_width_update": 100,
+        "loss_mode":'fulldet',  #choices=['fulldet', 'blockdiag', 'l1', 'l2]
+        "eps":1e-4,
+        "offblock_lambda":0.0,
+        "hf_coeff":1,
     }
     return pretrain_config
 

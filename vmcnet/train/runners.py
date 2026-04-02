@@ -31,7 +31,7 @@ import vmcnet.updates as updates
 import vmcnet.utils as utils
 import kfac_jax
 import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
-import vmcnet.train.pretrain as pretrain
+import vmcnet.train.pretrain_demo as pretrain
 from vmcnet.utils.typing import (
     Array,
     P,
@@ -76,13 +76,12 @@ def create_hf_data(ion_pos, symbol, nspins):
             nspins = nspins,
             restricted = False,
             basis = "ccpvdz",
-            states = 0,
         )
         hartree_focks.append(hartree_fock)
 
     hf_novmaps = []
     for hartree_fock in hartree_focks:
-        hf_novmap = train.pretrain.get_hf_wfn(hartree_fock, nspins)
+        hf_novmap = pretrain.make_HF_ansatz(hartree_fock)
         hf_novmaps.append(hf_novmap)
     return hartree_focks, hf_novmaps
 
@@ -475,6 +474,7 @@ def _get_gaoqiao_model(
         det = det_fn(params,xe,xp) #xe(ne,3),xp(na,3)
         return det
     
+    det_fn_vmap = jax.vmap(jax.vmap(det_fn_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
     def orb_fn_novmap(params,xp,xe):
         orb = orb_fn(params,xe,xp)[0] #xe(ne,3),xp(na,3)
         return orb
@@ -491,7 +491,7 @@ def _get_gaoqiao_model(
     # print("log_psi.shape:", log_psi.shape)
     # sys.exit()
 
-    return log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply_novmap, det_fn_novmap, orb_fn_vmap, params, key
+    return log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply_novmap, det_fn_novmap, det_fn_vmap, orb_fn_vmap, params, key
 
 
 # TODO: figure out how to merge this and other distributing logic with the current
@@ -706,7 +706,7 @@ def _setup_vmc(
 
     # Make the model
     if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer","lapnet"]:
-        log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply, det_fn_novmap, orb_fn_vmap, params, key =  _get_gaoqiao_model(
+        log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply, det_fn_novmap,det_fn_vmap,orb_fn_vmap, params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
@@ -786,6 +786,7 @@ def _setup_vmc(
         energy_and_statistics_fn,
         energy_data_val_and_grad,
         det_fn_novmap,
+        det_fn_vmap,
         config.vmc,
         params,
         data_down_sample,   #only needed in kfac
@@ -807,6 +808,7 @@ def _setup_vmc(
         get_grad_and_E,
         update_param_fn,
         get_amplitude_fn,
+        update_data_fn,
         params,
         data,
         optimizer_state,
@@ -1075,6 +1077,7 @@ def run_molecule() -> None:
         get_grad_and_E,
         update_param_fn,
         get_amplitude_fn,
+        update_data_fn,
         params,
         data,
         optimizer_state,
@@ -1167,68 +1170,51 @@ def run_molecule() -> None:
             n_inner = reload_config.n_inner
 
     logging.info("Saving to %s", logdir)
-
     config_pretrain = config.pretrain
-    if config_pretrain.method == "hf_one" and config_pretrain.iterations > 0 and start_epoch == 0 :
-        hartree_fock, hf_novmap = create_hf_data_single(ion_pos, config.problem.atoms_symbol, nspins)
-
-        if config_pretrain.sample_type == "half_wfn_and_hf":
-            def hf_and_net_sum(params,xp,xe):
-                result1 = jnp.exp(hf_novmap(xe))
-                result2 = jnp.exp(log_psi_apply_novmap(params,xp,xe))
-                result = jnp.log((result1+result2)/2)
-                return result
-            sample_pretrain = jax.vmap(hf_and_net_sum, in_axes=(None, None, 0))
-            pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
-        elif config_pretrain.sample_type == "hf":
-            sample_pretrain = jax.vmap(hf_novmap, in_axes=(None, None, 0))
-            pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
-        elif config_pretrain.sample_type == "wfn":
-            pretrain_burn_step, pretrain_walker_fn = burning_step, walker_fn
-        else:
-            raise ValueError("unknown pretrain sample_type: %s"%(config_pretrain.sample_type))
-
-        # local_energy_fn_hf = _assemble_mol_local_energy_fn(ion_charges,config.problem.ei_softening,config.problem.ee_softening,hf_novmap,)
-        # clipping_fn = _get_clipping_fn(config.vmc)
-        # energy_and_statistics_fn_hf = physics.core.create_energy_and_statistics_fn(local_energy_fn_hf, clipping_fn, config.vmc.nan_safe)
-
-        if not config_pretrain.skip_burn:
-            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key, apply_pmap)
-
-        params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
-            params=params,
-            data=data,
-            net_orbitals_vmap=orb_fn_vmap,
-            energy_and_statistics_fn=energy_and_statistics_fn,
-            pretrain_walker_fn=pretrain_walker_fn,
-            walker_fn=walker_fn,
-            burning_step=burning_step,
-            key=key,
-            nspins=nspins,
-            scf_approx=hartree_fock,
-            iterations=config_pretrain.iterations,
-            optim=config_pretrain.optim,
-            apply_pmap=apply_pmap,
-            )
-    elif config_pretrain.method == "hf_all" and config_pretrain.iterations > 0 and start_epoch == 0:
+    if config_pretrain.iterations > 0 and start_epoch == 0:
         hartree_fock, hf_novmaps = create_hf_data(ion_pos, config.problem.atoms_symbol, nspins)
         def hf_novmap(params,xp,xe):
-            result1 = [jnp.exp(hf_novmap(params,xp,xe)) for hf_novmap in hf_novmaps]
+            del params, xp
+            result1 = [jnp.exp(2 * hf_novmap(xe)) for hf_novmap in hf_novmaps]
             result1_jnp = jnp.array(result1)
-            result = jnp.log(jnp.mean(result1_jnp))
+            result = 1/2 * jnp.log(jnp.mean(result1_jnp))
             return result
-        sample_pretrain = jax.vmap(jax.vmap(hf_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
+        coeff = config_pretrain.hf_coeff
+        if coeff == 0 :
+            hf_psi_mix = log_psi_apply_novmap
+            logging.info("use psi_net to sample.")
+        elif coeff == 1 :
+            hf_psi_mix = hf_novmap
+            logging.info("use hf_net to sample.")
+        else:
+            logging.info("use mix to sample.")
+            def hf_psi_mix(params,xp,xe):
+                hf = hf_novmap(params,xp,xe)
+                psi = log_psi_apply_novmap(params,xp,xe)
+                # out = 1/2 * jnp.log( coeff * jnp.exp(2 * hf) + (1 - coeff) * jnp.exp(2 * psi) )
+                out = 0.5 * jax.scipy.special.logsumexp(
+                    jnp.array([jnp.log(coeff) + 2.0 * hf , jnp.log(1.0 - coeff) + 2.0 * psi,])
+                )
+                return out
+
+        sample_pretrain = jax.vmap(hf_psi_mix, in_axes=(None, None, 0))
+        # aa=sample_pretrain(params,None,data["walker_data"]["elec_position"][0])
+        # logging.info(f"aa:{aa}")
         pretrain_burn_step, pretrain_walker_fn = _get_mcmc_fns(config_pretrain, sample_pretrain, apply_pmap=apply_pmap)
-
-        if not config_pretrain.skip_burn:
-            data, key = mcmc.metropolis.burn_data(pretrain_burn_step, config_pretrain.nburn, params, data, key)
-
-        params, data, key = pretrain.pretrain_hartree_fock_gaoqiao_2(
+        # logging.info(f'pos:{data["walker_data"]["elec_position"].shape}')
+        # logging.info(f'xa:{data["atoms_position"].shape}')
+            
+        
+        
+        params, data, key = pretrain.pretrain_hartree_fock(
             params=params,
             data=data,
             net_orbitals_vmap=orb_fn_vmap,
             energy_and_statistics_fn=energy_and_statistics_fn,
             pretrain_walker_fn=pretrain_walker_fn,
+            pretrain_burn_step=pretrain_burn_step,
+            pretrain_nburn=config_pretrain.nburn,
+            update_data_fn=update_data_fn,
             walker_fn=walker_fn,
             burning_step=burning_step,
             key=key,
@@ -1237,6 +1223,9 @@ def run_molecule() -> None:
             iterations=config_pretrain.iterations,
             optim=config_pretrain.optim,
             apply_pmap=apply_pmap,
+            loss_mode=config_pretrain.loss_mode,
+            eps=config_pretrain.eps,
+            offblock_lambda=config_pretrain.offblock_lambda,
             )
 
 

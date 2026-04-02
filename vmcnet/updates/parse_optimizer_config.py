@@ -87,6 +87,7 @@ def initialize_optimizer(
     energy_and_statistics_fn,
     energy_data_val_and_grad,
     det_fn_novmap,
+    det_fn_vmap,
     vmc_config: ConfigDict,
     params: P,
     data: D,
@@ -225,7 +226,7 @@ def initialize_optimizer(
         opt_kwargs["learning_rate_schedule"] = learning_rate_schedule
         opt_kwargs["damping_schedule"] = damping_rate_schedule
         opt_kwargs["repeat_single_mol"] = vmc_config.repeat_single_mol
-        opt = spring_wrapper(Spring(**opt_kwargs), log_psi_apply_novmap, update_data_fn, energy_and_statistics_fn)
+        opt = spring_wrapper(Spring(**opt_kwargs), log_psi_apply_novmap, update_data_fn, energy_and_statistics_fn, det_fn_vmap, optimizer_config.det_regularization_scale)
         # init_fn = opt.init
         # update_param_fn = opt.step
         if apply_pmap:

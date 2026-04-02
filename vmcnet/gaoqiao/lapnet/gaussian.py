@@ -105,17 +105,38 @@ class GTOBasis(hk.Module):
 from scipy.special import factorial2
 
 
+def safe_factorial2(n):
+    n = np.asarray(n)
+    out = np.ones_like(n, dtype=np.float64)
+    mask = n > 0
+    out[mask] = factorial2(n[mask])
+    return out
 class GTOShell(hk.Module):
-
     def __init__(self, l, coeffs, zetas, name=None):
         super(GTOShell, self).__init__(name=name)
         self.ls = np.asarray(get_cartesian_angulars(l))
-        anorms = 1 / jnp.sqrt(factorial2(2 * self.ls - 1).prod(-1))
+        df_args = 2 * self.ls - 1
+        df_vals = safe_factorial2(df_args)
+        anorms = 1.0 / np.sqrt(df_vals.prod(-1))
         self.anorms = jnp.asarray(anorms)
         rnorms = (2 * zetas / jnp.pi) ** (3 / 4) * (4 * zetas) ** (l / 2)
         coeffs = rnorms * coeffs
         self.coeffs = coeffs
         self.zetas = zetas
+
+# class GTOShell(hk.Module):
+
+#     def __init__(self, l, coeffs, zetas, name=None):
+#         super(GTOShell, self).__init__(name=name)
+#         self.ls = np.asarray(get_cartesian_angulars(l))
+#         logging.info(f"self.ls:{self.ls}")
+#         anorms = 1 / jnp.sqrt(factorial2(2 * self.ls - 1).prod(-1))
+#         logging.info(f"anorms:{anorms}")
+#         self.anorms = jnp.asarray(anorms)
+#         rnorms = (2 * zetas / jnp.pi) ** (3 / 4) * (4 * zetas) ** (l / 2)
+#         coeffs = rnorms * coeffs
+#         self.coeffs = coeffs
+#         self.zetas = zetas
 
     def __len__(self):
         return len(self.ls)
@@ -234,6 +255,7 @@ class JAX_SCF(hk.Module):
     gto_basis = GTOBasis.from_pyscf(mol=mol, name='GTO_Basis')
 
     self.gto_basis = jax.jit(jax.vmap(gto_basis, in_axes=0, out_axes=0))
+    # self.gto_basis = jax.vmap(gto_basis, in_axes=0, out_axes=0)
     self.gto_basis_grads = jax.jit(jax.vmap(gto_basis.eval_grads, in_axes=0, out_axes=0))
     self.gto_basis_laps = jax.jit(jax.vmap(gto_basis.eval_laps, in_axes=0, out_axes=0))
     self.init_scf()

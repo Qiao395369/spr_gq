@@ -127,7 +127,7 @@ class Scf:
       charge = nuclear_charge - sum(self.nelectrons)
       self._mol = pyscf.gto.Mole(
           atom=[[atom.symbol, atom.coords] for atom in self.molecule],
-          unit='bohr', verbose=4)
+          unit='bohr', verbose=3)
       self._mol.basis = self.basis
       self._mol.spin = self._spin
       self._mol.charge = charge
@@ -148,6 +148,7 @@ class Scf:
       # 1e solvers (e.g. uhf.HF1e) do not take any keyword arguments.
       self.mean_field.kernel()
     self.jax_scf = gaussian.make_jax_scf(self.mean_field, self._mol, method_name='eval_mats')
+    self.jax_scf_= lambda x : self.jax_scf.apply(None, x)
     self.vmap_jax_scf = jax.vmap(lambda x : self.jax_scf.apply(None, x), in_axes=0)
 
     return self.mean_field

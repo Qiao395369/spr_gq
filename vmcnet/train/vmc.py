@@ -118,6 +118,8 @@ def vmc_loop(
         create_dummy = init_dummy_metrics_for_downsample(is_pmapped)
         variance , multi_energy , accept_ratio= create_dummy(data["atoms_position"])
         logging.info("Downsample data with down_sample_num = %d, n_inner = %d "%(down_sample_num, n_inner))
+    else:
+        logging.info("No downsample, acc_step = %d"%acc_steps)
 
     with CheckpointWriter(is_pmapped) as checkpoint_writer, MetricsWriter() as metrics_writer:
         time_mark=time.time()
@@ -147,7 +149,7 @@ def vmc_loop(
                     return jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), tree)
 
                 metrics_template = {k: jnp.array(0.0, dtype=jnp.float32) for k in [
-                                        "energy","variance","variance_noclip","multi_variance","energy_noclip","multi_energy"
+                                        "energy","variance","variance_noclip","multi_variance","energy_noclip","multi_energy","multi_energy_noclip","det_loss"
                                     ]}
                 if is_pmapped:
                     grad_acc = utils.distribute.replicate_all_local_devices(zeros_like_tree(optimizer_state["prev_grad"]))

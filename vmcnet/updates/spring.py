@@ -1,6 +1,6 @@
 """SPRING implementation, see https://doi.org/10.1016/j.jcp.2024.113351."""
 
-from typing import Callable, Dict, Tuple, Any, TypeAlias, Callable, NamedTuple, Protocol
+from typing import Callable, Dict, Tuple, Any, TypeAlias, Callable, NamedTuple, Protocol, Optional
 import jax
 import jax.flatten_util
 import jax.numpy as jnp
@@ -55,8 +55,15 @@ class Optimizer(NamedTuple):
     grad_and_E: OptInitFunction
     update: OptStepFunction
 
-def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statistics_fn) -> Optimizer:
-    """Wrap the spring optimizer to make it compatible with the optimizer interface."""
+
+def spring_wrapper(
+    spring_opt,
+    log_psi_apply,
+    update_data_fn,
+    energy_and_statistics_fn,
+    det_fn_vmap: Optional[Callable[[P, Array, Array], chex.Numeric]] = None,
+    det_regularization_scale: float = 0.001,
+) -> Optimizer:
 
     def init(
         params: P,
@@ -65,44 +72,70 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
 
     @partial(jax.vmap, in_axes=(None, 0, 0))
     @partial(jax.vmap, in_axes=(None, None, 0))
-    def raveled_log_psi_grad(params: P,ion_pos: Array, positions: Array) -> Array:
-        log_grads = jax.grad(log_psi_apply)(params,ion_pos, positions)
+    def raveled_log_psi_grad(params: P, ion_pos: Array, positions: Array) -> Array:
+        log_grads = jax.grad(log_psi_apply)(params, ion_pos, positions)
         return jax.flatten_util.ravel_pytree(log_grads)[0]
+    
+    if det_regularization_scale ==0:
+        det_regularization_fn=None
+        def _det_reg_grad_and_value(params: P, atoms_position: Array, position: Array):
+            zero_grad = jax.tree_util.tree_map(jnp.zeros_like, params)
+            zero_loss = jnp.asarray(0.0)
+            return zero_grad, zero_loss
+        logging.info("det_regularization_fn = None")
+    else:
+        def det_regularization_fn(params, atoms, positions):
+            # log_pi: (W, batch, ndet)
+            log_pi = det_fn_vmap(params,atoms,positions,)
+            # logging.info(f"log_pi:{log_pi}")
+            # loss = -E[ sum_d log pi_d ]
+            loss = -jnp.mean(jnp.sum(log_pi, axis=-1))
+            return loss
+        def _det_reg_grad_and_value(params: P, atoms_position: Array, position: Array):
+            det_loss, det_grad = jax.value_and_grad(det_regularization_fn)(params, atoms_position, position)
+            return det_grad, det_loss
+        logging.info(" use det regularization")
 
     def grad_and_E(
         key,
         params: P,
         opt_state: OptimizerState,
-        data:D ,
+        data: D,
         grad_acc,
         metrics_acc,
-    ) -> tuple[P,D, OptimizerState, Dict]:
+    ) -> tuple[P, D, OptimizerState, Dict]:
         position = data["walker_data"]["elec_position"]
         atoms_position = data["atoms_position"]
         log_psi_grads = raveled_log_psi_grad(params, atoms_position, position)
         energy_per_w, E_loc, stats = energy_and_statistics_fn(params, atoms_position, position)
         grad, _, E_mean = spring_opt.get_grad_2(log_psi_grads, E_loc, energy_per_w, opt_state)
+
+        det_grad, det_loss = _det_reg_grad_and_value(params, atoms_position, position)
+        grad = jax.tree_util.tree_map(lambda g, dg: g + dg * det_regularization_scale , grad, det_grad)
+
         metrics = {
-                    "energy": E_mean, "variance": stats["variance"],
-                    "variance_noclip": stats["variance_noclip"],
-                    "multi_variance": stats["multi_variance"],
-                    "energy_noclip": stats["energy_noclip"],
-                    "multi_energy": stats["multi_energy"],}
+            "energy": E_mean,
+            "variance": stats["variance"],
+            "variance_noclip": stats["variance_noclip"],
+            "multi_variance": stats["multi_variance"],
+            "energy_noclip": stats["energy_noclip"],
+            "multi_energy": stats["multi_energy"],
+            "multi_energy_noclip": stats["multi_energy_noclip"],
+            "det_loss": det_loss,
+        }
         grad_acc = jax.tree_util.tree_map(lambda acc, i: acc + i, grad_acc, grad)
         metrics_acc = jax.tree_util.tree_map(lambda acc, i: acc + i, metrics_acc, metrics)
         return grad_acc, metrics_acc, opt_state, data, key
-
 
     def update(
         key,
         params: P,
         opt_state: OptimizerState,
-        data:D ,
+        data: D,
         grad,
-    ) -> tuple[P,D, OptimizerState, Dict]:
-
+    ) -> tuple[P, D, OptimizerState, Dict]:
         updates, opt_state = spring_opt.update(grad, opt_state)
-        param_norm, update_norm, grad_norm = map(tree_norm, [params, updates, grad])
+        # param_norm, update_norm, grad_norm = map(tree_norm, [params, updates, grad])
         params = apply_updates(params, updates)
         data = update_data_fn(data, params)
 
@@ -117,8 +150,8 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
         key,
         params: P,
         opt_state: OptimizerState,
-        data:D ,
-    ) -> tuple[P,D, OptimizerState, Dict]:
+        data: D,
+    ) -> tuple[P, D, OptimizerState, Dict]:
         position = data["walker_data"]["elec_position"]
         atoms_position = data["atoms_position"]
         log_psi_grads = raveled_log_psi_grad(params, atoms_position, position)
@@ -129,17 +162,17 @@ def spring_wrapper(spring_opt, log_psi_apply, update_data_fn, energy_and_statist
         params = apply_updates(params, updates)
         data = update_data_fn(data, params)
         metrics = {
-                    "energy": E_mean, "variance": stats["variance"],
-                    "variance_noclip": stats["variance_noclip"],
-                    "multi_variance": stats["multi_variance"],
-                    "energy_noclip": stats["energy_noclip"],
-                    "multi_energy": stats["multi_energy"],
-                    "opt_param_norm": param_norm,
-                    "opt_grad_norm": grad_norm,
-                    "opt_update_norm": update_norm,
-
-            }
-        return params,data, opt_state, metrics, key
+            "energy": E_mean,
+            "variance": stats["variance"],
+            "variance_noclip": stats["variance_noclip"],
+            "multi_variance": stats["multi_variance"],
+            "energy_noclip": stats["energy_noclip"],
+            "multi_energy": stats["multi_energy"],
+            "opt_param_norm": param_norm,
+            "opt_grad_norm": grad_norm,
+            "opt_update_norm": update_norm,
+        }
+        return params, data, opt_state, metrics, key
 
     return Optimizer(init=init, grad_and_E=grad_and_E, update=update)
 
@@ -167,7 +200,7 @@ class Spring:
             "step": jnp.asarray(0, dtype=jnp.int32),
         }
         return opt_state
-    
+
     def get_grad_1(
         self,
         log_psi_grads,
@@ -204,9 +237,9 @@ class Spring:
     ) -> Tuple[Array, P]:
         prev_grad, unravel_fn = jax.flatten_util.ravel_pytree(opt_state["prev_grad"])
         prev_grad_decayed = self.mu * prev_grad  #(nparams,)
-        W,B,nparams=log_psi_grads.shape
-        nchains = W*B
-        log_psi_grads=log_psi_grads.reshape((W*B,nparams)) /jnp.sqrt(nchains)  #(W*B,nparams)
+        W, B, nparams = log_psi_grads.shape
+        nchains = W * B
+        log_psi_grads = log_psi_grads.reshape((W * B, nparams)) / jnp.sqrt(nchains)  #(W*B,nparams)
         Ohat = log_psi_grads - jnp.mean(log_psi_grads, axis=0, keepdims=True)  #(W*B,nparams)
         T = Ohat @ Ohat.T  #(W*B,W*B)
         ones = jnp.ones((nchains, 1)) #(W*B,1)
@@ -215,26 +248,26 @@ class Spring:
         E_mean = pmean_if_pmap(E_mean)  #(1,1)
         if self.repeat_single_mol:
             E_mean_per_mol = E_mean
-        centered_energies = (E_loc - E_mean_per_mol)
+        centered_energies = E_loc - E_mean_per_mol
         epsilon_bar = centered_energies.reshape((-1,)) / jnp.sqrt(nchains) #(W*B,)
         epsion_tilde = epsilon_bar - Ohat @ prev_grad_decayed   #(W*B,)
         dtheta_residual = Ohat.T @ jax.scipy.linalg.solve(T_reg, epsion_tilde, assume_a="pos") #(nparams,)
         dtheta_residual = pmean_if_pmap(dtheta_residual)
         SR_G = dtheta_residual + prev_grad_decayed
         # scaled_grad = self.apply_norm_constraint(SR_G)
-        return unravel_fn(SR_G),  None, jnp.squeeze(E_mean)
-    
+        return unravel_fn(SR_G), None, jnp.squeeze(E_mean)
+
     def get_grad_3(
-            self,
-            prev_grad,  #(np,)
-            log_psi_grads,  #(B,np)
-            E_loc: P,    #(B,)
-            E_mean_per_mol,   #(1,)
-            opt_state,
-        ) -> Tuple[Array, P]:
+        self,
+        prev_grad,  #(np,)
+        log_psi_grads,  #(B,np)
+        E_loc: P,    #(B,)
+        E_mean_per_mol,   #(1,)
+        opt_state,
+    ) -> Tuple[Array, P]:
         prev_grad_decayed = self.mu * prev_grad  #(nparams,)
         # logging.info("log_psi_grads shape: {}".format(log_psi_grads.shape))
-        B,nparams=log_psi_grads.shape
+        B, nparams = log_psi_grads.shape
         nchains = B
         Ohat = (log_psi_grads - jnp.mean(log_psi_grads, axis=-2, keepdims=True)) / jnp.sqrt(nchains)
         T = Ohat @ Ohat.T
@@ -250,16 +283,14 @@ class Spring:
         dtheta_residual = Ohat.T @ epsilon_projected
         dtheta_residual = pmean_if_pmap(dtheta_residual)
         grad = dtheta_residual + prev_grad_decayed
-        return grad,jnp.squeeze(E_mean)
+        return grad, jnp.squeeze(E_mean)
 
     def apply_norm_constraint(self, grad: WavefunctionParams) -> WavefunctionParams:
         """Scales update to have L2 norm <= norm_constraint."""
         sq_norm_grads = jnp.sum(grad * grad)
-        eps=1e-12
+        eps = 1e-12
         coefficient = jnp.minimum(1, jnp.sqrt(self.norm_constraint / (sq_norm_grads + eps)))
         return grad * coefficient
-
-    
 
     def update(
         self, grad, opt_state: OptimizerState
@@ -289,12 +320,12 @@ class Spring:
 
         return update, {
             "prev_grad": grad,
-            "step": opt_state["step"] + 1,  # How is the step handled with other optimizers?
+            "step": opt_state["step"] + 1,
         }
 
 
 def tree_norm(x, sq=False):
-    sq_norm = jax.tree_util.tree_reduce(lambda c, x: c + jnp.sum(x**2), x, jnp.zeros(()))
+    sq_norm = jax.tree_util.tree_reduce(lambda c, x: c + jnp.sum(x ** 2), x, jnp.zeros(()))
     return sq_norm if sq else jnp.sqrt(sq_norm)
 
 def apply_updates(params: WavefunctionParams, updates: WavefunctionParams) -> WavefunctionParams:
@@ -305,13 +336,12 @@ def apply_updates(params: WavefunctionParams, updates: WavefunctionParams) -> Wa
     )
 
 
-
 from jax import lax
 
 def check_nan(name, x):
     isnan = jnp.isnan(x)
     isinf = jnp.isinf(x)
-    bad   = jnp.any(isnan | isinf)
+    bad = jnp.any(isnan | isinf)
 
     frac_nan = jnp.mean(isnan.astype(jnp.float32))
     min_val = jnp.nanmin(x)
@@ -320,14 +350,14 @@ def check_nan(name, x):
     dev_id = lax.axis_index(PMAP_AXIS_NAME)
 
     jax.debug.print(
-            "[dev {}] {}: bad={} frac_nan={} min={} max={}",
-            dev_id,
-            name,
-            bad,
-            frac_nan,
-            min_val,
-            max_val,
-        )
+        "[dev {}] {}: bad={} frac_nan={} min={} max={}",
+        dev_id,
+        name,
+        bad,
+        frac_nan,
+        min_val,
+        max_val,
+    )
 
     return x
 
