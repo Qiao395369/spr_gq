@@ -82,7 +82,7 @@ def lap(fun, primals, jacobians, laplacians):
         - Laplacian vectors with respect to each output.
     """
     check_no_nested(primals, jacobians, laplacians)
-    jsize = get_jsize(jacobians)
+    jsize = get_jsize(jacobians)    #42
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
     out_primals, out_jacs, out_laps = lap_fun(
         lap_subtrace(f), jsize, True

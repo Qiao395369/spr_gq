@@ -609,9 +609,10 @@ def _assemble_mol_local_energy_fn(
     ei_softening: chex.Scalar,
     ee_softening: chex.Scalar,
     log_psi_apply: ModelApply[P],
+    config_vmc,
 ) :
 
-    kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy_new(log_psi_apply)
+    kinetic_fn = physics.kinetic.create_laplacian_kinetic_energy_new(log_psi_apply, config_vmc.fwdlap_inner_size)
     ei_potential_fn = physics.potential.create_electron_ion_coulomb_potential(
         ion_charges, softening_term=ei_softening
     )
@@ -740,6 +741,7 @@ def _setup_vmc(
         config.problem.ei_softening,
         config.problem.ee_softening,
         log_psi_apply,
+        config.vmc,
     )
     clipping_fn = _get_clipping_fn(config.vmc)
     energy_and_statistics_fn = physics.core.create_energy_and_statistics_fn(local_energy_fn, clipping_fn, config.vmc.nan_safe)
@@ -840,6 +842,7 @@ def _setup_eval(
         ei_softening,
         ee_softening,
         log_psi_apply,
+        config.vmc,
     )
     eval_get_grad_and_E, eval_update_param_fn = updates.update_param_fns.construct_eval_update_param_fn(
         local_energy_fn,

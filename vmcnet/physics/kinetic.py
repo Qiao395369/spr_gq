@@ -1,14 +1,15 @@
 """Kinetic energy terms."""
-
+import jax
 from typing import Callable
 import jax.numpy as jnp
-
+import logging
 from vmcnet.utils.typing import Array, P, ModelApply
-from vmcnet.physics.fwdlap import zero_tangent_from_primal, lap  # type: ignore
+import vmcnet.physics.fwdlap as fwdlap # type: ignore
 
 
 def create_laplacian_kinetic_energy_new(
     log_psi_apply: Callable[[P, Array], Array],
+    inner_size = None,
 ) -> ModelApply[P]:
     """Create the local kinetic energy fn (params, x) -> -0.5 (nabla^2 psi(x) / psi(x)).
 
@@ -25,7 +26,7 @@ def create_laplacian_kinetic_energy_new(
         to be applied to a batch of walkers.
     """
 
-    def kinetic_energy_fn(params: P, atoms_positions:Array,x: Array) -> Array:
+    def kinetic_energy_fn(params: P, atoms_positions:Array, x: Array) -> Array:
         """Compute -1/2 * (nabla^2 psi) / psi at x given a function which evaluates psi'(x)/psi.
 
         This function uses the identity
@@ -46,16 +47,23 @@ def create_laplacian_kinetic_energy_new(
             """Flattened input to flattened output version of log_psi."""
             return log_psi_apply(params,atoms_positions, jnp.reshape(flat_x_in, x_shape))
 
-        zero = zero_tangent_from_primal(flat_x)
-
-        _, grads, laps = lap(flattened_log_psi, (flat_x,), (eye,), (zero,))
-        laplacian_psi_over_psi = jnp.sum(grads**2) + laps
+        zero = fwdlap.zero_tangent_from_primal(flat_x)
+        if inner_size is None:
+            _, grads, laps = fwdlap.lap(flattened_log_psi, (flat_x,), (eye,), (zero,))
+            laplacian_psi_over_psi = jnp.sum(grads**2) + laps
+        else:
+            eye = eye.reshape(n//inner_size, inner_size, n)
+            _, f_lap_pe = fwdlap.lap_partial(flattened_log_psi, (flat_x,), (eye[0],), (zero,))
+            def loop_fn(i, val):
+                jac, lap = f_lap_pe((eye[i],), (zero,))
+                return val + lap + jnp.sum(jac**2)
+            laplacian_psi_over_psi = jax.lax.fori_loop(0, n//inner_size, loop_fn, jnp.array(0.0))
 
         return -0.5 * laplacian_psi_over_psi
 
     return kinetic_energy_fn
 
-import jax
+
 def create_laplacian_kinetic_energy_old(
     log_psi_apply: Callable[[P, Array], Array],
 ) -> ModelApply[P]:
@@ -72,16 +80,17 @@ def laplacian_psi_over_psi(
     params: P,
     ion_pos: Array,
     x: Array,
-    nparticles: Optional[int] = None,
-    particle_perm: Optional[Array] = None,
+    # nparticles: Optional[int] = None,
+    # particle_perm: Optional[Array] = None,
 ) -> Array:
 
-    x_shape = x.shape
-    flat_x = jnp.reshape(x, (-1,))
+    x_shape = x.shape    #(ne,3)
+    # logging.info(f"in kinetic x shape:{x_shape}")
+    flat_x = jnp.reshape(x, (-1,))   #(ne*3,)
     n = flat_x.shape[0]
     identity_mat = jnp.eye(n)
 
-    def flattened_grad_log_psi_of_flat_x(flat_x_in):
+    def flattened_grad_log_psi_of_flat_x(flat_x_in):                            #function:input(ne*3,)-->(ne*3,)
         """Flattened input to flattened output version of grad_log_psi."""
         grad_log_psi_out = grad_log_psi_apply(params,ion_pos, jnp.reshape(flat_x_in, x_shape))
         return jnp.reshape(grad_log_psi_out, (-1,))
@@ -90,15 +99,15 @@ def laplacian_psi_over_psi(
     multiplier = 1.0
     vecs = identity_mat
 
-    if nparticles is not None and particle_perm is not None:
-        length = 3 * nparticles
-        multiplier = n / (3 * nparticles)
+    # if nparticles is not None and particle_perm is not None:
+    #     length = 3 * nparticles
+    #     multiplier = n / (3 * nparticles)
 
-        d = x_shape[-1]
-        triple_perm = jnp.stack([particle_perm * d + i for i in range(d)]).T.reshape(
-            (n,)
-        )
-        vecs = identity_mat[triple_perm, :]
+    #     d = x_shape[-1]
+    #     triple_perm = jnp.stack([particle_perm * d + i for i in range(d)]).T.reshape(
+    #         (n,)
+    #     )
+    #     vecs = identity_mat[triple_perm, :]
 
     def step_fn(carry, unused):
         del unused
@@ -115,3 +124,30 @@ def laplacian_psi_over_psi(
 
     out, _ = jax.lax.scan(step_fn, (0, jnp.array(0.0)), xs=None, length=length)
     return out[1] * multiplier
+
+
+def create_laplacian_kinetic_energy_db(
+    log_psi_apply: Callable[[P, jnp.ndarray, jnp.ndarray], jnp.ndarray]
+) -> Callable[[P, jnp.ndarray, jnp.ndarray], jnp.ndarray]:
+
+    # @jax.checkpoint  
+    def kinetic_energy_fn(params, atoms_pos, x):
+        x_shape = x.shape    #(ne,3)
+        flat_x = jnp.reshape(x, (-1,))   #(ne*3,)
+        def f(flat_x_in):
+            grad_log_psi_out = log_psi_apply(params,atoms_pos, jnp.reshape(flat_x_in, x_shape))
+            return grad_log_psi_out
+
+        grad_f = jax.grad(f)(flat_x)
+        grad_norm_sq = jnp.sum(grad_f ** 2)      # 计算 |∇f|²
+
+        #  计算 ∇²f
+        hess = jax.jacfwd(jax.grad(f))(flat_x)  # Hessian
+        logging.info(f"hess shape:{hess.shape}")
+        lap_f = jnp.trace(hess)  # 迹 = 拉普拉斯
+
+        lap_psi_over_psi = grad_norm_sq + lap_f
+
+        return -0.5 * lap_psi_over_psi
+
+    return kinetic_energy_fn
