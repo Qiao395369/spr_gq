@@ -9,7 +9,7 @@ import vmcnet.physics.fwdlap as fwdlap # type: ignore
 
 def create_laplacian_kinetic_energy_new(
     log_psi_apply: Callable[[P, Array], Array],
-    inner_size = None,
+    inner_size = 0,
 ) -> ModelApply[P]:
     """Create the local kinetic energy fn (params, x) -> -0.5 (nabla^2 psi(x) / psi(x)).
 
@@ -48,7 +48,7 @@ def create_laplacian_kinetic_energy_new(
             return log_psi_apply(params,atoms_positions, jnp.reshape(flat_x_in, x_shape))
 
         zero = fwdlap.zero_tangent_from_primal(flat_x)
-        if inner_size is None:
+        if inner_size == 0 :
             _, grads, laps = fwdlap.lap(flattened_log_psi, (flat_x,), (eye,), (zero,))
             laplacian_psi_over_psi = jnp.sum(grads**2) + laps
         else:

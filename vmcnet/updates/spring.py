@@ -106,8 +106,9 @@ def spring_wrapper(
     ) -> tuple[P, D, OptimizerState, Dict]:
         position = data["walker_data"]["elec_position"]
         atoms_position = data["atoms_position"]
-        log_psi_grads = raveled_log_psi_grad(params, atoms_position, position)
+        
         energy_per_w, E_loc, stats = energy_and_statistics_fn(params, atoms_position, position)
+        log_psi_grads = raveled_log_psi_grad(params, atoms_position, position)
         grad, _, E_mean = spring_opt.get_grad_2(log_psi_grads, E_loc, energy_per_w, opt_state)
 
         det_grad, det_loss = _det_reg_grad_and_value(params, atoms_position, position)

@@ -328,7 +328,7 @@ def get_default_vmc_config() -> Dict:
         "acc_steps": 1,
         "nepochs": 200000,
         "nburn": 5000,
-        "fwdlap_inner_size": None,
+        "fwdlap_inner_size": 0,
         "det_penalty_weight": 1.0,
         "nsteps_per_param_update": 10,
         "nmoves_per_width_update": 100,
