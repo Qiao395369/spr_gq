@@ -28,6 +28,8 @@ import vmcnet.models as models
 import vmcnet.physics as physics
 import vmcnet.train as train
 import vmcnet.updates as updates
+import vmcnet.gaoqiao.envelopes as envelopes
+import vmcnet.gaoqiao.jastrows as jastrows
 import vmcnet.utils as utils
 import kfac_jax
 import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
@@ -354,24 +356,32 @@ def _get_gaoqiao_model(
         from vmcnet.gaoqiao.fermi_ferminet import fermi_networks
         from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
         from vmcnet.gaoqiao.fermi_ferminet import psiformer
-        envelope = fermi_envelopes.make_isotropic_envelope()
+
         if config_gq.psiformer_multi == False:
-            feature_layer = fermi_networks.make_ferminet_features(
+            feature_layer = psiformer.make_ferminet_features(
                 natoms=charges.shape[0],
-                nspins=nspins,
                 ndim=3,
                 rescale_inputs=True,
             )
             spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1])])
+            envelope = envelopes.make_isotropic_envelope()
+            jastrow = jastrows.make_simple_ee_jastrow(nspins = nspins)
         else:
-            feature_layer = fermi_networks.make_ferminet_features_multi(
+            feature_layer = psiformer.make_ferminet_features_multi(
                 natoms=charges.shape[0],
-                nspins=nspins,
                 ndim=3,
                 rescale_inputs=True,
             )
             spins_psi=jnp.concatenate([jnp.ones(nspins[0]),-jnp.ones(nspins[1]),jnp.zeros(charges.shape[0])])
-        
+            make_envelope_kwargs = {"hiddens": [] if config_gq.nh == 0 else [config_gq.nh],}
+            envelope = envelopes.make_ds_hz_envelope(**make_envelope_kwargs)
+            jastrow = jastrows.make_mlp_jastrow(
+                                                nspins = nspins,
+                                                hiddenlayers_num=4,
+                                                hiddenlayers_size=32,
+                                                activation_fn=jax.nn.tanh,
+                                                residual=True,
+                                                )
         psiformer_config={
               'num_layers': config_gq.psiformer_num_layers,
               'num_heads': config_gq.psiformer_num_heads,
@@ -387,7 +397,7 @@ def _get_gaoqiao_model(
             states=0,
             envelope=envelope,
             feature_layer=feature_layer,
-            jastrow='default',
+            jastrow=jastrow,
             bias_orbitals=False,
             rescale_inputs=True,
             complex_output=config_gq.do_complex,
@@ -398,15 +408,12 @@ def _get_gaoqiao_model(
         params = network_init(subkey)
         network_wfn = functools.partial(network_apply,
                                         spins=spins_psi,
-                                        charges=charges,
                                         )
         det_fn = functools.partial( network_each_det,
                                     spins=spins_psi,
-                                    charges=charges,
                                     )
         orb_fn = functools.partial( orbitals,
                                     spins=spins_psi,
-                                    charges=charges,
                                     )
 
     elif wfn_type == 'lapnet':

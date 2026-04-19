@@ -486,7 +486,7 @@ def get_default_gq_config() -> Dict:
         "psiformer_num_heads": 4,
         "psiformer_heads_dim": 64,
         "psiformer_mlp_hidden_dims": 256,
-        "ferminet_multi": False, #choices=["default", "multi"]
+        "ferminet_multi": False, 
         "lapnet_multi": False,
         "lapnet_num_layers": 4,
         "lapnet_num_heads": 4,

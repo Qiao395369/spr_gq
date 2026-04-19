@@ -469,11 +469,11 @@ def construct_input_features(
     terms are also zero.
   """
   assert atoms.shape[1] == ndim
-  ae = jnp.reshape(pos, [-1, 1, ndim]) - atoms[None, ...]
+  ea = jnp.reshape(pos, [-1, 1, ndim]) - atoms[None, ...]   #(ne,na,3)
   ee = jnp.reshape(pos, [1, -1, ndim]) - jnp.reshape(pos, [-1, 1, ndim])
   aa = jnp.reshape(atoms, [1, -1, ndim]) - jnp.reshape(atoms, [-1, 1, ndim])
 
-  r_ae = jnp.linalg.norm(ae, axis=2, keepdims=True)
+  r_ea = jnp.linalg.norm(ea, axis=2, keepdims=True)
   # Avoid computing the norm of zero, as is has undefined grad
   n = ee.shape[0]
   r_ee = (
@@ -481,7 +481,7 @@ def construct_input_features(
   na = aa.shape[0]
   r_aa = (
       jnp.linalg.norm(aa + jnp.eye(na)[..., None], axis=-1) * (1.0 - jnp.eye(na)))
-  return ae, ee, r_ae, r_ee[..., None], aa, r_aa[..., None]
+  return ea, ee, r_ea, r_ee[..., None], aa, r_aa[..., None]
 
 
 def make_ferminet_features(
@@ -522,31 +522,36 @@ def make_ferminet_features(
 
 def make_ferminet_features_multi(
     natoms: int,
-    nspins: Optional[Tuple[int, int]] = None,
     ndim: int = 3,
     rescale_inputs: bool = False,
 ) -> FeatureLayer:
   """Returns the init and apply functions for the standard features."""
-  ne = sum(nspins)
   assert rescale_inputs==True
   def init() -> Tuple[Tuple[int, int], Param]:
-    return (natoms * (ndim + 1), ndim + 1), {}
+    return (ndim + 1, ndim + 1), {}
 
-  def apply(ae, r_ae, ee, r_ee, aa, r_aa) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    pp=reform_ee_ea_ae_aa(ee,ae,-ae.transpose(1, 0, 2),aa)
-    r_pp=reform_ee_ea_ae_aa(r_ee,r_ae,r_ae.transpose(1, 0, 2),r_aa)
+  def apply(pos: jnp.ndarray,
+            atoms: jnp.ndarray,
+            ndim: int = 3) -> Tuple[jnp.ndarray, jnp.ndarray]:
+
+    assert atoms.shape[1] == ndim
+    pp_pos = jnp.concatenate([pos, atoms],axis=0)
+    pp = jnp.reshape(pp_pos, [1, -1, ndim]) - jnp.reshape(pp_pos, [-1, 1, ndim])
+    np = pp.shape[0]
+    r_pp = (jnp.linalg.norm(pp + jnp.eye(np)[..., None], axis=-1) * (1.0 - jnp.eye(np)))[..., None]
+
     if rescale_inputs:
       log_r_pp = jnp.log(1 + r_pp)
       factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
       pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
-      _, ae_features, _, aa_features = split_ee_ea_ae_aa_(ne,pp_features)
     else:
-      ae_features = jnp.concatenate((r_ae, ae), axis=2)
-      ee_features = jnp.concatenate((r_ee, ee), axis=2)
-    ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
-    aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
+      pp_features = jnp.concatenate((r_pp, pp), axis=2)
+    h_one = jnp.mean(pp_features,axis=1)
+    h_two = pp_features
+    # ae_features = jnp.reshape(ae_features, [jnp.shape(ae_features)[0], -1])
+    # aa_features = jnp.reshape(aa_features, [jnp.shape(aa_features)[0], -1])
     # print("pp:",pp_features.shape)
-    return jnp.concatenate((ae_features,aa_features),axis=0), pp_features
+    return h_one,h_two
 
   return FeatureLayer(init=init, apply=apply)
 
@@ -580,24 +585,24 @@ def construct_symmetric_features(
   """
   # Split features into spin up and spin down electrons
   # spin_partitions = fermi_network_blocks.array_partitions(nspins)
-  # print("h_one:",h_one.shape)
+  # print("h_one:",h_one.shape)  
   # print("h_two:",h_two.shape)
-  spin_partitions=[nspins[0],nspins[0]+nspins[1]]
-  h_ones = jnp.split(h_one, spin_partitions, axis=0)
-  h_twos = jnp.split(h_two, spin_partitions, axis=0)
+  spin_partitions=[nspins[0],nspins[0]+nspins[1]]  #[n_up,n_up+n_down]
+  h_ones = jnp.split(h_one, spin_partitions, axis=0)  #[(n_up,nf1),(n_down,nf1)] or [(n_up,nf1),(n_down,nf1),(na,nf1)]
+  h_twos = jnp.split(h_two, spin_partitions, axis=0)  #[(n_up,ne,nf2),(n_down,ne,nf2)] or [(n_up,np,nf2),(n_down,np,nf2),(na,np,nf2)]
 
   # Construct inputs to next layer
   # h.size == 0 corresponds to unoccupied spin channels.
-  g_one = [jnp.mean(h, axis=0, keepdims=True) for h in h_ones if h.size > 0]
-  g_one = [jnp.tile(g, [h_one.shape[0], 1]) for g in g_one]
+  g_one = [jnp.mean(h, axis=0, keepdims=True) for h in h_ones if h.size > 0] #[(1,nf1),(1,nf1)] or [(1,nf1),(1,nf1),(1,nf1)]
+  g_one = [jnp.tile(g, [h_one.shape[0], 1]) for g in g_one]  #[(ne,nf1),(ne,nf1)] or [(np,nf1),(np,nf1),(np,nf1)]
 
-  g_two = [jnp.mean(h, axis=0) for h in h_twos if h.size > 0]
+  g_two = [jnp.mean(h, axis=0) for h in h_twos if h.size > 0] #[(ne,nf2),(ne,nf2)] or [(np,nf2),(np,nf2),(np,nf2)]
   # print("spin_partitions:",spin_partitions)
   # print("h_ones:",[h.shape for h in h_ones])
   # print("h_twos:",[h.shape for h in h_twos])
   # print("g_one:",[g.shape for g in g_one])
   # print("g_two:",[g.shape for g in g_two])
-  features = [h_one] + g_one + g_two
+  features = [h_one] + g_one + g_two   #[(ne,nf1),(ne,nf1),(ne,nf1),(ne,nf2),(ne,nf2)] or [(np,nf1),(np,nf1),(np,nf1),(np,nf1),(np,nf2),(np,nf2),(np,nf2)]
   # print("features:",[f.shape for f in features])
   if h_aux is not None:
     features.append(h_aux)

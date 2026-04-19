@@ -18,7 +18,8 @@ from typing import Mapping, Optional, Sequence, Tuple, Union
 
 import attr
 import chex
-from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes as envelopes
+from vmcnet.gaoqiao.fermi_ferminet import fermi_envelopes
+import vmcnet.gaoqiao.envelopes as envelopes
 from vmcnet.gaoqiao.fermi_ferminet import jastrows
 from vmcnet.gaoqiao.fermi_ferminet import fermi_network_blocks as network_blocks
 from vmcnet.gaoqiao.fermi_ferminet import fermi_networks as networks
@@ -245,7 +246,7 @@ def make_psiformer_layers(
   Returns:
     Tuple of init, apply functions.
   """
-  del nspins, natoms  # Unused.
+  del nspins  # Unused.
 
   # Attention network.
   attn_dim = options.num_heads * options.heads_dim
@@ -269,8 +270,11 @@ def make_psiformer_layers(
     # Map to Attention dim.
     key, subkey = jax.random.split(key)
     params['embed'] = network_blocks.init_linear_layer(
-        subkey, in_dim=feature_dim, out_dim=attn_dim, include_bias=False
-    )['w']
+        subkey, 
+        in_dim=feature_dim, 
+        out_dim=attn_dim, 
+        include_bias=False
+        )['w']
 
     # Attention block params.
     key, subkey = jax.random.split(key)
@@ -280,15 +284,9 @@ def make_psiformer_layers(
 
   def apply(
       params,
-      *,
-      ae: jnp.ndarray,
-      r_ae: jnp.ndarray,
-      ee: jnp.ndarray,
-      r_ee: jnp.ndarray,
-      aa: jnp.ndarray,
-      r_aa: jnp.ndarray,
+      pos,
+      atoms,
       spins: jnp.ndarray,
-      charges: jnp.ndarray,
   ) -> jnp.ndarray:
     """Applies the Psiformer interaction layers to a walker configuration.
 
@@ -306,18 +304,13 @@ def make_psiformer_layers(
       output_dim, is given by init, and is suitable for projection into orbital
       space.
     """
-    natoms = len(charges)
-
     # Only one-electron features are used by the Psiformer.
-    ae_features, _ = options.feature_layer.apply(
-        ae=ae, r_ae=r_ae, ee=ee, r_ee=r_ee, aa=aa, r_aa=r_aa,  **params['input']
-    )
+    h_one, h_two, ae, r_ee = options.feature_layer.apply(pos,atoms,options.ndim)
 
-    # For the Psiformer, the spin feature is required for correct permutation
-    # equivariance.
-    ae_features = jnp.concatenate((ae_features, spins[..., None]), axis=-1)
+    # For the Psiformer, the spin feature is required for correct permutation equivariance.
+    h_one = jnp.concatenate((h_one, spins[..., None]), axis=-1)
 
-    features = ae_features  # Just 1-electron stream for now.
+    features = h_one  # Just 1-electron stream for now.
 
     # Embed into attention dimension.
     x = jnp.dot(features, params['embed'])
@@ -326,8 +319,11 @@ def make_psiformer_layers(
 
     if options.psiformer_multi == True:
       h_to_orbitals = h_to_orbitals[:-natoms]
+      hz = h_to_orbitals[-natoms:]
+    else:
+      hz = None
 
-    return h_to_orbitals
+    return h_to_orbitals, hz, ae, r_ee
 
   return init, apply
 
@@ -384,12 +380,12 @@ def make_fermi_net(
   """
 
   if not envelope:
-    envelope = envelopes.make_isotropic_envelope()
+    raise 
 
   if not feature_layer:
     natoms = charges.shape[0]
-    feature_layer = networks.make_ferminet_features(
-        natoms, nspins, ndim=ndim, rescale_inputs=rescale_inputs
+    feature_layer = make_ferminet_features(
+        natoms, ndim=ndim, rescale_inputs=rescale_inputs
     )
 
   if isinstance(jastrow, str):
@@ -419,7 +415,7 @@ def make_fermi_net(
 
   psiformer_layers = make_psiformer_layers(nspins, charges.shape[0], options)
 
-  orbitals_init, orbitals_apply = networks.make_orbitals(
+  orbitals_init, orbitals_apply = make_orbitals(
       nspins=nspins,
       charges=charges,
       options=options,
@@ -434,7 +430,6 @@ def make_fermi_net(
       pos: jnp.ndarray,
       atoms: jnp.ndarray,
       spins: jnp.ndarray,
-      charges: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Forward evaluation of the Psiformer.
 
@@ -449,7 +444,7 @@ def make_fermi_net(
       Output of antisymmetric neural network in log space, i.e. a tuple of sign
       of and log absolute value of the network evaluated at x.
     """
-    orbitals = orbitals_apply(params, pos, atoms, spins, charges)
+    orbitals = orbitals_apply(params, pos, atoms, spins)
     if options.states:
       batch_logdet_matmul = jax.vmap(network_blocks.logdet_matmul, in_axes=0)
       orbitals = [
@@ -469,10 +464,259 @@ def make_fermi_net(
       pos: jnp.ndarray,
       atoms: jnp.ndarray,
       spins: jnp.ndarray,
-      charges: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    orbitals = orbitals_apply(params, pos, atoms, spins, charges)
+    orbitals = orbitals_apply(params, pos, atoms, spins)
     result = network_blocks.logdet_matmul(orbitals)
     return jax.nn.log_softmax(result[2])
   
   return network_init, network_apply, options, network_each_det, orbitals_apply
+
+
+
+
+
+
+
+def make_orbitals(
+    nspins: Tuple[int, int],
+    charges: jnp.ndarray,
+    options: PsiformerOptions,
+    equivariant_layers: Tuple[networks.InitLayersFn, networks.ApplyLayersFn],
+) -> ...:
+
+  equivariant_layers_init, equivariant_layers_apply = equivariant_layers
+  jastrow = options.jastrow
+
+  def init(key: chex.PRNGKey) -> networks.ParamTree:
+
+    key, subkey = jax.random.split(key)
+    params = {}
+    dims_orbital_in, params['layers'] = equivariant_layers_init(subkey)
+
+    active_spin_channels = [spin for spin in nspins if spin > 0]
+    nchannels = len(active_spin_channels)
+    if nchannels == 0:
+      raise ValueError('No electrons present!')
+
+    # How many spin-orbitals do we need to create per spin channel?
+    nspin_orbitals = []
+    num_states = max(options.states, 1)
+    for nspin in active_spin_channels:
+      if options.full_det:
+        # Dense determinant. Need N orbitals per electron per determinant.
+        norbitals = sum(nspins) * options.determinants * num_states
+      else:
+        # Spin-factored block-diagonal determinant. Need nspin orbitals per
+        # electron per determinant.
+        norbitals = nspin * options.determinants * num_states
+      if options.complex_output:
+        norbitals *= 2  # one output is real, one is imaginary
+      nspin_orbitals.append(norbitals)
+    nspin_orbitals=[int(i) for i in nspin_orbitals]
+
+    # create envelope params
+    natom = charges.shape[0]
+
+    if options.envelope.apply_type == envelopes.EnvelopeType.PRE_ORBITAL:
+      # Applied to output from final layer of 1e stream.
+      output_dims = dims_orbital_in
+    elif options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT:
+      # Applied to orbitals.
+      if options.complex_output:
+        # print("nspin_orbitals:",nspin_orbitals)
+        output_dims = [nspin_orbital // 2 for nspin_orbital in nspin_orbitals]
+      else:
+        output_dims = nspin_orbitals
+    elif options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z:
+      output_dims = nspin_orbitals
+    else:
+      raise ValueError('Unknown envelope type')
+    
+    if options.envelope.apply_type != envelopes.EnvelopeType.PRE_DETERMINANT_Z:
+      params['envelope'] = options.envelope.init(natom=natom, output_dims=output_dims, ndim=options.ndim)
+    else:
+      key, subkey = jax.random.split(key)
+      params['envelope'] = options.envelope.init(subkey, hz_size=dims_orbital_in, output_dims=output_dims)
+
+    if jastrow.init is not None:
+      key, subkey = jax.random.split(key)
+      params['jastrow'] = jastrow.init(key = subkey, dims_orbital_in = dims_orbital_in)
+
+    orbitals = []
+    for nspin_orbital in nspin_orbitals:
+      key, subkey = jax.random.split(key)
+      orbitals.append(
+          network_blocks.init_linear_layer(
+              subkey,
+              in_dim=dims_orbital_in,
+              out_dim=nspin_orbital,
+              include_bias=options.bias_orbitals,
+          )
+      )
+    params['orbital'] = orbitals
+
+    return params
+
+  def apply(
+      params,
+      pos: jnp.ndarray,
+      atoms: jnp.ndarray,
+      spins: jnp.ndarray,
+  ) -> Sequence[jnp.ndarray]:
+    """Forward evaluation of the Fermionic Neural Network up to the orbitals.
+
+    Args:
+      params: network parameter tree.
+      pos: The electron positions, a 3N dimensional vector.
+      spins: The electron spins, an N dimensional vector.
+      atoms: Array with positions of atoms.
+
+    Returns:
+      One matrix (two matrices if options.full_det is False) that exchange
+      columns under the exchange of inputs of shape (ndet, nalpha+nbeta,
+      nalpha+nbeta) (or (ndet, nalpha, nalpha) and (ndet, nbeta, nbeta)).
+    """
+    h_to_orbitals_, hz, ae, r_ee = equivariant_layers_apply(params['layers'], pos, atoms, spins=spins)
+    r_ae = jnp.linalg.norm(ae, axis=2, keepdims=True)
+
+    if options.envelope.apply_type == envelopes.EnvelopeType.PRE_ORBITAL:
+      envelope_factor = options.envelope.apply(
+          ae=ae, r_ae=r_ae, r_ee=r_ee, **params['envelope']
+      )
+      h_to_orbitals = envelope_factor * h_to_orbitals_
+
+    # Note split creates arrays of size 0 for spin channels without electrons.
+    h_to_orbitals = jnp.split( h_to_orbitals_, network_blocks.array_partitions(nspins), axis=0)
+
+    # Drop unoccupied spin channels
+    h_to_orbitals = [h for h, spin in zip(h_to_orbitals, nspins) if spin > 0]
+    active_spin_channels = [spin for spin in nspins if spin > 0]
+    active_spin_partitions = network_blocks.array_partitions(active_spin_channels
+                                                                   )
+    # Create orbitals.
+    orbitals = [network_blocks.linear_layer(h, **p) for h, p in zip(h_to_orbitals, params['orbital'])]
+
+    if options.complex_output:
+      # create imaginary orbitals
+      orbitals = [orbital[..., ::2] + 1.0j * orbital[..., 1::2] for orbital in orbitals]
+
+    # Apply envelopes if required.
+    if options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT:
+      ae_channels = jnp.split(ae, active_spin_partitions, axis=0)
+      r_ae_channels = jnp.split(r_ae, active_spin_partitions, axis=0)
+      r_ee_channels = jnp.split(r_ee, active_spin_partitions, axis=0)
+      for i in range(len(active_spin_channels)):
+        orbitals[i] = orbitals[i] * options.envelope.apply(
+            ae=ae_channels[i],
+            r_ae=r_ae_channels[i],
+            r_ee=r_ee_channels[i],
+            **params['envelope'][i],
+            )
+    elif options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z:
+      ae_channels = jnp.split(ae, active_spin_partitions, axis=0)
+      for i in range(len(active_spin_channels)):
+        orbitals[i] = orbitals[i] * options.envelope.apply(
+            hz=hz,
+            ae=ae_channels[i],
+            **params['envelope'][i],     
+            ) 
+
+    # Reshape into matrices.
+    shapes = [
+        (spin, -1, sum(nspins) if options.full_det else spin)
+        for spin in active_spin_channels
+    ]
+    orbitals = [
+        jnp.reshape(orbital, shape) for orbital, shape in zip(orbitals, shapes)
+    ]
+    orbitals = [jnp.transpose(orbital, (1, 0, 2)) for orbital in orbitals]
+    if options.full_det:
+      orbitals = [jnp.concatenate(orbitals, axis=1)]
+
+    # Optionally apply Jastrow factor for electron cusp conditions.
+    # Added pre-determinant for compatibility with pretraining.
+    if jastrow.apply is not None:
+      jastrow_ = jastrow.apply(params['jastrow'], r_ee, h_to_orbitals_) 
+      orbitals = [orbital * jastrow_ for orbital in orbitals]
+
+    return orbitals
+
+  return init, apply
+
+
+def make_ferminet_features_multi(
+    natoms: int,
+    ndim: int = 3,
+    rescale_inputs: bool = False,
+) -> networks.FeatureLayer:
+  """Returns the init and apply functions for the standard features."""
+  assert rescale_inputs==True
+  def init() -> Tuple[Tuple[int, int], networks.Param]:
+    return (ndim + 1, ndim + 1), {}
+
+  def apply(pos: jnp.ndarray,
+            atoms: jnp.ndarray,
+            ndim: int = 3) -> Tuple[jnp.ndarray, jnp.ndarray]:
+
+    assert atoms.shape[1] == ndim
+    ea = jnp.reshape(pos, (-1, 1, ndim)) - atoms[None, ...]   #(ne,na,3)
+    ee = jnp.reshape(pos, (-1, 1, ndim)) - jnp.reshape(pos, (1, -1, ndim))  #()
+    ne = ee.shape[0]
+    r_ee = (jnp.linalg.norm(ee + jnp.eye(ne)[..., None], axis=-1) * (1.0 - jnp.eye(ne)))[...,None]
+
+    pp_pos = jnp.concatenate([pos, atoms],axis=0)
+    pp = jnp.reshape(pp_pos, [-1, 1, ndim]) - jnp.reshape(pp_pos, [1, -1, ndim])
+    np = pp.shape[0]
+    r_pp = (jnp.linalg.norm(pp + jnp.eye(np)[..., None], axis=-1) * (1.0 - jnp.eye(np)))[..., None]
+
+    if rescale_inputs:
+      log_r_pp = jnp.log(1 + r_pp)
+      factor=jnp.where(r_pp!=0, log_r_pp / r_pp, 0.0)
+      pp_features = jnp.concatenate((log_r_pp, pp * factor), axis=2)
+    else:
+      pp_features = jnp.concatenate((r_pp, pp), axis=2)
+
+    h_one = jnp.mean(pp_features,axis=1)
+    h_two = pp_features
+    return h_one,h_two,ea,r_ee
+
+  return networks.FeatureLayer(init=init, apply=apply)
+
+
+def make_ferminet_features(
+    natoms: int,
+    ndim: int = 3,
+    rescale_inputs: bool = False,
+) -> networks.FeatureLayer:
+  """Returns the init and apply functions for the standard features."""
+
+
+  def init() -> Tuple[Tuple[int, int], networks.Param]:
+    return (natoms * (ndim + 1), ndim + 1), {}
+
+  def apply(pos: jnp.ndarray,
+            atoms: jnp.ndarray,
+            ndim: int = 3) -> Tuple[jnp.ndarray, jnp.ndarray]:
+
+    ea = jnp.reshape(pos, (-1, 1, ndim)) - atoms[None, ...]   #(ne,na,3)
+    ee = jnp.reshape(pos, (-1, 1, ndim)) - jnp.reshape(pos, (1, -1, ndim))  #()
+    r_ea = jnp.linalg.norm(ea, axis=2, keepdims=True)
+    ne = ee.shape[0]
+    r_ee = (jnp.linalg.norm(ee + jnp.eye(ne)[..., None], axis=-1) * (1.0 - jnp.eye(ne)))[...,None]
+
+    if rescale_inputs:
+      log_r_ea = jnp.log(1 + r_ea)  # grows as log(r) rather than r
+      factor=jnp.where(r_ea!=0, log_r_ea / r_ea, 0.0)
+      ea_features = jnp.concatenate((log_r_ea, ea * factor), axis=2)
+
+      log_r_ee = jnp.log(1 + r_ee)
+      factor=jnp.where(r_ee!=0, log_r_ee / r_ee, 0.0)
+      ee_features = jnp.concatenate((log_r_ee, ee * factor), axis=2)
+    else:
+      ea_features = jnp.concatenate((r_ea, ea), axis=2)
+      ee_features = jnp.concatenate((r_ee, ee), axis=2)
+
+    ea_features = jnp.reshape(ea_features, (ne, -1))
+    return ea_features, ee_features, ea, r_ee
+
+  return networks.FeatureLayer(init=init, apply=apply)
