@@ -8,15 +8,16 @@ logging.basicConfig(level=logging.INFO)
 def vmc_statistics() -> None:
     # 从命令行读取参数
     parser = argparse.ArgumentParser()
-    parser.add_argument("--id", type=str, required=True)
+    parser.add_argument("--local_energies_file_path", type=str, required=True)
+    parser.add_argument("--output_file_path", type=str, required=True)
     parser.add_argument("--nchains", type=int, required=True)
     parser.add_argument("--walkers", type=int, required=True)
     parser.add_argument("--cut", type=int, required=True)
     args = parser.parse_args()
 
     # 直接用传进来的变量
-    local_energies_file_path = f"../local_energy/multi_energy{args.id}.txt"
-    output_file_path = f"../local_energy/statistics{args.id}"
+    local_energies_file_path = args.local_energies_file_path
+    output_file_path = args.output_file_path
     nchains = args.nchains
     walkers = args.walkers
     cut = args.cut
