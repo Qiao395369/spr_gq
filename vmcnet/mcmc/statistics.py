@@ -124,7 +124,7 @@ def tau(autocorr_curve: np.ndarray) -> np.ndarray:
     return -1.0 + 2.0 * np.sum(monotonic_min_curve, axis=0)
 
 
-def get_stats_summary(multiwalker_samples: np.ndarray,nchains:int,walkers:int,repeat_single_mol:bool) -> Dict[str, np.float32]:
+def get_stats_summary(multiwalker_samples: np.ndarray,nchains:int,walkers:int,repeat_single_mol:bool,cut:int) -> Dict[str, np.float32]:
     """Get a summary of the stats (mean, var, std_err, iac) for a collection of samples.
 
     Args:
@@ -136,6 +136,7 @@ def get_stats_summary(multiwalker_samples: np.ndarray,nchains:int,walkers:int,re
         "std_err", and "integrated_autocorrelation"
     """
     # Nested mean may be more numerically stable than single mean
+    multiwalker_samples = multiwalker_samples[cut:]
     if repeat_single_mol:
         samples = multiwalker_samples
         averages = np.mean(samples)

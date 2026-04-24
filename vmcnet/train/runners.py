@@ -1027,10 +1027,10 @@ def _burn_and_run_vmc(
 
 
 def _compute_and_save_energy_statistics(
-    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int ,repeat_single_mol:bool
+    local_energies_file_path: str, output_dir: str, output_filename: str,nchains:int ,walkers:int ,repeat_single_mol:bool, cut:int
 ) -> None:
     local_energies = np.loadtxt(local_energies_file_path)
-    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers,repeat_single_mol)
+    eval_statistics = mcmc.statistics.get_stats_summary(local_energies,nchains,walkers,repeat_single_mol,cut)
     # eval_statistics = jax.tree_map(lambda x: x.tolist(), eval_statistics)
     utils.io.save_dict_to_json(
         eval_statistics,
@@ -1428,19 +1428,19 @@ def do_inference()-> None:
 
 def vmc_statistics() -> None:
     """Calculate statistics from a VMC evaluation run and write them to disc."""
-
-    local_energies_file_path="../local_energy/multi_energyCH4.txt"
-    output_file_path="../local_energy/statisticCH4"
-    nchains=512
-    walkers=1
+    id = "53833"
+    local_energies_file_path="../local_energy/multi_energy"+id+".txt"
+    output_file_path="../local_energy/statistics"+id
+    nchains=128
+    walkers=20
+    cut=5000
     repeat_single_mol=False
     output_dir, output_filename = os.path.split(os.path.abspath(output_file_path))
     _compute_and_save_energy_statistics(
-            local_energies_file_path, output_dir, output_filename, nchains, walkers, repeat_single_mol
+            local_energies_file_path, output_dir, output_filename, nchains, walkers, repeat_single_mol, cut
         )
     logging.info("Done!")
 
 
 if __name__ == "__main__":
     run_molecule()
-    # vmc_statistics()
