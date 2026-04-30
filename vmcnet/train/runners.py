@@ -1331,7 +1331,7 @@ def run_molecule() -> None:
     if config.eval.record_local_energies and local_es_were_recorded:
         local_energies_filepath = os.path.join(eval_logdir, "multi_energy.txt")
         _compute_and_save_energy_statistics(
-            local_energies_filepath, eval_logdir, "statistics", config.eval.nchains, ion_pos.shape[0], config.eval.repeat_single_mol
+            local_energies_filepath, eval_logdir, "statistics", config.eval.nchains, ion_pos.shape[0], config.eval.repeat_single_mol,0
         )
 
 

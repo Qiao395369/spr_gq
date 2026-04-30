@@ -137,6 +137,7 @@ def get_stats_summary(multiwalker_samples: np.ndarray,nchains:int,walkers:int,re
     """
     # Nested mean may be more numerically stable than single mean
     multiwalker_samples = multiwalker_samples[cut:]
+    print("shape:",multiwalker_samples.shape)
     if repeat_single_mol:
         samples = multiwalker_samples
         averages = np.mean(samples)
@@ -144,6 +145,8 @@ def get_stats_summary(multiwalker_samples: np.ndarray,nchains:int,walkers:int,re
         iacs = tau(autocorr_curve)
         std_errs = np.sqrt(iacs * variances / np.size(samples))
     else:
+        if len(multiwalker_samples.shape)==1:
+            multiwalker_samples=multiwalker_samples[...,None]
         assert multiwalker_samples.shape[-1]== nchains*walkers
         averages=[]
         variances=[]
