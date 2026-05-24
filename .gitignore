@@ -16,6 +16,7 @@ checkpoints/
 density_plot/
 statisitc*
 zzz*
+test_mcmc.sh
 statis_N.sh
 results/
 .Ds_Store

@@ -1190,7 +1190,7 @@ def _make_seeded_elec_position(
     B = x.shape[1]
     up_eidx, down_eidx = _get_seed_electron_indices(single_nspins, H_idx, n_up)
 
-    print(f"seed indices: up_eidx={up_eidx}, down_eidx={down_eidx}")
+    logging.info(f"seed indices: up_eidx={up_eidx}, down_eidx={down_eidx}")
 
     if mode == "normal":
         return key, x
@@ -1772,13 +1772,13 @@ def test_mcmc() -> None:
 
     data = _slice_data_nwalkers(data, test_args.test_nwalkers)
 
-    print("\n===== loaded checkpoint =====")
-    print("reload_at_epoch =", reload_at_epoch)
-    print("atoms_position shape =", data["atoms_position"].shape)
-    print("elec_position shape =", data["walker_data"]["elec_position"].shape)
-    print("nspins =", nspins)
-    print("single_nspins =", single_nspins)
-    print("test_nwalkers =", test_args.test_nwalkers)
+    logging.info("\n===== loaded checkpoint =====")
+    logging.info("reload_at_epoch = %s", reload_at_epoch)
+    logging.info("atoms_position shape = %s", data["atoms_position"].shape)
+    logging.info("elec_position shape = %s", data["walker_data"]["elec_position"].shape)
+    logging.info("nspins = %s", nspins)
+    logging.info("single_nspins = %s", single_nspins)
+    logging.info("test_nwalkers = %s", test_args.test_nwalkers)
 
     # -------------------------
     # Diagnostic settings
@@ -1834,24 +1834,24 @@ def test_mcmc() -> None:
         ckpt_step=ckpt_step,
     )
 
-    print("\n===== output directory =====")
-    print("ckpt_step =", ckpt_step)
-    print("outdir =", outdir)
-    print("variants =", variants)
-    print("geom_indices =", geom_indices)
-    print("H_idx =", H_idx)
-    print("n_macro_steps =", n_macro_steps)
-    print("burn_in_macro =", burn_in_macro)
-    print("thin_macro =", thin_macro)
-    print("compute_energy =", compute_energy)
-    print("energy_every =", energy_every)
-    print("zeta_H =", zeta_H)
+    logging.info("\n===== output directory =====")
+    logging.info("ckpt_step = %s", ckpt_step)
+    logging.info("outdir = %s", outdir)
+    logging.info("variants = %s", variants)
+    logging.info("geom_indices = %s", geom_indices)
+    logging.info("H_idx = %s", H_idx)
+    logging.info("n_macro_steps = %s", n_macro_steps)
+    logging.info("burn_in_macro = %s", burn_in_macro)
+    logging.info("thin_macro = %s", thin_macro)
+    logging.info("compute_energy = %s", compute_energy)
+    logging.info("energy_every = %s", energy_every)
+    logging.info("zeta_H = %s", zeta_H)
 
     atoms_np = _device_to_np(data["atoms_position"])
-    print("\n===== selected dissociation geometries =====")
+    logging.info("\n===== selected dissociation geometries =====")
     for g in geom_indices:
         _, d_H_body_min, r_c = _get_H_radius(atoms_np, int(g), H_idx)
-        print(f"geom {int(g):02d}: min d(H-body) = {d_H_body_min:.6f} bohr, r_c = {r_c:.6f}")
+        logging.info(f"geom {int(g):02d}: min d(H-body) = {d_H_body_min:.6f} bohr, r_c = {r_c:.6f}")
 
     # Local energy fn for per-geometry energy comparison.
     if compute_energy:
@@ -1875,7 +1875,7 @@ def test_mcmc() -> None:
     dmin_bank = {}
 
     for variant in variants:
-        print(f"\n========== running variant: {variant} ==========")
+        logging.info(f"\n========== running variant: {variant} ==========")
 
         key, seeded_elec = _make_seeded_elec_position(
             key=key,
@@ -1966,7 +1966,7 @@ def test_mcmc() -> None:
                         f"d50={row['dmin_p50']:.3f}"
                         f"{extra}"
                     )
-                print(" | ".join(msg))
+                logging.info("%s", " | ".join(msg))
 
             if macro_step < n_macro_steps:
                 accept, diag_data, key = walker_fn(params, diag_data, key)
@@ -1986,9 +1986,9 @@ def test_mcmc() -> None:
     # Save plots
     _plot_mcmc_diagnostics(trace_rows, dmin_bank, outdir, geom_indices)
 
-    print("\n===== MCMC H diagnostics finished =====")
-    print("saved trace:", csv_path)
-    print("saved plots:", outdir)
+    logging.info("\n===== MCMC H diagnostics finished =====")
+    logging.info("saved trace: %s", csv_path)
+    logging.info("saved plots: %s", outdir)
 
 
 if __name__ == "__main__":
