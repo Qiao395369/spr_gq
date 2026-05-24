@@ -63,9 +63,9 @@ def get_default_reload_config() -> ConfigDict:
             "same_logdir": False,
             "to_pmap": False,
             "new_data": False,
-            "nchains": 512,
+            "nchains": 0,
             "end_epochs": 150000,
-            "nburn":8000,
+            "nburn":0,
             "down_sample_num": 0,
             "n_inner": 1,
         }
