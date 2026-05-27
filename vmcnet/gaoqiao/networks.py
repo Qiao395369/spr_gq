@@ -1546,7 +1546,7 @@ def make_fermi_net_model_ef_shrd_sym(
     dim_extra_params = 0,
     do_aa : bool=False,
     mes = None,
-    activation_fn=jax.nn.relu,
+    activation_fn=jax.nn.silu,
     # extra parameters
     attn_params: Optional[dict] = None,
 ):
@@ -1573,8 +1573,10 @@ def make_fermi_net_model_ef_shrd_sym(
   def init(
       key,
   ):    
-    dim_1_append = mes.get_dim_one_hot()    #3
-    dim_2_append = 2*mes.get_dim_one_hot()   #6
+    # dim_1_append = mes.get_dim_one_hot()    #3
+    # dim_2_append = 2*mes.get_dim_one_hot()   #6
+    dim_1_append = mes.get_dim_part_features()
+    dim_2_append = mes.get_dim_pair_features()
 
     # number of spin channel
     active_spin_channels = [spin for spin in nspins if spin > 0]
@@ -1582,12 +1584,24 @@ def make_fermi_net_model_ef_shrd_sym(
     # init params
     params = {}
     (num_one_features, num_two_features), params['input'] = (feature_layer.init())
+
+    key, subkey = jax.random.split(key)
+    params['one_reshp'] = network_blocks.init_linear_layer(subkey, num_one_features + dim_1_append, hidden_dims[0][0])
+
+    key, subkey = jax.random.split(key)
+    params['two_reshp'] = network_blocks.init_linear_layer(subkey, num_two_features + dim_2_append, hidden_dims[0][1])
     distinguish_ele = True
-    nfeatures = lambda out1, out2: (nchannels+2) * out1 + (nchannels+1) * out2  # 3*xxx + 3*xxx
-    dims_1_in = [nfeatures(num_one_features + dim_1_append, num_two_features)]    
-    dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]]  
+    nfeatures = lambda out1, out2: (nchannels + 2) * out1 + (nchannels + 1) * out2
+    dims_1_in = [nfeatures(hidden_dims[0][0], hidden_dims[0][1])]
+    dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]]
+    dims_2_in = [hidden_dims[0][1]] + [hdim[1] for hdim in hidden_dims[:-2]]
+
+ 
+    # nfeatures = lambda out1, out2: (nchannels+2) * out1 + (nchannels+1) * out2  # 3*xxx + 3*xxx
+    # dims_1_in = [nfeatures(num_one_features + dim_1_append, num_two_features)]    
+    # dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]]  
+    # dims_2_in = ([num_two_features + dim_2_append] + [hdim[1] for hdim in hidden_dims[:-2]])  # [10,16,16]
     dims_1_out = [hdim[0] for hdim in hidden_dims]  # [64,64,64,64]
-    dims_2_in = ([num_two_features + dim_2_append] + [hdim[1] for hdim in hidden_dims[:-2]])  # [10,16,16]
     dims_2_out = [hdim[1] for hdim in hidden_dims[:-1]]  # [16,16,16]
     key, subkey = jax.random.split(key)
     params['one'], params['two'] = init_layers(
@@ -1603,8 +1617,7 @@ def make_fermi_net_model_ef_shrd_sym(
     for ii in range(len(params['two'])):
       if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
         key, subkey = jax.random.split(key)
-        params['proj'].append(network_blocks.init_linear_layer(
-          subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
+        params['proj'].append(network_blocks.init_linear_layer( subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
         #[64,64,64] 
         # |  |  |
         # |  |  |
@@ -1613,12 +1626,13 @@ def make_fermi_net_model_ef_shrd_sym(
       else:
         # do not project if the input and output dims are the same
         params['proj'].append(None)
-    dim_proj_0_in = num_one_features + dim_1_append  #7
-    dim_proj_0_out = num_two_features  #4
+    # dim_proj_0_in = num_one_features + dim_1_append  #7
+    # dim_proj_0_out = num_two_features  #4
+    dim_proj_0_in = hidden_dims[0][0]
+    dim_proj_0_out = hidden_dims[0][1]
     if dim_proj_0_in != dim_proj_0_out:
       key, subkey = jax.random.split(key)
-      params['proj_0'] = network_blocks.init_linear_layer(
-        subkey, dim_proj_0_in, dim_proj_0_out, )
+      params['proj_0'] = network_blocks.init_linear_layer(subkey, dim_proj_0_in, dim_proj_0_out, )
       #7-->4
     else:
       params['proj_0'] = None
@@ -1680,8 +1694,10 @@ def make_fermi_net_model_ef_shrd_sym(
       params,
       e2_features,
   ):
-    c1 = mes.get_part_one_hot()  #(nele+nz,3)
-    c2 = mes.get_pair_one_hot()  #(nele+nz,nele+nz,6)
+    # c1 = mes.get_part_one_hot()  #(nele+nz,3)
+    # c2 = mes.get_pair_one_hot()  #(nele+nz,nele+nz,6)
+    c1 = mes.get_part_features()
+    c2 = mes.get_pair_features()
     h2 = e2_features
     hee, _, haa = mes.split_ee_ea_aa(h2)
     ha = jnp.mean(haa, axis=0)  #\Sigma_x hxy : (na,na,nf_two)->(na,nf_two)
@@ -1689,9 +1705,17 @@ def make_fermi_net_model_ef_shrd_sym(
     h1 = jnp.concatenate([he, ha], axis=0)    #(ne+na,nf_two)
     for i in range(len(params['two'])):
       if i == 0:
-        h1 = jnp.concatenate([h1, c1], axis=-1)  # (ne+na,nf_two+3)
+        # h1 = jnp.concatenate([h1, c1], axis=-1)  # (ne+na,nf_two+3)
+        # h2 = jnp.concatenate([h2, c2], axis=-1)  # (ne+na,ne+na,nf_two+6)
+        # h1_in = construct_symmetric_features_conv(h1, h2, params['proj_0'])
+
+        h1 = jnp.concatenate([h1, c1], axis=-1)
+        h2 = jnp.concatenate([h2, c2], axis=-1)
+        h1 = network_blocks.linear_layer(h1, **params['one_reshp'])
+        h2 = network_blocks.linear_layer(h2, **params['two_reshp'])
+        h1 = activation_fn(h1)
+        h2 = activation_fn(h2)
         h1_in = construct_symmetric_features_conv(h1, h2, params['proj_0'])
-        h2 = jnp.concatenate([h2, c2], axis=-1)  # (ne+na,ne+na,nf_two+6)
       else:
         h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][i-1])
       h1_next = _hi_next(h1_in, params['one'][i])

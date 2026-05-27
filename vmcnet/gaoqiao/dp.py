@@ -48,7 +48,7 @@ def switch_func_poly(
     return ret
 
 
-class ManyElectronSystem():
+class ManyElectronSystem_old():
   def __init__(
       self,     #以CONH3为例
       charges,  #[6, 8, 7, 1, 1, 1]
@@ -131,3 +131,303 @@ def reform_ee_ea_ae_aa(ee, ea, ae, aa):
     ee_ea=jnp.concatenate([ee,ea],axis=1)
     ae_aa=jnp.concatenate([ae,aa],axis=1)
     return jnp.concatenate([ee_ea,ae_aa],axis=0)
+
+
+INT=np.int64
+class ManyElectronSystem:
+  """
+  dp_type:
+    "original":
+        particle feature:
+          [onehot_up, onehot_down, onehot_nucleus]
+
+        pair feature:
+          concat(feature_i, feature_j)
+
+    "charge":
+        particle feature:
+          [onehot_up, onehot_down, onehot_nucleus, q_norm]
+
+        q_norm:
+          electron = -1 / Zmax
+          nucleus  =  Z / Zmax
+
+        pair feature:
+          [onehot_i, onehot_j, qi, qj, qi*qj]
+
+    "full":
+        particle feature:
+          [onehot_up, onehot_down, onehot_nucleus,
+           q, |q|, q^2, sign(q), spin_marker]
+
+        spin_marker:
+          up electron   = +1
+          down electron = -1
+          nucleus       =  0
+
+        pair feature:
+          [onehot_i, onehot_j,
+           qi, qj, qi*qj, |qi*qj|,
+           si, sj, si*sj]
+
+  Notes:
+    - get_part_one_hot() and get_pair_one_hot() are kept for compatibility,
+      but they return the active descriptor controlled by dp_type.
+    - If you need the raw 3-way one-hot, use get_raw_part_one_hot().
+  """
+
+  def __init__(
+      self,
+      charges,
+      nspins,
+      dp_type: str = "original",
+  ):
+    charges = np.asarray(charges, dtype=INT)
+    nspins = tuple(int(x) for x in nspins)
+
+    if len(nspins) != 2:
+      raise ValueError(f"Expected nspins=(n_up, n_down), got {nspins}")
+
+    if dp_type not in ("original", "charge", "full"):
+      raise ValueError(f"dp_type must be one of {'original', 'charge', 'full'}, got {dp_type}")
+
+    self.dp_type = dp_type
+    self.natoms = int(charges.shape[0])
+    self.nelecs = int(sum(nspins))
+    self.nparts = self.natoms + self.nelecs
+    self.nspins = nspins
+    self.np_spin = list(nspins) + [self.natoms]
+    self.np = [self.nelecs, self.natoms]
+    self.charges = np.array(charges, dtype=INT)
+
+    # ------------------------------------------------------------
+    # 1. Raw 3-way particle type:
+    #      0: spin-up electron
+    #      1: spin-down electron
+    #      2: nucleus
+    # ------------------------------------------------------------
+    raw_types = np.concatenate([np.zeros(nspins[0],dtype=INT),np.ones(nspins[1],dtype=INT),2*np.ones(self.natoms,dtype=INT)],axis=0)
+    self.raw_types = jnp.asarray(raw_types, dtype=jnp.int64)
+
+    self.raw_dim_one_hot = 3
+    self.raw_part_one_hot = jax.nn.one_hot(self.raw_types, self.raw_dim_one_hot)
+    self.raw_pair_one_hot = self._pair_concat(self.raw_part_one_hot)
+
+    # ------------------------------------------------------------
+    # 2. Physical charge q
+    #
+    #    electrons: -1
+    #    nuclei:     Z
+    #
+    #    normalized by max nuclear charge Zmax
+    # ------------------------------------------------------------
+    electron_charges = -np.ones(self.nelecs, dtype=np.float64)
+    nuclear_charges = self.charges.astype(np.float64)
+    part_charges = np.concatenate([electron_charges, nuclear_charges], axis=0)  #(np,)
+
+    zmax = float(np.max(np.abs(nuclear_charges))) if self.natoms > 0 else 1.0
+    if zmax <= 0.0:
+      zmax = 1.0
+
+    self.charge_scale = zmax
+    self.part_charges = jnp.asarray(part_charges, dtype=jnp.float64)
+    self.part_charges_norm = self.part_charges / self.charge_scale
+    q = self.part_charges_norm      #(np,)
+
+    # ------------------------------------------------------------
+    # 3. Spin marker:
+    #      up electron   = +1
+    #      down electron = -1
+    #      nucleus       =  0
+    # ------------------------------------------------------------
+    spin_marker = np.concatenate([np.ones(nspins[0],dtype=np.float64), -np.ones(nspins[1],dtype=np.float64), np.zeros(self.natoms,dtype=np.float64)], axis=0)
+    self.spin_marker = jnp.asarray(spin_marker, dtype=jnp.float64)
+
+    # ------------------------------------------------------------
+    # 4. Active particle / pair descriptors
+    # ------------------------------------------------------------
+    if dp_type == "original":
+      self.part_one_hot = self.raw_part_one_hot
+      self.pair_one_hot = self.raw_pair_one_hot
+
+    elif dp_type == "charge":
+      # particle: [3-way one-hot, q]
+      self.part_one_hot = jnp.concatenate([self.raw_part_one_hot , q[:, None],], axis=-1)
+
+      qi = jnp.broadcast_to(q[:, None], (self.nparts, self.nparts))
+      qj = jnp.broadcast_to(q[None, :], (self.nparts, self.nparts))
+      qiqj = qi * qj
+
+      # pair: [raw onehot_i, raw onehot_j, qi, qj, qi*qj]
+      self.pair_one_hot = jnp.concatenate([self.raw_pair_one_hot, qi[..., None], qj[..., None], qiqj[..., None],], axis=-1)
+
+    elif dp_type == "full":
+      s = self.spin_marker
+
+      q_features = jnp.stack([q, jnp.abs(q), q ** 2, jnp.sign(q)], axis=-1)
+
+      # particle:
+      # [onehot_up/down/nucleus, q, |q|, q^2, sign(q), spin_marker]
+      self.part_one_hot = jnp.concatenate([self.raw_part_one_hot, q_features, s[:, None]], axis=-1)
+
+      qi = jnp.broadcast_to(q[:, None], (self.nparts, self.nparts))
+      qj = jnp.broadcast_to(q[None, :], (self.nparts, self.nparts))
+      qiqj = qi * qj
+
+      si = jnp.broadcast_to(s[:, None], (self.nparts, self.nparts))
+      sj = jnp.broadcast_to(s[None, :], (self.nparts, self.nparts))
+      sisj = si * sj
+
+      # pair:
+      # [raw onehot_i, raw onehot_j, qi, qj, qi*qj, |qi*qj|, si, sj, si*sj]
+      self.pair_one_hot = jnp.concatenate([
+          self.raw_pair_one_hot, qi[..., None], qj[..., None], qiqj[..., None], 
+          jnp.abs(qiqj)[..., None], si[..., None], sj[..., None], sisj[..., None],
+      ], axis=-1)
+
+    self.dim_one_hot = int(self.part_one_hot.shape[-1])
+    self.dim_pair_one_hot = int(self.pair_one_hot.shape[-1])
+
+  # ------------------------------------------------------------
+  # Internal helper
+  # ------------------------------------------------------------
+  def _pair_concat(self, part_feat):
+    """
+    part_feat: [nparts, dim]
+    return:    [nparts, nparts, 2 * dim]
+    """
+    return jnp.concatenate([
+        jnp.tile(part_feat.reshape([self.nparts, 1, -1]), [1, self.nparts, 1]),
+        jnp.tile(part_feat.reshape([1, self.nparts, -1]), [self.nparts, 1, 1]),
+    ], axis=-1)
+
+  # ------------------------------------------------------------
+  # Active feature API
+  # ------------------------------------------------------------
+  def get_dim_one_hot(self):
+    """ Active particle descriptor dimension. """
+    return self.dim_one_hot
+
+  def get_dim_pair_one_hot(self):
+    """ Active pair descriptor dimension. """
+    return self.dim_pair_one_hot
+
+  def get_part_one_hot(self):
+    """ Kept for compatibility.Returns active particle descriptor controlled by dp_type. """
+    return self.part_one_hot
+
+  def get_pair_one_hot(self):
+    """ Kept for compatibility.Returns active pair descriptor controlled by dp_type. """
+    return self.pair_one_hot
+
+  # aliases, if you prefer clearer names
+  def get_part_features(self):
+    return self.part_one_hot
+
+  def get_pair_features(self):
+    return self.pair_one_hot
+
+  def get_dim_part_features(self):
+    return self.dim_one_hot
+
+  def get_dim_pair_features(self):
+    return self.dim_pair_one_hot
+
+  # ------------------------------------------------------------
+  # Raw original 3-way one-hot API
+  # ------------------------------------------------------------
+  def get_raw_dim_one_hot(self):
+    return self.raw_dim_one_hot
+
+  def get_raw_part_one_hot(self):
+    return self.raw_part_one_hot
+
+  def get_raw_pair_one_hot(self):
+    return self.raw_pair_one_hot
+
+  # ------------------------------------------------------------
+  # Charge / spin API
+  # ------------------------------------------------------------
+  def get_part_charges(self):
+    """ Unnormalized physical charges: electron = -1  nucleus = Z """
+    return self.part_charges
+
+  def get_part_charges_norm(self):
+    """ Normalized charges: electron = -1 / Zmax  nucleus =  Z / Zmax """
+    return self.part_charges_norm
+
+  def get_spin_marker(self):
+    """ up electron = +1   down electron = -1   nucleus = 0 """
+    return self.spin_marker
+
+  # ------------------------------------------------------------
+  # Split API
+  # ------------------------------------------------------------
+  def get_split_ea(self):
+    return self.np
+
+  def get_split_eea(self):
+    return self.np_spin
+
+  def split_ea(self, data, axis=0):
+    """
+    Split particle data into electron part and atom part.
+
+    data shape example:
+      [nelec + natom, ...]
+    """
+    return jnp.split(data, self.get_split_ea()[:-1], axis=axis)
+
+  def split_ee_ea_aa(self, data, axis=(0, 1)):
+    """
+    data: [nparts, nparts, ...]
+
+    return:
+      ee: [nelec, nelec, ...]
+      ea: [nelec, natom, ...]
+      aa: [natom, natom, ...]
+    """
+    ea_split = self.get_split_ea()[:-1]
+
+    split0 = jnp.split(data, ea_split, axis=axis[0])
+
+    ee, ea = jnp.split(split0[0], ea_split, axis=axis[1])
+    ae, aa = jnp.split(split0[1], ea_split, axis=axis[1])
+
+    return ee, ea, aa
+
+  def split_ee_ea_ae_aa(self, data, axis=(0, 1)):
+    """
+    data: [nparts, nparts, ...]
+
+    return:
+      ee: [nelec, nelec, ...]
+      ea: [nelec, natom, ...]
+      ae: [natom, nelec, ...]
+      aa: [natom, natom, ...]
+    """
+    ea_split = self.get_split_ea()[:-1]
+
+    split0 = jnp.split(data, ea_split, axis=axis[0])
+
+    ee, ea = jnp.split(split0[0], ea_split, axis=axis[1])
+    ae, aa = jnp.split(split0[1], ea_split, axis=axis[1])
+
+    return ee, ea, ae, aa
+
+  def print_summary(self):
+    print("ManyElectronSystem summary")
+    print("  dp_type:", self.dp_type)
+    print("  natoms:", self.natoms)
+    print("  nelecs:", self.nelecs)
+    print("  nparts:", self.nparts)
+    print("  charges:", self.charges)
+    print("  nspins:", self.nspins)
+    print("  charge_scale:", self.charge_scale)
+    print("  raw_dim_one_hot:", self.raw_dim_one_hot)
+    print("  dim_one_hot:", self.dim_one_hot)
+    print("  dim_pair_one_hot:", self.dim_pair_one_hot)
+    print("  part_one_hot shape:", self.part_one_hot.shape)
+    print("  pair_one_hot shape:", self.pair_one_hot.shape)
+    print("  part_one_hot:", self.part_one_hot)
+    print("  pair_one_hot[0]:", self.pair_one_hot[0])

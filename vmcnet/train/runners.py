@@ -299,6 +299,8 @@ def _get_gaoqiao_model(
             jastrow_mlp_ndim=config_gq.jastrow_mlp_ndim,
             RHF=config_gq.RHF,
             activation_type=config_gq.activation_type,
+            jastrow_activation_type=config_gq.jastrow_activation_type,
+            dp_type=config_gq.dp_type,
         )        
 
     elif wfn_type == "gq_ferminet":

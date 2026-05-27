@@ -26,6 +26,8 @@ def build_network(
 	jastrow_mlp_ndim: int = 64,
 	RHF: bool = False,
 	activation_type: str = "tanh",
+	jastrow_activation_type: str = "tanh",
+	dp_type: str = "original",
 ):
 	if activation_type == "tanh":
 		activation_fn = jax.nn.tanh
@@ -33,6 +35,14 @@ def build_network(
 		activation_fn = jax.nn.relu
 	elif activation_type == "silu":
 		activation_fn = jax.nn.silu
+
+	if jastrow_activation_type == "tanh":
+		jastrow_activation_fn = jax.nn.tanh
+	elif jastrow_activation_type == "relu":
+		jastrow_activation_fn = jax.nn.relu
+	elif jastrow_activation_type == "silu":
+		jastrow_activation_fn = jax.nn.silu
+	
 
 	hidden_dims=tuple([(h1, h2) for _ in range(depth)])
 	ndim = 3 
@@ -47,7 +57,7 @@ def build_network(
 	full_det=True
 	hf_solution=None
 	make_envelope_kwargs = {"hiddens": [] if nh==0 else [nh],}
-	mes = dp.ManyElectronSystem(charges, nspins)
+	mes = dp.ManyElectronSystem(charges, nspins, dp_type)
 	make_feature_layer_kwargs={}
 	for kk, vv in feat_params.items():
 		make_feature_layer_kwargs[kk] = vv
@@ -71,7 +81,7 @@ def build_network(
 			nspins = nspins,
 			hiddenlayers_num=jastrow_mlp_nlayer,
 			hiddenlayers_size=jastrow_mlp_ndim,
-			activation_fn=activation_fn,
+			activation_fn=jastrow_activation_fn,
 			residual=True if jastrow_type=="mlp_res" else False,
 			)
 	elif jastrow_type == "simple_ee":

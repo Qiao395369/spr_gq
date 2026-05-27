@@ -464,6 +464,7 @@ def get_default_gq_config() -> Dict:
         "feat_act_func": 'tanh',
         "feat_numb_divid": 1,
         "scale": 1.0,
+        "dp_type":"original",  #["original", "charge", "full"]
         "type":"ef_shrd_sym",  #["ef","fermi","shrd","ef_shrd","ef_shrd_sym"]
         "envelope_type": "ds_hz", #["ds_hz","iso"]
         "ndet":16,
@@ -476,6 +477,7 @@ def get_default_gq_config() -> Dict:
         "density_plot_filename": NO_PATH,
         "density_plot_nepochs": 0,
         "jastrow_type": "mlp_res", #choices=["mlp", "mlp_res", "simple_ee","none"]
+        "jastrow_activation_type": "tanh",
         "jastrow_mlp_nlayer": 4,
         "jastrow_mlp_ndim": 32,
         "rescale_input": "all", #choices=["all", "all_eps", "e-a", "None"]
