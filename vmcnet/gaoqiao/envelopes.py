@@ -709,8 +709,9 @@ def make_ds_hz_envelope(
 
   return Envelope(EnvelopeType.PRE_DETERMINANT_Z, init, apply)
 
-def make_ds_hz_envelope_new(
+def make_ds_hz_envelope_old(
 		hiddens: Tuple[int] = (8,8),  #[8]
+    activation_fn=jax.nn.silu,
 ) -> Envelope:
   """Creates an isotropic exponentially decaying multiplicative envelope."""
 
@@ -768,7 +769,7 @@ def make_ds_hz_envelope_new(
     for ii in range(len(params)):
       hz_out=network_blocks.linear_layer(hz_in,**(params[ii]))
       if ii != len(params) - 1:
-        hz_out = jnp.tanh(hz_out)
+        hz_out = activation_fn(hz_out)
       hz_in=residual(hz_in,hz_out)
     return hz_in
 

@@ -70,7 +70,9 @@ def build_network(
 		)  # type: networks.FeatureLayer
 	
 	if envelope_type=="ds_hz":
-		envelope = envelopes.make_ds_hz_envelope(**make_envelope_kwargs)  # type: envelopes.Envelope
+		envelope = envelopes.make_ds_hz_envelope(**make_envelope_kwargs,activation_fn=activation_fn)  # type: envelopes.Envelope
+	elif envelope_type=="ds_hz_old":
+		envelope = envelopes.make_ds_hz_envelope_old(**make_envelope_kwargs,activation_fn=activation_fn)  # type: envelopes.Envelope
 	elif envelope_type=="iso":
 		envelope = envelopes.make_isotropic_envelope()
 	else :
@@ -166,7 +168,21 @@ def build_network(
 			activation_fn=activation_fn,
 			attn_params=attn,
 		)
-
+	elif gq_type == "ef_shrd_sym_old":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_old(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			activation_fn=activation_fn,
+			attn_params=attn,
+		)
 	elif gq_type == "fermi":
 		ef=False
 		envelope = envelopes.make_isotropic_envelope()
