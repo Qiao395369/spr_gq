@@ -557,8 +557,159 @@ def make_ds_isotropic_envelope(
 
   return Envelope(EnvelopeType.PRE_DETERMINANT,init,apply)
 
-
 def make_ds_hz_envelope(
+    hiddens: Tuple[int, ...] = (8, 8),
+    activation_fn=jax.nn.silu,
+    hidden_scale: float = 1.0,
+    output_scale: float = 1.0e-2,
+    sigma_min: float = 0.05,
+    sigma_init: float = 1.0,
+    pi_base: float = 1.0,
+    pi_scale: float = 0.1,
+) -> Envelope:
+  """Isotropic exponentially decaying multiplicative envelope.
+
+  Envelope:
+    env_i_k = sum_A pi_Ak * exp(-sigma_Ak * |r_i - R_A|)
+
+  Improvements over original:
+    1. Nonzero hidden initialization.
+    2. Positive sigma via softplus.
+    3. No residual on final layer.
+    4. Different spin channels get different keys.
+  """
+
+  def _inverse_softplus(x):
+    x = jnp.asarray(x)
+    return x + jnp.log(-jnp.expm1(-x))
+
+  def init_one(
+      key,
+      hz_size,
+      output_dim,
+  ) -> Sequence[Mapping[str, jnp.ndarray]]:
+
+    dims_in = [hz_size] + list(hiddens)
+    dims_out = list(hiddens) + [output_dim]
+
+    params = {}
+    params["pi"] = []
+    params["sigma"] = []
+
+    for ii in range(len(dims_in)):
+      is_last = ii == len(dims_in) - 1
+      layer_scale = output_scale if is_last else hidden_scale
+
+      key, subkey = jax.random.split(key)
+      params["pi"].append(
+          network_blocks.init_linear_layer(
+              subkey,
+              in_dim=dims_in[ii],
+              out_dim=dims_out[ii],
+              include_bias=True,
+              scale=layer_scale,
+          )
+      )
+
+      key, subkey = jax.random.split(key)
+      sigma_layer = network_blocks.init_linear_layer(
+          subkey,
+          in_dim=dims_in[ii],
+          out_dim=dims_out[ii],
+          include_bias=True,
+          scale=layer_scale,
+      )
+
+      # Initialize final sigma bias so that:
+      # sigma_min + softplus(raw_sigma) ~= sigma_init
+      if is_last:
+        raw_init = _inverse_softplus(sigma_init - sigma_min)
+        if "b" in sigma_layer:
+          sigma_layer["b"] = jnp.ones((output_dim,)) * raw_init
+
+      params["sigma"].append(sigma_layer)
+
+    return params
+
+  def init(
+      key,
+      hz_size,
+      output_dims,
+  ):
+    params = []
+    for output_dim in output_dims:
+      key, subkey = jax.random.split(key)
+      params.append(
+        init_one(subkey, hz_size, output_dim)
+      )
+    return params
+
+  def residual(x, y):
+    return (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y
+
+  def apply_net(
+      hz,
+      params,
+  ):
+    x = hz
+
+    for ii in range(len(params)):
+      y = network_blocks.linear_layer(x, **params[ii])
+
+      # Hidden layers.
+      if ii != len(params) - 1:
+        y = activation_fn(y)
+        x = residual(x, y)
+
+      # Final layer: raw output, no activation, no residual.
+      else:
+        x = y
+
+    return x
+
+  def apply(
+      *,
+      hz,
+      ae,
+      pi,
+      sigma,
+  ) -> jnp.ndarray:
+    """Computes isotropic exponentially decaying envelope.
+
+    Args:
+      hz:
+        Nuclear hidden states, shape [natoms, hz_size].
+      ae:
+        Electron-nucleus displacement vectors for one spin channel,
+        shape [ne_spin, natoms, 3].
+      pi:
+        pi network params.
+      sigma:
+        sigma network params.
+
+    Returns:
+      Envelope values, shape [ne_spin, output_dim].
+    """
+
+    raw_pi = apply_net(hz, pi)
+    raw_sigma = apply_net(hz, sigma)
+
+    pi = pi_base + pi_scale * raw_pi
+
+    sigma = sigma_min + jax.nn.softplus(raw_sigma)
+
+    r_ae = jnp.linalg.norm(ae, axis=-1)
+
+    env = jnp.sum(
+        jnp.exp(-r_ae[:, :, None] * sigma[None, :, :]) * pi[None, :, :],
+        axis=1,
+    )
+
+    return env
+
+  return Envelope(EnvelopeType.PRE_DETERMINANT_Z, init, apply)
+
+def make_ds_hz_envelope_new(
 		hiddens: Tuple[int] = (8,8),  #[8]
 ) -> Envelope:
   """Creates an isotropic exponentially decaying multiplicative envelope."""
@@ -601,7 +752,7 @@ def make_ds_hz_envelope(
       hz_size,  #(16)
       output_dims, #[16,16] or [odim+diff,odim]
   ):
-    params=[]
+    params = []
     for output_dim in output_dims:
       params.append(
         init_one(key,hz_size,output_dim)
@@ -616,8 +767,8 @@ def make_ds_hz_envelope(
     hz_in=hz
     for ii in range(len(params)):
       hz_out=network_blocks.linear_layer(hz_in,**(params[ii]))
-      if ii!=len(params)-1:
-        hz_out=jnp.tanh(hz_out)
+      if ii != len(params) - 1:
+        hz_out = jnp.tanh(hz_out)
       hz_in=residual(hz_in,hz_out)
     return hz_in
 
