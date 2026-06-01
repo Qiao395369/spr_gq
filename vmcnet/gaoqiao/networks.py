@@ -1773,8 +1773,10 @@ def make_fermi_net_model_ef_shrd_sym_old(
   def init(
       key,
   ):    
-    dim_1_append = mes.get_dim_one_hot()    #3
-    dim_2_append = 2*mes.get_dim_one_hot()   #6
+    # dim_1_append = mes.get_dim_one_hot()    #3
+    # dim_2_append = 2*mes.get_dim_one_hot()   #6
+    dim_1_append = mes.get_dim_part_features()
+    dim_2_append = mes.get_dim_pair_features()
 
     # number of spin channel
     active_spin_channels = [spin for spin in nspins if spin > 0]
