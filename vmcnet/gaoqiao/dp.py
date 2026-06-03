@@ -59,11 +59,11 @@ class ManyElectronSystem_old():
     self.nparts = self.natoms + self.nelecs             #30
     self.np_spin = list(nspins) + [self.natoms]         #[12,12,6]
     self.np = [self.nelecs, self.natoms]                #[24,6]
-    self.charges = np.array(charges, dtype = np.int32)  #[6, 8, 7, 1, 1, 1]
+    self.charges = np.array(charges, dtype = np.int64)  #[6, 8, 7, 1, 1, 1]
 
     self.uniq_charges = np.unique(np.sort(self.charges))  #[1,6,7,8]   (得到升序、无重复的电荷列表)
     self.n_uniq_charges = self.uniq_charges.size          #4
-    self.types = np.zeros(self.natoms, dtype = np.int32)  #[0,0,0,0,0,0]
+    self.types = np.zeros(self.natoms, dtype = np.int64)  #[0,0,0,0,0,0]
     for ii in range(len(self.uniq_charges)):
       self.types += (charges == self.uniq_charges[ii]) * ii  #[1,3,2,0,0,0]
     self.non_zero_spin_channels = np.sum(np.array(nspins,dtype=int) != 0)  #2
@@ -144,6 +144,17 @@ class ManyElectronSystem:
         pair feature:
           concat(feature_i, feature_j)
 
+    "element":
+        particle feature:
+          [onehot_up, onehot_down, onehot_element_1, onehot_element_2, ...]
+
+        Element order follows first appearance in charges.
+        Example: C2H6 with charges [6, 6, 1, 1, 1, 1, 1, 1]
+          -> [onehot_up, onehot_down, onehot_C, onehot_H]
+
+        pair feature:
+          concat(feature_i, feature_j)
+
     "charge":
         particle feature:
           [onehot_up, onehot_down, onehot_nucleus, q_norm]
@@ -188,8 +199,8 @@ class ManyElectronSystem:
     if len(nspins) != 2:
       raise ValueError(f"Expected nspins=(n_up, n_down), got {nspins}")
 
-    if dp_type not in ("original", "charge", "full"):
-      raise ValueError(f"dp_type must be one of {'original', 'charge', 'full'}, got {dp_type}")
+    if dp_type not in ("original", "charge", "full", "element"):
+      raise ValueError(f"dp_type must be one of {'original', 'charge', 'full', 'element'}, got {dp_type}")
 
     self.dp_type = dp_type
     self.natoms = int(charges.shape[0])
@@ -249,6 +260,33 @@ class ManyElectronSystem:
     if dp_type == "original":
       self.part_one_hot = self.raw_part_one_hot
       self.pair_one_hot = self.raw_pair_one_hot
+
+    elif dp_type == "element":
+      # particle: element-wise one-hot.
+      # Example C2H6 with charges [6, 6, 1, 1, 1, 1, 1, 1]:
+      #   [up, down, C, H]
+      # Element order follows first appearance in self.charges.
+      element_charges = []
+      for z in self.charges:
+        z_int = int(z)
+        if z_int not in element_charges:
+          element_charges.append(z_int)
+      self.element_charges = np.asarray(element_charges, dtype=INT)
+
+      atom_types = np.zeros(self.natoms, dtype=INT)
+      for ii, z in enumerate(self.element_charges):
+        atom_types += (self.charges == z).astype(INT) * (2 + ii)
+
+      element_types = np.concatenate([
+          np.zeros(nspins[0], dtype=INT),
+          np.ones(nspins[1], dtype=INT),
+          atom_types,
+      ], axis=0)
+      self.element_types = jnp.asarray(element_types, dtype=jnp.int64)
+      self.element_dim_one_hot = 2 + len(self.element_charges)
+
+      self.part_one_hot = jax.nn.one_hot(self.element_types, self.element_dim_one_hot)
+      self.pair_one_hot = self._pair_concat(self.part_one_hot)
 
     elif dp_type == "charge":
       # particle: [3-way one-hot, q]
@@ -431,3 +469,71 @@ class ManyElectronSystem:
     print("  pair_one_hot shape:", self.pair_one_hot.shape)
     print("  part_one_hot:", self.part_one_hot)
     print("  pair_one_hot[0]:", self.pair_one_hot[0])
+
+if __name__ == "__main__":
+    # 测试用参数：C2H6 分子（2个C，6个H），自旋向上2个电子，向下2个电子
+    test_charges = [2, 3, 1]  # 核电荷
+    test_nspins = (3, 3)  # 上自旋电子数，下自旋电子数
+    
+    # 测试所有4种类型
+    test_types = ["original", "element", "charge", "full"]
+    
+    for dp_type in test_types:
+        print("=" * 80)
+        print(f"测试 dp_type = {dp_type}")
+        print("=" * 80)
+        
+        # 1. 初始化系统
+        system = ManyElectronSystem(
+            charges=test_charges,
+            nspins=test_nspins,
+            dp_type=dp_type
+        )
+        
+        # 2. 打印系统总结
+        system.print_summary()
+        print("\n" + "-" * 50)
+        
+        # 3. 测试核心API方法
+        print("=== 测试核心API方法 ===")
+        # 粒子/对特征
+        part_feat = system.get_part_features()
+        pair_feat = system.get_pair_features()
+        print(f"粒子特征形状: {part_feat.shape}")
+        print(f"成对特征形状: {pair_feat.shape}")
+        
+        # 维度
+        dim_part = system.get_dim_part_features()
+        dim_pair = system.get_dim_pair_features()
+        print(f"粒子特征维度: {dim_part}")
+        print(f"成对特征维度: {dim_pair}")
+        
+        # 电荷与自旋
+        charges = system.get_part_charges()
+        charges_norm = system.get_part_charges_norm()
+        spin_marker = system.get_spin_marker()
+        print(f"物理电荷前5个: {charges[:5]}")
+        print(f"归一化电荷前5个: {charges_norm[:5]}")
+        print(f"自旋标记前5个: {spin_marker[:5]}")
+        
+        # 原始独热编码
+        raw_part = system.get_raw_part_one_hot()
+        print(f"原始3分类独热形状: {raw_part.shape}")
+        
+        # 4. 测试分割功能
+        print("\n=== 测试数据分割功能 ===")
+        # 粒子级分割（电子/原子核）
+        elec_part, atom_part = system.split_ea(part_feat)
+        print(f"电子特征形状: {elec_part.shape}")
+        print(f"原子核特征形状: {atom_part.shape}")
+        
+        # 成对特征四分割 (ee, ea, ae, aa)
+        ee, ea, ae, aa = system.split_ee_ea_ae_aa(pair_feat)
+        print(f"电子-电子成对特征: {ee.shape}")
+        print(f"电子-原子核成对特征: {ea.shape}")
+        print(f"原子核-电子成对特征: {ae.shape}")
+        print(f"原子核-原子核成对特征: {aa.shape}")
+        
+        print("\n" + "=" * 80 + "\n\n")
+    
+    print("✅ 所有类型测试完成！")
