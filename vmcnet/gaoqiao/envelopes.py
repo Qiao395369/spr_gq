@@ -711,7 +711,7 @@ def make_ds_hz_envelope(
 
 def make_ds_hz_envelope_old(
 		hiddens: Tuple[int] = (8,8),  #[8]
-    activation_fn=jax.nn.silu,
+    activation_fn=jax.nn.tanh,
 ) -> Envelope:
   """Creates an isotropic exponentially decaying multiplicative envelope."""
 

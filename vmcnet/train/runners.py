@@ -274,7 +274,7 @@ def _get_gaoqiao_model(
         # trimul_params = None
         # gemi_params = None
         # feat_params = None
-        params, network_wfn, det_fn, orb_fn = gaoqiaobuild.build_network(           #orbitals
+        params, network_wfn, det_fn, orb_fn , _= gaoqiaobuild.build_network(           #orbitals
             n=nelec,  #电子个数
             charges=charges,  #i.e. charges=jnp.asarray([7.,7.])
             nspins=nspins,   #i.e. (7,7)

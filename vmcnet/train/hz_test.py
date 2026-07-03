@@ -33,6 +33,8 @@ import vmcnet.updates as updates
 import vmcnet.gaoqiao.envelopes as envelopes
 import vmcnet.gaoqiao.jastrows as jastrows
 import vmcnet.utils as utils
+import vmcnet.gaoqiao.build as gaoqiaobuild
+from vmcnet.gaoqiao.sr import block_ravel_pytree
 import kfac_jax
 import vmcnet.gaoqiao.fermi_ferminet.fermi_system as fermi_system
 import vmcnet.train.pretrain_demo as pretrain
@@ -172,6 +174,10 @@ def _get_logdir_and_save_config(reload_config: ConfigDict, config: ConfigDict,in
     "          Run with configuration: %s", name, config.logdir+"/"+name+"_config.json", config.logdir+"/"+"config.json")
     return config.logdir
 
+def block_fn(block):
+        if not isinstance(block, dict):
+            return False
+        return set() < set(block.keys()) <= {"w", "b"}
 
 def _save_git_hash(logdir):
     if logdir is None:
@@ -251,8 +257,7 @@ def _get_gaoqiao_model(
         key,
         apply_pmap
 ):
-    import vmcnet.gaoqiao.build as gaoqiaobuild
-    from vmcnet.gaoqiao.sr import block_ravel_pytree
+    
     key, subkey = jax.random.split(key)
     # charges=jnp.asarray([7.,7.])
     if wfn_type == "gaoqiao":
@@ -276,7 +281,7 @@ def _get_gaoqiao_model(
         # trimul_params = None
         # gemi_params = None
         # feat_params = None
-        params, network_wfn, det_fn, orb_fn,hz_fn = gaoqiaobuild.build_network(           #orbitals
+        params, network_wfn, det_fn, orb_fn , hz_fn= gaoqiaobuild.build_network(           #orbitals
             n=nelec,  #电子个数
             charges=charges,  #i.e. charges=jnp.asarray([7.,7.])
             nspins=nspins,   #i.e. (7,7)
@@ -301,6 +306,7 @@ def _get_gaoqiao_model(
             jastrow_mlp_ndim=config_gq.jastrow_mlp_ndim,
             RHF=config_gq.RHF,
             activation_type=config_gq.activation_type,
+            dp_type=config_gq.dp_type
         )        
 
     elif wfn_type == "gq_ferminet":
@@ -447,11 +453,6 @@ def _get_gaoqiao_model(
     else:
         raise ValueError(f"Unknown electron wavefunction type: {wfn_type}")
     
-    def block_fn(block):
-        if not isinstance(block, dict):
-            return False
-        return set() < set(block.keys()) <= {"w", "b"}
-    
     print("params.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
     print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
     raveled_params, _ = jax.flatten_util.ravel_pytree(params)
@@ -491,7 +492,7 @@ def _get_gaoqiao_model(
     orb_fn_vmap = jax.vmap(jax.vmap(orb_fn_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
 
     def hz_fn_novmap(params,xp,xe):
-        hz = hz_fn(params,xe,xp)[0] #xe(ne,3),xp(na,3)
+        hz = hz_fn(params,xe,xp) #xe(ne,3),xp(na,3)
         return hz
     
     hz_fn_vmap = jax.vmap(jax.vmap(hz_fn_novmap, in_axes=(None, None, 0)), in_axes=(None, 0, 0))
@@ -724,7 +725,7 @@ def _setup_vmc(
 
     # Make the model
     if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer","lapnet"]:
-        log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply, det_fn_novmap,det_fn_vmap,orb_fn_vmap, hz_fn_vmap, params, key =  _get_gaoqiao_model(
+        log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply, det_fn_novmap,det_fn_vmap,orb_fn_vmap, hz_fn_vmap,params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
@@ -1049,660 +1050,303 @@ def _compute_and_save_energy_statistics(
         output_filename,
     )
 
-
-
-
-
-
-# =========================
-# MCMC diagnostics for dissociated H
-# =========================
-
-import csv
-import matplotlib
-matplotlib.use("Agg")
+import numpy as np
 import matplotlib.pyplot as plt
 
 
-def _device_to_np(x):
-    return np.asarray(jax.device_get(x))
-
-
-def _get_H_radius(atoms_np, geom_idx, H_idx):
-    """Return R_H, min distance from H to body, and counting radius r_c."""
-    R = atoms_np[geom_idx]
-    R_H = R[H_idx]
-    body_idx = [i for i in range(R.shape[0]) if i != H_idx]
-    d_body = np.linalg.norm(R[body_idx] - R_H[None, :], axis=-1)
-    dmin = float(np.min(d_body))
-    r_c = min(2.5, 0.35 * dmin)
-    return R_H, dmin, r_c
-
-
-def _compute_H_observables(elec_np, atoms_np, geom_indices, H_idx, n_up):
+def as_numpy(x):
     """
-    elec_np:  [W, B, Ne, 3]
-    atoms_np: [W, Nat, 3]
+    支持 jax array / numpy array。
     """
-    rows = []
-    dmin_samples = {}
-
-    for g in geom_indices:
-        R_H, d_H_body_min, r_c = _get_H_radius(atoms_np, g, H_idx)
-
-        d = np.linalg.norm(elec_np[g] - R_H[None, None, :], axis=-1)  # [B, Ne]
-
-        nH = (d < r_c).sum(axis=1)
-        nH_up = (d[:, :n_up] < r_c).sum(axis=1)
-        nH_down = (d[:, n_up:] < r_c).sum(axis=1)
-
-        dmin_eH = d.min(axis=1)   #（B)
-
-        rows.append({
-            "geom": int(g),
-            "d_H_body_min": d_H_body_min,
-            "r_c": float(r_c),
-            "nH_mean": float(np.mean(nH)),
-            "nH_std": float(np.std(nH)),
-            "nH_up_mean": float(np.mean(nH_up)),
-            "nH_down_mean": float(np.mean(nH_down)),
-            "dmin_mean": float(np.mean(dmin_eH)),
-            "dmin_p10": float(np.percentile(dmin_eH, 10)),
-            "dmin_p50": float(np.percentile(dmin_eH, 50)),
-            "dmin_p90": float(np.percentile(dmin_eH, 90)),
-        })
-
-        dmin_samples[int(g)] = dmin_eH.copy()
-
-    return rows, dmin_samples
+    return np.asarray(x, dtype=np.float64)
 
 
-def _sample_H_1s(key, R_H, n_samples, dtype, zeta=1.0):
+def normalize_hz(hz, mode="zscore", eps=1e-8):
     """
-    Approx hydrogen 1s distribution:
-        radial pdf proportional to r^2 exp(-2 zeta r)
-    therefore:
-        r ~ Gamma(shape=3, scale=1/(2*zeta))
-    """
-    key, key_r, key_u = jax.random.split(key, 3)
+    hz: (natoms, hidden_dim)
 
-    r = jax.random.gamma(
-        key_r,
-        a=jnp.asarray(3.0, dtype=dtype),
-        shape=(n_samples,),
-        dtype=dtype,
-    ) / jnp.asarray(2.0 * zeta, dtype=dtype)
-
-    u = jax.random.normal(key_u, shape=(n_samples, 3), dtype=dtype)
-    u = u / jnp.linalg.norm(u, axis=-1, keepdims=True)
-
-    pos = R_H[None, :] + r[:, None] * u
-    return key, pos
-
-
-def _get_seed_electron_indices(single_nspins, H_idx, n_up):
-    """
-    Electron ordering follows your initialize_molecular_pos logic:
-        first all spin-up electrons atom by atom,
-        then all spin-down electrons atom by atom.
-
-    For H_idx=4:
-        single_nspins[4] = [0, 1]
-    so H has no initial up electron and one initial down electron.
-    """
-    s = _device_to_np(single_nspins).astype(int)
-    natoms = s.shape[0]
-
-    if H_idx < 0:
-        H_idx = natoms + H_idx
-
-    # If dissociated H has no up electron assigned, use the first up electron as donor.
-    if s[H_idx, 0] > 0:
-        up_eidx = int(np.sum(s[:H_idx, 0]))
-    else:
-        up_eidx = 0
-
-    # For down electron, use the electron assigned to dissociated H.
-    if s[H_idx, 1] > 0:
-        down_eidx = int(n_up + np.sum(s[:H_idx, 1]))
-    else:
-        down_eidx = int(n_up)
-
-    return up_eidx, down_eidx
-
-
-def _make_seeded_elec_position(
-    key,
-    elec_position,
-    atoms_position,
-    geom_indices,
-    H_idx,
-    n_up,
-    single_nspins,
-    dtype,
-    mode,
-    zeta=1.0,
-):
-    """
     mode:
-      normal      : unchanged
-      H_down_seed : force the H-assigned down electron near dissociated H
-      H_up_seed   : force one up electron near dissociated H, and move H-down electron to old up position
-      mixed_seed  : first half H_up_seed, second half H_down_seed
+      "none"   : 不归一化
+      "center" : 每个 hidden channel 减均值
+      "zscore" : 每个 hidden channel 做 z-score
+      "l2"     : 每个原子向量做 L2 normalization
     """
-    x = jnp.array(elec_position)
-    atoms = jnp.array(atoms_position)
+    hz = as_numpy(hz)
 
-    if H_idx < 0:
-        H_idx = atoms.shape[1] + H_idx
+    if mode is None or mode == "none":
+        return hz
 
-    B = x.shape[1]
-    up_eidx, down_eidx = _get_seed_electron_indices(single_nspins, H_idx, n_up)
+    if mode == "center":
+        return hz - hz.mean(axis=0, keepdims=True)
 
-    logging.info(f"seed indices: up_eidx={up_eidx}, down_eidx={down_eidx}")
+    if mode == "zscore":
+        mu = hz.mean(axis=0, keepdims=True)
+        std = hz.std(axis=0, keepdims=True)
+        return (hz - mu) / (std + eps)
 
-    if mode == "normal":
-        return key, x
+    if mode == "l2":
+        norm = np.linalg.norm(hz, axis=-1, keepdims=True)
+        return hz / (norm + eps)
 
-    for g in geom_indices:
-        R_H = atoms[g, H_idx]
-
-        if mode == "H_down_seed":
-            key, pos_down = _sample_H_1s(key, R_H, B, dtype=dtype, zeta=zeta)
-            x = x.at[g, :, down_eidx, :].set(pos_down)
-
-        elif mode == "H_up_seed":
-            key, pos_up = _sample_H_1s(key, R_H, B, dtype=dtype, zeta=zeta)
-
-            # Avoid putting both selected up and H-down on H:
-            # move H-down electron to old up position.
-            old_up_pos = x[g, :, up_eidx, :]
-            x = x.at[g, :, up_eidx, :].set(pos_up)
-            x = x.at[g, :, down_eidx, :].set(old_up_pos)
-
-        elif mode == "mixed_seed":
-            half = B // 2
-
-            key, pos_up = _sample_H_1s(key, R_H, half, dtype=dtype, zeta=zeta)
-            key, pos_down = _sample_H_1s(key, R_H, B - half, dtype=dtype, zeta=zeta)
-
-            old_up_pos = x[g, :half, up_eidx, :]
-
-            # first half: H-up sector
-            x = x.at[g, :half, up_eidx, :].set(pos_up)
-            x = x.at[g, :half, down_eidx, :].set(old_up_pos)
-
-            # second half: H-down sector
-            x = x.at[g, half:, down_eidx, :].set(pos_down)
-
-        else:
-            raise ValueError(f"Unknown seed mode: {mode}")
-
-    return key, x
+    raise ValueError(f"Unknown normalize mode: {mode}")
 
 
-def _rebuild_data_with_new_electrons(
-    log_psi_apply_vmap_two_dim,
-    config,
-    params,
-    old_data,
-    new_elec_position,
-    dtype,
-):
-    """After changing electron positions, recompute amplitude consistently."""
-    atoms_position = old_data["atoms_position"]
-    amplitude = log_psi_apply_vmap_two_dim(params, atoms_position, new_elec_position)
+def pairwise_distance(hz, metric="mse", eps=1e-8):
+    """
+    hz: (natoms, hidden_dim)
 
-    old_meta = old_data["move_metadata"]
+    metric:
+      "mse"       : mean squared distance
+      "euclidean" : Euclidean distance
+      "cosine"    : 1 - cosine similarity
+    """
+    hz = as_numpy(hz)
 
-    # Keep exactly the same dtype/shape as the checkpoint metadata.
-    return dwpa.make_dynamic_width_position_amplitude_data(
-        atoms_position,
-        new_elec_position,
-        amplitude,
-        std_move=old_meta["std_move"],
-        move_acceptance_sum=jnp.zeros_like(old_meta["move_acceptance_sum"]),
-        moves_since_update=jnp.zeros_like(old_meta["moves_since_update"]),
+    if metric == "mse":
+        diff = hz[:, None, :] - hz[None, :, :]
+        return np.mean(diff ** 2, axis=-1)
+
+    if metric == "euclidean":
+        diff = hz[:, None, :] - hz[None, :, :]
+        return np.sqrt(np.sum(diff ** 2, axis=-1))
+
+    if metric == "cosine":
+        hz_norm = hz / (np.linalg.norm(hz, axis=-1, keepdims=True) + eps)
+        sim = hz_norm @ hz_norm.T
+        return 1.0 - sim
+
+    raise ValueError(f"Unknown metric: {metric}")
+
+
+def pca_2d(hz):
+    """
+    PCA 降到 2D。
+    返回:
+      coords: (natoms, 2)
+      explained_ratio: 前两个主成分解释方差比例
+      components: PCA loadings, shape (2, hidden_dim)
+    """
+    hz = as_numpy(hz)
+    x = hz - hz.mean(axis=0, keepdims=True)
+
+    U, S, Vt = np.linalg.svd(x, full_matrices=False)
+
+    coords = U[:, :2] * S[:2]
+
+    eigenvalues = S ** 2 / max(hz.shape[0] - 1, 1)
+    explained_ratio = eigenvalues / (eigenvalues.sum() + 1e-12)
+
+    components = Vt[:2]
+
+    return coords, explained_ratio[:2], components
+
+
+def classical_mds_2d(distance_matrix):
+    """
+    Classical MDS，把 pairwise distance 尽量保持到 2D。
+    适合看“远近程度”。
+    """
+    D = as_numpy(distance_matrix)
+    n = D.shape[0]
+
+    D2 = D ** 2
+    J = np.eye(n) - np.ones((n, n)) / n
+    B = -0.5 * J @ D2 @ J
+
+    eigvals, eigvecs = np.linalg.eigh(B)
+    idx = np.argsort(eigvals)[::-1]
+
+    eigvals = eigvals[idx]
+    eigvecs = eigvecs[:, idx]
+
+    eigvals_2 = np.maximum(eigvals[:2], 0.0)
+    coords = eigvecs[:, :2] * np.sqrt(eigvals_2)
+
+    return coords, eigvals[:2]
+
+
+def plot_distance_matrix(D, atom_labels, title="Hidden feature distance matrix"):
+    D = as_numpy(D)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(D)
+
+    ax.set_xticks(np.arange(len(atom_labels)))
+    ax.set_yticks(np.arange(len(atom_labels)))
+    ax.set_xticklabels(atom_labels)
+    ax.set_yticklabels(atom_labels)
+
+    for i in range(D.shape[0]):
+        for j in range(D.shape[1]):
+            ax.text(j, i, f"{D[i, j]:.2f}", ha="center", va="center", fontsize=9)
+
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_2d_embedding(coords, atom_labels, title):
+    coords = as_numpy(coords)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    ax.scatter(coords[:, 0], coords[:, 1], s=80)
+
+    for i, label in enumerate(atom_labels):
+        ax.text(
+            coords[i, 0],
+            coords[i, 1],
+            f" {label}",
+            fontsize=12,
+            ha="left",
+            va="bottom",
+        )
+
+    ax.axhline(0.0, linewidth=0.8)
+    ax.axvline(0.0, linewidth=0.8)
+
+    ax.set_xlabel("dim 1")
+    ax.set_ylabel("dim 2")
+    ax.set_title(title)
+    ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def top_feature_contributors(hz, atom_i, atom_j, topk=10):
+    """
+    看两个原子之间的距离主要来自哪些 hidden channels。
+
+    atom_i, atom_j: 0-based atom index
+    """
+    hz = as_numpy(hz)
+
+    contrib = (hz[atom_i] - hz[atom_j]) ** 2
+    total = contrib.sum() + 1e-12
+
+    order = np.argsort(contrib)[::-1][:topk]
+
+    print(f"Top {topk} hidden dimensions separating atom {atom_i + 1} and atom {atom_j + 1}:")
+    for k in order:
+        print(
+            f"  dim {k:3d}: contribution = {contrib[k]:.6f}, "
+            f"fraction = {contrib[k] / total:.4f}"
+        )
+
+    return order, contrib[order]
+
+
+def analyze_hz_features(hz, atom_labels=None, normalize="zscore", metric="mse"):
+    """
+    主分析函数。
+
+    hz:
+      shape = (natoms, hidden_dim)
+
+    normalize:
+      "none", "center", "zscore", "l2"
+
+    metric:
+      "mse", "euclidean", "cosine"
+    """
+    hz = as_numpy(hz)
+    natoms = hz.shape[0]
+
+    if atom_labels is None:
+        atom_labels = [str(i + 1) for i in range(natoms)]
+
+    print("Original hz shape:", hz.shape)
+
+    hz_norm = normalize_hz(hz, mode=normalize)
+
+    D = pairwise_distance(hz_norm, metric=metric)
+
+    print("\nDistance matrix:")
+    print(D)
+
+    plot_distance_matrix(
+        D,
+        atom_labels,
+        title=f"Hidden feature distance matrix | normalize={normalize}, metric={metric}",
     )
 
+    # PCA
+    pca_coords, explained_ratio, pca_components = pca_2d(hz_norm)
+    print("\nPCA explained ratio:", explained_ratio)
 
-
-def _energy_rows(local_es_np, geom_indices):
-    rows = {}
-    for g in geom_indices:
-        e = np.asarray(local_es_np[g]).reshape(-1)
-        e = e[np.isfinite(e)]
-        if len(e) == 0:
-            rows[int(g)] = {
-                "E_mean": np.nan,
-                "E_std": np.nan,
-                "E_stderr": np.nan,
-            }
-        else:
-            rows[int(g)] = {
-                "E_mean": float(np.mean(e)),
-                "E_std": float(np.std(e)),
-                "E_stderr": float(np.std(e) / np.sqrt(len(e))),
-            }
-    return rows
-
-
-def _save_trace_csv(trace_rows, path):
-    if len(trace_rows) == 0:
-        return
-
-    keys = sorted(set(k for r in trace_rows for k in r.keys()))
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
-        writer.writeheader()
-        for r in trace_rows:
-            writer.writerow(r)
-
-
-def _plot_mcmc_diagnostics(trace_rows, dmin_bank, outdir, geom_indices):
-    os.makedirs(outdir, exist_ok=True)
-
-    variants = sorted(set(r["variant"] for r in trace_rows))
-
-    for g in geom_indices:
-        # nH trace
-        plt.figure(figsize=(8, 5))
-        for variant in variants:
-            rs = [
-                r for r in trace_rows
-                if r["geom"] == int(g) and r["variant"] == variant
-            ]
-            rs = sorted(rs, key=lambda x: x["macro_step"])
-            plt.plot(
-                [r["macro_step"] for r in rs],
-                [r["nH_mean"] for r in rs],
-                label=variant,
-            )
-        plt.xlabel("macro MCMC step")
-        plt.ylabel("mean n_H")
-        plt.title(f"geom {g}: H occupation")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(outdir, f"nH_trace_geom{g}.png"), dpi=200)
-        plt.close()
-
-        # spin-resolved nH trace
-        plt.figure(figsize=(8, 5))
-        for variant in variants:
-            rs = [
-                r for r in trace_rows
-                if r["geom"] == int(g) and r["variant"] == variant
-            ]
-            rs = sorted(rs, key=lambda x: x["macro_step"])
-            plt.plot(
-                [r["macro_step"] for r in rs],
-                [r["nH_up_mean"] for r in rs],
-                linestyle="-",
-                label=f"{variant}: up",
-            )
-            plt.plot(
-                [r["macro_step"] for r in rs],
-                [r["nH_down_mean"] for r in rs],
-                linestyle="--",
-                label=f"{variant}: down",
-            )
-        plt.xlabel("macro MCMC step")
-        plt.ylabel("mean n_H by spin")
-        plt.title(f"geom {g}: spin-resolved H occupation")
-        plt.grid(True)
-        plt.legend(fontsize=8)
-        plt.tight_layout()
-        plt.savefig(os.path.join(outdir, f"nH_spin_trace_geom{g}.png"), dpi=200)
-        plt.close()
-
-        # closest electron-H distance histogram
-        plt.figure(figsize=(8, 5))
-        for variant in variants:
-            key = (variant, int(g))
-            if key not in dmin_bank:
-                continue
-            samples = np.concatenate(dmin_bank[key], axis=0)
-            plt.hist(samples, bins=80, density=True, histtype="step", label=variant)
-        plt.xlabel("closest electron-H distance / bohr")
-        plt.ylabel("density")
-        plt.title(f"geom {g}: closest electron-H distance")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(outdir, f"dmin_hist_geom{g}.png"), dpi=200)
-        plt.close()
-
-        # energy trace
-        if any(("E_mean" in r) for r in trace_rows):
-            plt.figure(figsize=(8, 5))
-            for variant in variants:
-                rs = [
-                    r for r in trace_rows
-                    if r["geom"] == int(g)
-                    and r["variant"] == variant
-                    and "E_mean" in r
-                    and np.isfinite(r["E_mean"])
-                ]
-                rs = sorted(rs, key=lambda x: x["macro_step"])
-                if len(rs) == 0:
-                    continue
-                plt.errorbar(
-                    [r["macro_step"] for r in rs],
-                    [r["E_mean"] for r in rs],
-                    yerr=[r["E_stderr"] for r in rs],
-                    label=variant,
-                    capsize=2,
-                )
-            plt.xlabel("macro MCMC step")
-            plt.ylabel("local energy / Ha")
-            plt.title(f"geom {g}: energy")
-            plt.grid(True)
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(os.path.join(outdir, f"energy_trace_geom{g}.png"), dpi=200)
-            plt.close()
-
-
-import re
-
-
-def _extract_ckpt_step(reload_at_epoch, reload_config):
-    """
-    Determine checkpoint step for output folder name.
-
-    Priority:
-      1. the last integer in reload_config.checkpoint_relative_file_path, e.g. checkpoint_150000.npz -> 150000
-      2. reload_at_epoch + 1, matching the original zero-based epoch convention
-    """
-    ckpt_path = str(reload_config.checkpoint_relative_file_path)
-    nums = re.findall(r"\d+", ckpt_path)
-    if len(nums) > 0:
-        return int(nums[-1])
-
-    try:
-        return int(reload_at_epoch + 1)
-    except Exception:
-        raise RuntimeError(
-            f"Cannot extract checkpoint step from path={ckpt_path} "
-            f"or reload_at_epoch={reload_at_epoch}."
-        )
-
-
-def _make_unique_test_outdir(base_dir, ckpt_step, suffix="test"):
-    """
-    生成类似：
-        ../test_results/ckpt150000test
-        ../test_results/ckpt150000test_1
-        ../test_results/ckpt150000test_2
-
-    如果目录已存在，自动加 _1, _2, ...
-    """
-    os.makedirs(base_dir, exist_ok=True)
-
-    base_name = f"ckpt{ckpt_step}{suffix}"
-    outdir = os.path.join(base_dir, base_name)
-
-    if not os.path.exists(outdir):
-        os.makedirs(outdir)
-        return outdir
-
-    i = 1
-    while True:
-        candidate = os.path.join(base_dir, f"{base_name}_{i}")
-        if not os.path.exists(candidate):
-            os.makedirs(candidate)
-            return candidate
-        i += 1
-
-
-
-def _str2bool(x):
-    """Parse boolean values from command-line strings."""
-    if isinstance(x, bool):
-        return x
-    x = str(x).strip().lower()
-    if x in ["true", "1", "yes", "y", "t"]:
-        return True
-    if x in ["false", "0", "no", "n", "f"]:
-        return False
-    raise argparse.ArgumentTypeError(f"Cannot parse boolean value from {x}")
-
-
-def _parse_test_mcmc_args():
-    """
-    Parse diagnostic-only arguments with argparse, then remove them from sys.argv
-    so train.parse_config_flags.parse_flags(FLAGS) will not see unknown --test_* flags.
-    """
-    parser = argparse.ArgumentParser(add_help=False)
-
-    parser.add_argument("--test_nwalkers", type=int, default=128)
-    parser.add_argument("--test_geom_indices", type=str, default="16,17,18,19")
-    parser.add_argument("--test_H_idx", type=int, default=4)
-
-    parser.add_argument("--test_n_macro_steps", type=int, default=300)
-    parser.add_argument("--test_burn_in_macro", type=int, default=50)
-    parser.add_argument("--test_thin_macro", type=int, default=1)
-
-    parser.add_argument("--test_compute_energy", type=_str2bool, default=True)
-    parser.add_argument("--test_energy_every", type=int, default=10)
-
-    parser.add_argument("--test_zeta_H", type=float, default=1.0)
-    parser.add_argument(
-        "--test_variants",
-        type=str,
-        default="normal,H_down_seed,H_up_seed,mixed_seed",
+    plot_2d_embedding(
+        pca_coords,
+        atom_labels,
+        title=f"PCA of hz | normalize={normalize}",
     )
 
-    parser.add_argument("--test_results_root", type=str, default="../test_results")
-    parser.add_argument("--test_suffix", type=str, default="test")
-    parser.add_argument(
-        "--test_ckpt_step_override",
-        type=int,
-        default=None,
-        help="Optional manual checkpoint step used in output folder name.",
+    # MDS
+    mds_coords, mds_eigvals = classical_mds_2d(D)
+
+    plot_2d_embedding(
+        mds_coords,
+        atom_labels,
+        title=f"Classical MDS from distance matrix | metric={metric}",
     )
 
-    original_argv = list(sys.argv)
-    test_args, remaining_argv = parser.parse_known_args(sys.argv[1:])
-
-    # Make absl/ml_collections flags ignore these diagnostic-only arguments.
-    sys.argv = [sys.argv[0]] + remaining_argv
-
-    return test_args, original_argv
-
-
-def _parse_geom_indices(s, n_geometries):
-    """
-    Supported formats:
-        "all"       -> all geometries
-        "16:20"     -> [16, 17, 18, 19]
-        "16,17,19"  -> [16, 17, 19]
-        "19"        -> [19]
-    """
-    s = str(s).strip()
-    if s.lower() == "all":
-        geom_indices = np.arange(n_geometries, dtype=int)
-    elif ":" in s:
-        a, b = s.split(":")
-        geom_indices = np.arange(int(a), int(b), dtype=int)
-    else:
-        geom_indices = np.array(
-            [int(x.strip()) for x in s.split(",") if x.strip() != ""],
-            dtype=int,
-        )
-
-    if len(geom_indices) == 0:
-        raise ValueError("test_geom_indices selected zero geometries.")
-
-    bad = [int(g) for g in geom_indices if g < 0 or g >= n_geometries]
-    if bad:
-        raise ValueError(
-            f"Invalid geometry indices {bad}; valid range is [0, {n_geometries - 1}]."
-        )
-
-    return geom_indices
-
-
-def _parse_variants(s):
-    variants = [x.strip() for x in str(s).split(",") if x.strip() != ""]
-    allowed = {"normal", "H_down_seed", "H_up_seed", "mixed_seed"}
-
-    if len(variants) == 0:
-        raise ValueError("test_variants must contain at least one variant.")
-
-    bad = [x for x in variants if x not in allowed]
-    if bad:
-        raise ValueError(f"Unknown test variants: {bad}. Allowed variants are {sorted(allowed)}")
-
-    return variants
-
-
-def _slice_data_nwalkers(data, nwalkers):
-    """
-    Keep only the first nwalkers walkers in the checkpoint data.
-
-    For normal:
-      - if checkpoint walkers > nwalkers: truncate
-      - if checkpoint walkers == nwalkers: unchanged
-      - if checkpoint walkers < nwalkers: raise error
-    """
-    nwalkers = int(nwalkers)
-    if nwalkers <= 0:
-        raise ValueError(f"test_nwalkers must be positive, got {nwalkers}")
-
-    old_nwalkers = int(data["walker_data"]["elec_position"].shape[1])
-    if old_nwalkers < nwalkers:
-        raise RuntimeError(
-            f"Requested test_nwalkers={nwalkers}, but checkpoint only has "
-            f"{old_nwalkers} walkers. Cannot create extra normal walkers."
-        )
-
-    if old_nwalkers == nwalkers:
-        return data
-
-    new_data = dict(data)
-    new_walker_data = dict(data["walker_data"])
-    new_walker_data["elec_position"] = data["walker_data"]["elec_position"][:, :nwalkers, ...]
-    new_walker_data["amplitude"] = data["walker_data"]["amplitude"][:, :nwalkers]
-    new_data["walker_data"] = new_walker_data
-
-    return new_data
-
-
-def _find_config_files_from_argv(original_argv):
-    """
-    Copy raw config-like files if they appear in the command line, e.g.
-        --config=/path/to/config.py
-        --config /path/to/config.py
-        --reload_config=/path/to/reload.py
-    """
-    paths = []
-    for i, arg in enumerate(original_argv):
-        if arg.startswith("--") and "config" in arg and "=" in arg:
-            value = arg.split("=", 1)[1]
-            if os.path.isfile(value):
-                paths.append(value)
-        elif arg.startswith("--") and "config" in arg and "=" not in arg:
-            if i + 1 < len(original_argv):
-                value = original_argv[i + 1]
-                if os.path.isfile(value):
-                    paths.append(value)
-
-    unique = []
-    seen = set()
-    for p in paths:
-        ap = os.path.abspath(p)
-        if ap not in seen:
-            unique.append(ap)
-            seen.add(ap)
-    return unique
-
-
-def _json_safe_obj(obj):
-    """Convert common numpy/jax/ml_collections values to JSON-safe Python objects."""
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, (np.ndarray,)):
-        return obj.tolist()
-    try:
-        if isinstance(obj, (jnp.ndarray,)):
-            return np.asarray(obj).tolist()
-    except Exception:
-        pass
-    return str(obj)
-
-
-def _backup_test_run_inputs(outdir, config, reload_config, test_args, original_argv, ckpt_step):
-    """
-    Store the exact diagnostic parameters and config backups in the result folder.
-    """
-    # Evaluated config backups.
-    utils.io.save_config_dict_to_json(config, outdir, "config_backup")
-    utils.io.save_config_dict_to_json(reload_config, outdir, "reload_config_backup")
-
-    # Argparse diagnostic parameters.
-    with open(os.path.join(outdir, "test_args.json"), "w") as f:
-        json.dump(vars(test_args), f, indent=2, default=_json_safe_obj)
-
-    # Original shell command.
-    with open(os.path.join(outdir, "command.txt"), "w") as f:
-        f.write(" ".join(original_argv))
-        f.write("\n")
-
-    run_info = {
-        "ckpt_step": int(ckpt_step),
-        "checkpoint_logdir": str(reload_config.logdir),
-        "checkpoint_relative_file_path": str(reload_config.checkpoint_relative_file_path),
-        "output_directory": str(outdir),
+    return {
+        "hz_norm": hz_norm,
+        "distance": D,
+        "pca_coords": pca_coords,
+        "pca_explained_ratio": explained_ratio,
+        "pca_components": pca_components,
+        "mds_coords": mds_coords,
+        "mds_eigvals": mds_eigvals,
     }
-    with open(os.path.join(outdir, "run_info.json"), "w") as f:
-        json.dump(run_info, f, indent=2, default=_json_safe_obj)
 
-    # Copy raw config files if they were supplied on command line.
-    input_backup_dir = os.path.join(outdir, "input_files")
-    os.makedirs(input_backup_dir, exist_ok=True)
-    for src in _find_config_files_from_argv(original_argv):
-        dst = os.path.join(input_backup_dir, os.path.basename(src))
-        shutil.copy2(src, dst)
-
-
-
-
-import os
-
-
-
-def test_mcmc() -> None:
+def geometry_distance(coords):
     """
-    Diagnostics:
-      1. n_H trace
-      2. spin-resolved n_H trace
-      3. closest electron-to-H distance histogram
-      4. normal vs H_up_seed vs H_down_seed vs mixed_seed local energy
-
-    This function does not train parameters.
-    It freezes the checkpoint params and only runs MCMC.
-
-    Diagnostic settings are controlled by argparse flags:
-      --test_nwalkers
-      --test_geom_indices
-      --test_H_idx
-      --test_n_macro_steps
-      --test_burn_in_macro
-      --test_thin_macro
-      --test_compute_energy
-      --test_energy_every
-      --test_zeta_H
-      --test_variants
-      --test_results_root
-      --test_suffix
-      --test_ckpt_step_override
+    coords: (natoms, 3)
     """
+    coords = as_numpy(coords)
+    diff = coords[:, None, :] - coords[None, :, :]
+    return np.sqrt(np.sum(diff ** 2, axis=-1))
 
-    test_args, original_argv = _parse_test_mcmc_args()
+
+def compare_hidden_distance_with_geometry(hz_distance, coords, atom_labels=None):
+    D_hz = as_numpy(hz_distance)
+    D_geo = geometry_distance(coords)
+
+    natoms = D_hz.shape[0]
+    if atom_labels is None:
+        atom_labels = [str(i + 1) for i in range(natoms)]
+
+    iu = np.triu_indices(natoms, k=1)
+
+    hz_vec = D_hz[iu]
+    geo_vec = D_geo[iu]
+
+    corr = np.corrcoef(hz_vec, geo_vec)[0, 1]
+
+    print("Correlation between hidden distance and geometry distance:", corr)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.scatter(geo_vec, hz_vec, s=80)
+
+    for a, b, x, y in zip(iu[0], iu[1], geo_vec, hz_vec):
+        ax.text(x, y, f"{atom_labels[a]}-{atom_labels[b]}", fontsize=9)
+
+    ax.set_xlabel("Nuclear geometric distance")
+    ax.set_ylabel("Hidden feature distance")
+    ax.set_title("Hidden distance vs geometric distance")
+    ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+    return corr, D_geo
+
+
+
+
+def test_hz() -> None:
 
     reload_config, config = train.parse_config_flags.parse_flags(FLAGS)
 
@@ -1780,226 +1424,82 @@ def test_mcmc() -> None:
         key,
     ) = utils.io.reload_vmc_state(directory, filename)
 
-    data = _slice_data_nwalkers(data, test_args.test_nwalkers)
+    # print("params11.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, params))
+    # print("params.block.shape:\n", jax.tree_util.tree_map(lambda x: x.shape, block_ravel_pytree(block_fn)(params)))
+    # raveled_params, _ = jax.flatten_util.ravel_pytree(params)
+    # logging.info(f"parameters in the wavefunction model: {raveled_params.size}")
+    # print(f"parameters in the wavefunction model: {raveled_params.size}")
 
-    logging.info("\n===== loaded checkpoint =====")
-    logging.info("reload_at_epoch = %s", reload_at_epoch)
-    logging.info("atoms_position shape = %s", data["atoms_position"].shape)
-    logging.info("elec_position shape = %s", data["walker_data"]["elec_position"].shape)
-    logging.info("nspins = %s", nspins)
-    logging.info("single_nspins = %s", single_nspins)
-    logging.info("test_nwalkers = %s", test_args.test_nwalkers)
+    # xp=data["atoms_position"][-1][None,...]
+    # xe=data["walker_data"]["elec_position"][-1][None,...]
+    # energy_per_w,_,_=energy_and_statistics_fn(params,xp,xe)
+    # print("energy_per_w:",energy_per_w)
+    hz=hz_fn_vmap(params,data["atoms_position"],data["walker_data"]["elec_position"])
 
-    # -------------------------
-    # Diagnostic settings
-    # -------------------------
-    H_idx = int(test_args.test_H_idx)
-    if H_idx < 0:
-        H_idx = int(data["atoms_position"].shape[1]) + H_idx
+    hz_np = np.asarray(hz)
+    atoms_positions = np.asarray(data["atoms_position"])
 
-    geom_indices = _parse_geom_indices(
-        test_args.test_geom_indices,
-        n_geometries=int(data["atoms_position"].shape[0]),
-    )
+    np.save("/Users/gaoqiao/Desktop/spring/spring_gq_1/reload_restore/hz_feature_formamide.npy", hz_np)       # 保存原子特征向量
+    np.save("/Users/gaoqiao/Desktop/spring/spring_gq_1/reload_restore/atom_pos_formamide.npy", atoms_positions)  # 
+    np.save("/Users/gaoqiao/Desktop/spring/spring_gq_1/reload_restore/elec_pos_formamide.npy",np.asarray(data["walker_data"]["elec_position"]),)
+    print("保存完成")
+    
+    sys.exit()
+#     print(hz.shape)  #( 128, 6, 128)
+#     hz=jnp.mean(hz,axis=(0))
 
-    n_up = int(nspins[0])
+#     print(hz.shape)  #(6, 128)
+#     distance_row=hz[:,None,...]-hz[None,...]
+#     distance=jnp.mean((distance_row**2),axis=-1)
+#     print(distance)
 
-    n_macro_steps = int(test_args.test_n_macro_steps)
-    burn_in_macro = int(test_args.test_burn_in_macro)
-    thin_macro = int(test_args.test_thin_macro)
+#     # ===================== 核心修改：计算原子间余弦相似度 =====================
+#     # 1. 计算所有原子向量的 L2 范数 (6,)
+#     norm = jnp.linalg.norm(hz, axis=-1)  # 对128维向量求模
 
-    compute_energy = bool(test_args.test_compute_energy)
-    energy_every = int(test_args.test_energy_every)
+#     # 2. 计算原子向量两两之间的点积 (6,6)
+#     dot_product = hz @ hz.T  # 矩阵乘法：(6,128) @ (128,6) = (6,6)
 
-    if n_macro_steps < 0:
-        raise ValueError(f"test_n_macro_steps must be non-negative, got {n_macro_steps}")
-    if burn_in_macro < 0:
-        raise ValueError(f"test_burn_in_macro must be non-negative, got {burn_in_macro}")
-    if thin_macro <= 0:
-        raise ValueError(f"test_thin_macro must be positive, got {thin_macro}")
-    if energy_every <= 0:
-        raise ValueError(f"test_energy_every must be positive, got {energy_every}")
+#     # 3. 计算范数的外积，作为分母 (6,6)
+#     norm_product = norm[:, None] * norm[None, :]
 
-    zeta_H = float(test_args.test_zeta_H)
-    variants = _parse_variants(test_args.test_variants)
+#     # 4. 计算余弦相似度（加极小值防止除0）
+#     cos_similarity = dot_product / (norm_product + 1e-8)
 
-    if test_args.test_ckpt_step_override is not None:
-        ckpt_step = int(test_args.test_ckpt_step_override)
-    else:
-        ckpt_step = _extract_ckpt_step(reload_at_epoch, reload_config)
+#     # 输出结果
+#     print("原子间余弦相似度矩阵 (6x6)：")
+#     print(cos_similarity)
+#     print("相似度矩阵形状：", cos_similarity.shape)  # (6, 6)
 
-    test_results_root = os.path.abspath(test_args.test_results_root)
-    outdir = _make_unique_test_outdir(
-        base_dir=test_results_root,
-        ckpt_step=ckpt_step,
-        suffix=str(test_args.test_suffix),
-    )
+#     atom_labels = ["C", "N", "O", "H1", "H2", "H3"]
 
-    _backup_test_run_inputs(
-        outdir=outdir,
-        config=config,
-        reload_config=reload_config,
-        test_args=test_args,
-        original_argv=original_argv,
-        ckpt_step=ckpt_step,
-    )
+#     result = analyze_hz_features(
+#         hz,
+#         atom_labels=atom_labels,
+#         normalize="zscore",
+#         metric="mse",
+#     )
+#     result_raw = analyze_hz_features(
+#     hz,
+#     atom_labels=atom_labels,
+#     normalize="none",
+#     metric="mse",
+#     )
+#     result_cos = analyze_hz_features(
+#     hz,
+#     atom_labels=atom_labels,
+#     normalize="l2",
+#     metric="cosine",
+#     )
 
-    logging.info("\n===== output directory =====")
-    logging.info("ckpt_step = %s", ckpt_step)
-    logging.info("outdir = %s", outdir)
-    logging.info("variants = %s", variants)
-    logging.info("geom_indices = %s", geom_indices)
-    logging.info("H_idx = %s", H_idx)
-    logging.info("n_macro_steps = %s", n_macro_steps)
-    logging.info("burn_in_macro = %s", burn_in_macro)
-    logging.info("thin_macro = %s", thin_macro)
-    logging.info("compute_energy = %s", compute_energy)
-    logging.info("energy_every = %s", energy_every)
-    logging.info("zeta_H = %s", zeta_H)
+#     coords = np.array(  ((-1.221578,-0.163504,-0.085890),(-2.648657,0.852943,-1.622318),(-0.140697,-2.335409,0.290656),(1.040154,-2.460624,1.814284),(8.695366,4.307836,-1.920082),(-0.701013,1.183197,1.523388))
+# )
 
-    atoms_np = _device_to_np(data["atoms_position"])
-    logging.info("\n===== selected dissociation geometries =====")
-    for g in geom_indices:
-        _, d_H_body_min, r_c = _get_H_radius(atoms_np, int(g), H_idx)
-        logging.info(f"geom {int(g):02d}: min d(H-body) = {d_H_body_min:.6f} bohr, r_c = {r_c:.6f}")
-
-    # Local energy fn for per-geometry energy comparison.
-    if compute_energy:
-        local_energy_fn = _assemble_mol_local_energy_fn(
-            ion_charges,
-            config.problem.ei_softening,
-            config.problem.ee_softening,
-            log_psi_apply_novmap,
-            config.vmc,
-        )
-        local_energy_vmap = jax.jit(
-            jax.vmap(
-                jax.vmap(local_energy_fn, in_axes=(None, None, 0)),
-                in_axes=(None, 0, 0),
-            )
-        )
-    else:
-        local_energy_vmap = None
-
-    trace_rows = []
-    dmin_bank = {}
-
-    for variant in variants:
-        logging.info(f"\n========== running variant: {variant} ==========")
-
-        key, seeded_elec = _make_seeded_elec_position(
-            key=key,
-            elec_position=data["walker_data"]["elec_position"],
-            atoms_position=data["atoms_position"],
-            geom_indices=geom_indices,
-            H_idx=H_idx,
-            n_up=n_up,
-            single_nspins=single_nspins,
-            dtype=dtype_to_use,
-            mode=variant,
-            zeta=zeta_H,
-        )
-
-        diag_data = _rebuild_data_with_new_electrons(
-            log_psi_apply_vmap_two_dim=log_psi_apply_vmap_two_dim,
-            config=config,
-            params=params,
-            old_data=data,
-            new_elec_position=seeded_elec,
-            dtype=dtype_to_use,
-        )
-
-        last_accept_mean = np.nan
-        for macro_step in range(n_macro_steps + 1):
-            atoms_now_np = _device_to_np(diag_data["atoms_position"])
-            elec_now_np = _device_to_np(diag_data["walker_data"]["elec_position"])
-
-            obs_rows, dmin_samples = _compute_H_observables(
-                elec_now_np,
-                atoms_now_np,
-                geom_indices,
-                H_idx,
-                n_up,
-            )
-
-            # Energy is expensive; compute every energy_every macro steps after burn-in,
-            # and also at macro_step=0 to see the seeded initial sector.
-            energy_by_geom = {}
-            do_energy = (
-                compute_energy
-                and (
-                    macro_step == 0
-                    or (
-                        macro_step >= burn_in_macro
-                        and macro_step % energy_every == 0
-                    )
-                )
-            )
-
-            if do_energy:
-                local_es = local_energy_vmap(
-                    params,
-                    diag_data["atoms_position"],
-                    diag_data["walker_data"]["elec_position"],
-                )
-                local_es_np = _device_to_np(local_es)
-                energy_by_geom = _energy_rows(local_es_np, geom_indices)
-
-            for row in obs_rows:
-                g = int(row["geom"])
-                out = dict(row)
-                out["variant"] = variant
-                out["macro_step"] = int(macro_step)
-                out["accept_mean"] = float(last_accept_mean)
-                out["test_nwalkers"] = int(test_args.test_nwalkers)
-
-                if g in energy_by_geom:
-                    out.update(energy_by_geom[g])
-
-                trace_rows.append(out)
-
-            if macro_step >= burn_in_macro and macro_step % thin_macro == 0:
-                for g, arr in dmin_samples.items():
-                    dmin_bank.setdefault((variant, int(g)), []).append(arr)
-
-            if macro_step % 10 == 0:
-                msg = [f"{variant} step {macro_step:04d}"]
-                for row in obs_rows:
-                    g = int(row["geom"])
-                    extra = ""
-                    if g in energy_by_geom:
-                        extra = f", E={energy_by_geom[g]['E_mean']:.8f}"
-                    msg.append(
-                        f"g{g}: nH={row['nH_mean']:.3f}, "
-                        f"up={row['nH_up_mean']:.3f}, "
-                        f"dn={row['nH_down_mean']:.3f}, "
-                        f"d50={row['dmin_p50']:.3f}"
-                        f"{extra}"
-                    )
-                logging.info("%s", " | ".join(msg))
-
-            if macro_step < n_macro_steps:
-                accept, diag_data, key = walker_fn(params, diag_data, key)
-                last_accept_mean = float(np.mean(_device_to_np(accept)))
-
-    # Save CSV
-    csv_path = os.path.join(outdir, "trace.csv")
-    _save_trace_csv(trace_rows, csv_path)
-
-    # Save dmin raw samples
-    npz_dict = {}
-    for (variant, g), chunks in dmin_bank.items():
-        if len(chunks) > 0:
-            npz_dict[f"{variant}_geom{g}_dmin"] = np.concatenate(chunks, axis=0)
-    np.savez_compressed(os.path.join(outdir, "dmin_samples.npz"), **npz_dict)
-
-    # Save plots
-    _plot_mcmc_diagnostics(trace_rows, dmin_bank, outdir, geom_indices)
-
-    logging.info("\n===== MCMC H diagnostics finished =====")
-    logging.info("saved trace: %s", csv_path)
-    logging.info("saved plots: %s", outdir)
-
+#     corr, D_geo = compare_hidden_distance_with_geometry(
+#         result["distance"],
+#         coords,
+#         atom_labels=atom_labels,
+#     )
 
 if __name__ == "__main__":
-    test_mcmc()
+    test_hz()

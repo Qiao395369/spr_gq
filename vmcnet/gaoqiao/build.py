@@ -27,7 +27,7 @@ def build_network(
 	RHF: bool = False,
 	activation_type: str = "tanh",
 	jastrow_activation_type: str = "tanh",
-	dp_type: str = "original",
+	dp_type: str = "element1",
 ):
 	if activation_type == "tanh":
 		activation_fn = jax.nn.tanh
@@ -168,6 +168,21 @@ def build_network(
 			activation_fn=activation_fn,
 			attn_params=attn,
 		)
+	elif gq_type == "ef_shrd_sym_ablation":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			activation_fn=activation_fn,
+			attn_params=attn,
+		)
 	elif gq_type == "ef_shrd_sym_old":
 		ef=True
 		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_old(
@@ -217,7 +232,7 @@ def build_network(
 			attn_1_params=None,
 		)
 
-	network_init, signed_network, det_fn, network_options, orbitals = networks.make_fermi_net(
+	network_init, signed_network, det_fn, network_options, orbitals,hz = networks.make_fermi_net(
 		n, 
 		ndim, 
 		nspins,
@@ -245,7 +260,7 @@ def build_network(
 	key, subkey = jax.random.split(key)
 	params = network_init(subkey)
 
-	return params, signed_network, det_fn, orbitals
+	return params, signed_network, det_fn, orbitals,hz
 
 if __name__=='__main__':
 	n = 14

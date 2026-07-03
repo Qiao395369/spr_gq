@@ -464,9 +464,9 @@ def get_default_gq_config() -> Dict:
         "feat_act_func": 'tanh',
         "feat_numb_divid": 1,
         "scale": 1.0,
-        "dp_type":"original",  #["original", "charge", "full"]
-        "type":"ef_shrd_sym",  #["ef","fermi","shrd","ef_shrd","ef_shrd_sym"]
-        "envelope_type": "ds_hz", #["ds_hz","iso"]
+        "dp_type":"element1",  #["original", "charge", "full","element","element1"]
+        "type":"ef_shrd_sym",  #["ef","fermi","shrd","ef_shrd","ef_shrd_sym","ef_shrd_sym_old","ef_shrd_sym_ablation"]
+        "envelope_type": "ds_hz_old", #["ds_hz","iso","ds_hz_old"]
         "ndet":16,
         "wfn_depth":4,
         "h1":64,

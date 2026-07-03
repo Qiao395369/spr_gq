@@ -1536,6 +1536,204 @@ def make_fermi_net_model_ef_shrd(
 
   return FerminetModel(init, apply)
 
+def make_fermi_net_model_ef_shrd_sym_ablation(
+    natom,
+    ndim,
+    nspins,
+    feature_layer,
+    hidden_dims,   #i.e. ((64,16),(64,16),(64,16),(64,16))
+    use_last_layer = False,
+    dim_extra_params = 0,
+    do_aa : bool=False,
+    mes = None,
+    activation_fn=jax.nn.tanh,
+    # extra parameters
+    attn_params: Optional[dict] = None,
+):
+  assert (dim_extra_params==0),"dim_extra_params should be 0 in gq "
+  do_aa = True  # do_aa should always be true
+  if mes is None :
+    raise RuntimeError('make_fermi_net_model_ef only support equal-footing models')
+  
+  update_alpha, do_rdt, resd_dt_shift, resd_dt_scale = None, False, None, None
+
+  # atten on two particle channel
+  do_attn = attn_params is not None
+  if do_attn:
+    attn_nfeat = hidden_dims[-1][1]
+    attn_init, attn_apply = attn.self_attn(attn_nfeat, attn_nfeat,**attn_params,)
+    # input is npart x npart x nf, vmap along axis==1
+    vmap_attn_apply = jax.vmap(attn_apply, in_axes=(None,1), out_axes=1,)
+
+  do_trimul = False
+  dh_scale = sum([do_attn, do_trimul])
+  if dh_scale != 0:
+    dh_scale = 1./float(dh_scale)
+
+  def init(
+      key,
+  ):    
+    # dim_1_append = mes.get_dim_one_hot()    #3
+    # dim_2_append = 2*mes.get_dim_one_hot()   #6
+    dim_1_append = mes.get_dim_part_features()
+    dim_2_append = mes.get_dim_pair_features()
+
+    # number of spin channel
+    active_spin_channels = [spin for spin in nspins if spin > 0]
+    nchannels = len(active_spin_channels)  #2
+    # init params
+    params = {}
+    (num_one_features, num_two_features), params['input'] = (feature_layer.init())
+
+    key, subkey = jax.random.split(key)
+    params['one_reshp'] = network_blocks.init_linear_layer(subkey, num_one_features + dim_1_append, hidden_dims[0][0])
+
+    key, subkey = jax.random.split(key)
+    params['two_reshp'] = network_blocks.init_linear_layer(subkey, num_two_features + dim_2_append, hidden_dims[0][1])
+    distinguish_ele = True
+    nfeatures = lambda out1, out2: (nchannels + 1) * out1 + (nchannels) * out2
+    dims_1_in = [nfeatures(hidden_dims[0][0], hidden_dims[0][1])]
+    dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]]
+    dims_2_in = [hidden_dims[0][1]] + [hdim[1] for hdim in hidden_dims[:-2]]
+
+ 
+    # nfeatures = lambda out1, out2: (nchannels+2) * out1 + (nchannels+1) * out2  # 3*xxx + 3*xxx
+    # dims_1_in = [nfeatures(num_one_features + dim_1_append, num_two_features)]    
+    # dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]]  
+    # dims_2_in = ([num_two_features + dim_2_append] + [hdim[1] for hdim in hidden_dims[:-2]])  # [10,16,16]
+    dims_1_out = [hdim[0] for hdim in hidden_dims]  # [64,64,64,64]
+    dims_2_out = [hdim[1] for hdim in hidden_dims[:-1]]  # [16,16,16]
+    key, subkey = jax.random.split(key)
+    params['one'], params['two'] = init_layers(
+        key=subkey,
+        dims_one_in=dims_1_in,  
+        dims_one_out=dims_1_out,  
+        dims_two_in=dims_2_in,  
+        dims_two_out=dims_2_out)  
+    dims_orbital_in = hidden_dims[-1][0]
+    dim_proj_1_in = dims_1_out[:len(dims_2_out)]  #[64,64,64]
+    dim_proj_1_out = dims_2_out  # [16,16,16]
+    params['proj'] = []
+    for ii in range(len(params['two'])):
+      if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
+        key, subkey = jax.random.split(key)
+        params['proj'].append(network_blocks.init_linear_layer( subkey, dim_proj_1_in[ii], dim_proj_1_out[ii], ))
+        #[64,64,64] 
+        # |  |  |
+        # |  |  |
+        # V  V  V 
+        #[16,16,16]
+      else:
+        # do not project if the input and output dims are the same
+        params['proj'].append(None)
+    # dim_proj_0_in = num_one_features + dim_1_append  #7
+    # dim_proj_0_out = num_two_features  #4
+    dim_proj_0_in = hidden_dims[0][0]
+    dim_proj_0_out = hidden_dims[0][1]
+    if dim_proj_0_in != dim_proj_0_out:
+      key, subkey = jax.random.split(key)
+      params['proj_0'] = network_blocks.init_linear_layer(subkey, dim_proj_0_in, dim_proj_0_out, )
+      #7-->4
+    else:
+      params['proj_0'] = None
+
+    if do_attn:
+      params['attn'] = []
+      for i in range(len(params['two'])):
+        key, subkey = jax.random.split(key)
+        params['attn'].append(attn_init(subkey))
+      key, subkey = jax.random.split(key)
+
+
+    return params, dims_orbital_in
+
+  def construct_symmetric_features_conv(
+          h1 : jnp.ndarray,
+          h2 : jnp.ndarray,
+          proj: Optional[Mapping[str,jnp.ndarray]] = None,
+  ) -> jnp.ndarray:
+    """
+    hi  : ne x nfi
+    hij : ne x ne x nfij
+    """
+    if proj is not None:
+      ph1 = network_blocks.linear_layer(h1, **proj)  #(np,nf_two)
+    else:
+      ph1 = h1
+    h2xh1 = h2 * ph1[:,None,:]   # (ne,ne,nf_two)* (ne,1,nf_two)->(ne,ne,nf_two)  p_h1 *(pointwise product) h2
+
+    spin_partitions = network_blocks.array_partitions(nspins)
+    # [(ne) x nf2, (ne) x nf2]
+    g2 = [jnp.mean(h, axis=0) for h in jnp.split(h2xh1, spin_partitions, axis=0) if h.size > 0]
+    g2 = jnp.concatenate(g2, axis=1)  #(ne,2*nf2)
+
+    # [1 x nf1, 1 x nf1,]
+    g1 = [jnp.mean(h, axis=0, keepdims=1) for h in jnp.split(h1, spin_partitions, axis=0) if h.size > 0]
+    g1 = jnp.concatenate(g1, axis=1)  #(1,2*nf1)
+    g1 = jnp.tile(g1, [h1.shape[0], 1])  #(ne,2*nf1)
+
+    return jnp.concatenate([h1,g1,g2], axis=1)
+
+  def _hi_next(
+      hi_in,
+      params,
+  ):
+    return activation_fn(network_blocks.linear_layer(hi_in, **params))
+
+  def _hij_next(
+      hij_in,
+      params,
+  ):
+    return activation_fn(network_blocks.vmap_linear_layer(hij_in,params['w'],params['b'],))
+
+  residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y 
+
+  def apply(
+      params,
+      e2_features,
+  ):
+    # c1 = mes.get_part_one_hot()  #(nele+nz,3)
+    # c2 = mes.get_pair_one_hot()  #(nele+nz,nele+nz,6)
+    nele = sum(nspins)
+    c1 = mes.get_part_features()
+    c2 = mes.get_pair_features()
+    c1 = c1[:nele,...]
+    c2 = c2[:nele,:nele,...]
+    h2 = e2_features[:nele,:nele,...]
+    h1 = jnp.mean(h2, axis=0)  #\Sigma_i hij :(ne,ne,nf_two)->(ne,nf_two)
+    for i in range(len(params['two'])):
+      if i == 0:
+        # h1 = jnp.concatenate([h1, c1], axis=-1)  # (ne+na,nf_two+3)
+        # h2 = jnp.concatenate([h2, c2], axis=-1)  # (ne+na,ne+na,nf_two+6)
+        # h1_in = construct_symmetric_features_conv(h1, h2, params['proj_0'])
+
+        h1 = jnp.concatenate([h1, c1], axis=-1)
+        h2 = jnp.concatenate([h2, c2], axis=-1)
+        h1 = network_blocks.linear_layer(h1, **params['one_reshp'])
+        h2 = network_blocks.linear_layer(h2, **params['two_reshp'])
+        h1 = activation_fn(h1)
+        h2 = activation_fn(h2)
+        h1_in = construct_symmetric_features_conv(h1, h2, params['proj_0'])
+      else:
+        h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][i-1])
+      h1_next = _hi_next(h1_in, params['one'][i])
+      h2_next = _hij_next(h2, params['two'][i])
+      h1 = residual(h1, h1_next)
+      h2 = residual(h2, h2_next)
+      if do_attn:
+        h2_attn = dh_scale*vmap_attn_apply(params['attn'][i], h2)
+        h2 = residual(h2, h2_attn)
+
+    assert len(params['two']) != len(params['one'])
+    h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
+    h1_next = _hi_next(h1_in, params['one'][-1])
+    h1 = residual(h1, h1_next)
+    h_to_orbitals = h1
+
+    return h_to_orbitals, None
+
+  return FerminetModel(init, apply)
+
 def make_fermi_net_model_ef_shrd_sym(
     natom,
     ndim,
@@ -1729,10 +1927,10 @@ def make_fermi_net_model_ef_shrd_sym(
       h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
       h1_next = _hi_next(h1_in, params['one'][-1])
       h1 = residual(h1, h1_next)
-      h_to_orbitals = h1
+      [h_to_orbitals, hz] = mes.split_ea(h1)
     else:
       _, h_to_orbitals = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
-    return h_to_orbitals, h1
+    return h_to_orbitals, hz
 
   return FerminetModel(init, apply)
 
@@ -1907,10 +2105,11 @@ def make_fermi_net_model_ef_shrd_sym_old(
       h1_in = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
       h1_next = _hi_next(h1_in, params['one'][-1])
       h1 = residual(h1, h1_next)
-      h_to_orbitals = h1
+      [h_to_orbitals, hz] = mes.split_ea(h1)
+
     else:
       _, h_to_orbitals = construct_symmetric_features_conv(h1, h2, params['proj'][-1])
-    return h_to_orbitals, h1
+    return h_to_orbitals, hz
 
   return FerminetModel(init, apply)
 
@@ -2434,11 +2633,11 @@ def fermi_net_orbitals_part1_ef(
   pp, r_pp = construct_input_features_ef(pos)  # (ne+na,ne+na,3),(ne+na,ne+na,1)
   pp_features = options.feature_layer.apply(pp, r_pp, **params['input'])  # (ne+na,ne+na,nf_two)
   hpp = pp_features
-  h_to_orbitals, hp = options.ferminet_model.apply(params, hpp,)
-  [h_to_orbitals, _] = options.mes.split_ea(h_to_orbitals)  #(ne,64)
+  h_to_orbitals, hz = options.ferminet_model.apply(params, hpp,)
+  # [h_to_orbitals, _] = options.mes.split_ea(h_to_orbitals)  #(ne,64)
   [ee, ea, aa] = options.mes.split_ee_ea_aa(pp)
   [r_ee, r_ea, r_aa] = options.mes.split_ee_ea_aa(r_pp)
-  [hi, hz] = options.mes.split_ea(hp)  #(ne,64),(na,64)
+  # [hi, hz] = options.mes.split_ea(hp)  #(ne,64),(na,64)
   return h_to_orbitals, hz, (ee, ea, aa, r_ee, r_ea, r_aa)
 
 
@@ -2584,7 +2783,6 @@ def orbitals_fn(
     pos: jnp.ndarray,
     atoms: jnp.ndarray,
     nspins: Tuple[int, ...],
-    return_det_dist=False,
     options: FermiNetOptions = FermiNetOptions(),
 ):
   orbitals,_ = fermi_net_orbitals(
@@ -2596,6 +2794,23 @@ def orbitals_fn(
   )
 
   return orbitals
+
+def return_hz_fn(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    options: FermiNetOptions = FermiNetOptions(),
+):
+  orbitals, (ae, r_ae, r_ee, he, hz) = fermi_net_orbitals(
+      params,
+      pos,
+      atoms=atoms,
+      nspins=nspins,
+      options=options,
+  )
+
+  return hz
 
 def make_fermi_net(
     nele: int, 
@@ -2718,7 +2933,13 @@ def make_fermi_net(
       nspins=nspins,
       options=options, 
   )
+   
+  hz_fn = functools.partial(
+      return_hz_fn,
+      nspins=nspins,
+      options=options, 
+  )
 
 
-  return init, network, det_fn, options, orb_fn
+  return init, network, det_fn, options, orb_fn, hz_fn
 

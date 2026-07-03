@@ -199,8 +199,8 @@ class ManyElectronSystem:
     if len(nspins) != 2:
       raise ValueError(f"Expected nspins=(n_up, n_down), got {nspins}")
 
-    if dp_type not in ("original", "charge", "full", "element"):
-      raise ValueError(f"dp_type must be one of {'original', 'charge', 'full', 'element'}, got {dp_type}")
+    if dp_type not in ("original", "charge", "full", "element","element1"):
+      raise ValueError(f"dp_type must be one of {'original', 'charge', 'full', 'element','element1'}, got {dp_type}")
 
     self.dp_type = dp_type
     self.natoms = int(charges.shape[0])
@@ -287,6 +287,44 @@ class ManyElectronSystem:
 
       self.part_one_hot = jax.nn.one_hot(self.element_types, self.element_dim_one_hot)
       self.pair_one_hot = self._pair_concat(self.part_one_hot)
+
+    elif dp_type == "element1":
+      # Same output convention as the first ManyElectronSystem:
+      # element order = sorted unique nuclear charges.
+      # Example charges [6, 7, 8, 1, 1, 1]
+      # -> element order [1, 6, 7, 8]
+      # -> [onehot_up, onehot_down, onehot_H, onehot_C, onehot_N, onehot_O]
+
+      self.uniq_charges = np.unique(np.sort(self.charges)).astype(INT)
+      self.n_uniq_charges = self.uniq_charges.size
+
+      atom_types = np.zeros(self.natoms, dtype=INT)
+      for ii in range(len(self.uniq_charges)):
+        atom_types += (self.charges == self.uniq_charges[ii]).astype(INT) * ii
+
+      self.non_zero_spin_channels = np.sum(np.array(nspins, dtype=int) != 0)
+      atom_types += self.non_zero_spin_channels
+
+      element1_types = jnp.concatenate([
+          np.zeros(nspins[0], dtype=INT),
+          np.ones(nspins[1], dtype=INT),
+          atom_types,
+      ], axis=0)
+
+      self.element_charges = self.uniq_charges
+      self.element1_charges = self.uniq_charges
+      self.element1_types = jnp.asarray(element1_types, dtype=jnp.int64)
+      self.element1_dim_one_hot = self.n_uniq_charges + self.non_zero_spin_channels
+
+      self.part_one_hot = jax.nn.one_hot(
+          self.element1_types,
+          self.element1_dim_one_hot,
+      )
+      self.pair_one_hot = self._pair_concat(self.part_one_hot)
+
+      # Compatibility aliases, matching the naming style of the first code.
+      self.types = self.element1_types
+      self.type_one_hot = self.part_one_hot
 
     elif dp_type == "charge":
       # particle: [3-way one-hot, q]
@@ -472,8 +510,8 @@ class ManyElectronSystem:
 
 if __name__ == "__main__":
     # 测试用参数：C2H6 分子（2个C，6个H），自旋向上2个电子，向下2个电子
-    test_charges = [2, 3, 1]  # 核电荷
-    test_nspins = (3, 3)  # 上自旋电子数，下自旋电子数
+    test_charges = [6, 7, 8,1,1,1]  # 核电荷
+    test_nspins = (12, 12)  # 上自旋电子数，下自旋电子数
     
     # 测试所有4种类型
     test_types = ["original", "element", "charge", "full"]
