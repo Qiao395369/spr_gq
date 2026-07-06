@@ -142,6 +142,30 @@ def make_isotropic_envelope() -> Envelope:
 
   return Envelope(EnvelopeType.PRE_DETERMINANT, init, apply)
 
+def make_isotropic_envelope_new() -> Envelope:
+  """Creates an isotropic exponentially decaying multiplicative envelope."""
+
+  def init(
+      natom: int, output_dims: Sequence[int],hf=None, ndim: int = 3
+  ) -> Sequence[Mapping[str, jnp.ndarray]]:
+    del hf,ndim  # unused
+    params = []
+    for output_dim in output_dims:
+      params.append({
+          'pi': jnp.ones(shape=(natom, output_dim)),
+          'sigma': jnp.ones(shape=(natom, output_dim))
+      })
+    return params
+
+  def apply(*, ae: jnp.ndarray, r_ae: jnp.ndarray, r_ee: jnp.ndarray,
+            pi: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
+    """Computes an isotropic exponentially-decaying multiplicative envelope."""
+    del ae, r_ee  # unused
+    pi=1.0+1.*pi
+    sigma=0.5+1.*sigma
+    return jnp.sum(jnp.exp(-r_ae * sigma) * pi, axis=1)
+
+  return Envelope(EnvelopeType.PRE_DETERMINANT, init, apply)
 
 
 

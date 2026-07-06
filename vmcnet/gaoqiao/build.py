@@ -75,6 +75,8 @@ def build_network(
 		envelope = envelopes.make_ds_hz_envelope_old(**make_envelope_kwargs,activation_fn=activation_fn)  # type: envelopes.Envelope
 	elif envelope_type=="iso":
 		envelope = envelopes.make_isotropic_envelope()
+	elif envelope_type=="iso_new":
+		envelope = envelopes.make_isotropic_envelope_new()
 	else :
 		raise ValueError("envelope_type should be in ['ds_hz', 'iso']")
 	
@@ -171,6 +173,21 @@ def build_network(
 	elif gq_type == "ef_shrd_sym_ablation":
 		ef=True
 		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			activation_fn=activation_fn,
+			attn_params=attn,
+		)
+	elif gq_type == "ef_shrd_sym_ablation_zero":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation_zero(
 			n, 
 			ndim,
 			nspins,
