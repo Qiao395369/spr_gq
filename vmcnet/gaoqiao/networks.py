@@ -1733,6 +1733,405 @@ def make_fermi_net_model_ef_shrd_sym_ablation(
     return h_to_orbitals, None
 
   return FerminetModel(init, apply)
+def make_fermi_net_model_ef_shrd_sym_ablation_null(
+    natom,
+    ndim,
+    nspins,
+    feature_layer,
+    hidden_dims,   # e.g. ((64,16),(64,16),(64,16),(64,16))
+    use_last_layer=False,
+    dim_extra_params=0,
+    do_aa: bool = False,
+    mes=None,
+    activation_fn=jax.nn.silu,
+    attn_params: Optional[dict] = None,
+):
+  """
+  Controlled null-summary ablation for the equal-footing model.
+
+  Difference from make_fermi_net_model_ef_shrd_sym:
+    - Keep the same full electron+nucleus representation.
+    - Keep the same dimensions, projections, residuals, activation, and apply flow.
+    - Replace nuclear one-particle summaries and nuclear-source pair summaries
+      in construct_symmetric_features_conv with learned geometry-independent
+      null summaries.
+
+  This tests whether geometry-dependent nuclear pooled summaries in the shared
+  backbone are important, without turning the model into a different
+  electron-only architecture and without introducing hard-zero dead channels.
+  """
+
+  assert (dim_extra_params == 0), "dim_extra_params should be 0 in gq"
+  do_aa = True
+
+  if mes is None:
+    raise RuntimeError(
+        "make_fermi_net_model_ef_shrd_sym_ablation_null only supports equal-footing models"
+    )
+
+  update_alpha, do_rdt, resd_dt_shift, resd_dt_scale = None, False, None, None
+
+  # Attention on two-particle channel.
+  do_attn = attn_params is not None
+  if do_attn:
+    attn_nfeat = hidden_dims[-1][1]
+    attn_init, attn_apply = attn.self_attn(
+        attn_nfeat,
+        attn_nfeat,
+        **attn_params,
+    )
+
+    # input is npart x npart x nf, vmap along axis==1
+    vmap_attn_apply = jax.vmap(
+        attn_apply,
+        in_axes=(None, 1),
+        out_axes=1,
+    )
+
+  do_trimul = False
+  dh_scale = sum([do_attn, do_trimul])
+  if dh_scale != 0:
+    dh_scale = 1.0 / float(dh_scale)
+
+  def init(key):
+    dim_1_append = mes.get_dim_part_features()
+    dim_2_append = mes.get_dim_pair_features()
+
+    # Number of spin channels.
+    active_spin_channels = [spin for spin in nspins if spin > 0]
+    nchannels = len(active_spin_channels)
+
+    params = {}
+    (num_one_features, num_two_features), params["input"] = feature_layer.init()
+
+    key, subkey = jax.random.split(key)
+    params["one_reshp"] = network_blocks.init_linear_layer(
+        subkey,
+        num_one_features + dim_1_append,
+        hidden_dims[0][0],
+    )
+
+    key, subkey = jax.random.split(key)
+    params["two_reshp"] = network_blocks.init_linear_layer(
+        subkey,
+        num_two_features + dim_2_append,
+        hidden_dims[0][1],
+    )
+
+    # Same input dimension as the full equal-footing model.
+    # Do not reduce dimensions in the ablation.
+    nfeatures = lambda out1, out2: (nchannels + 2) * out1 + (nchannels + 1) * out2
+
+    dims_1_in = [nfeatures(hidden_dims[0][0], hidden_dims[0][1])]
+    dims_1_in += [nfeatures(hdim[0], hdim[1]) for hdim in hidden_dims[:-1]]
+
+    dims_2_in = [hidden_dims[0][1]]
+    dims_2_in += [hdim[1] for hdim in hidden_dims[:-2]]
+
+    dims_1_out = [hdim[0] for hdim in hidden_dims]
+    dims_2_out = [hdim[1] for hdim in hidden_dims[:-1]]
+
+    key, subkey = jax.random.split(key)
+    params["one"], params["two"] = init_layers(
+        key=subkey,
+        dims_one_in=dims_1_in,
+        dims_one_out=dims_1_out,
+        dims_two_in=dims_2_in,
+        dims_two_out=dims_2_out,
+    )
+
+    dims_orbital_in = hidden_dims[-1][0]
+
+    dim_proj_1_in = dims_1_out[:len(dims_2_out)]
+    dim_proj_1_out = dims_2_out
+
+    params["proj"] = []
+    for ii in range(len(params["two"])):
+      if dim_proj_1_in[ii] != dim_proj_1_out[ii]:
+        key, subkey = jax.random.split(key)
+        params["proj"].append(
+            network_blocks.init_linear_layer(
+                subkey,
+                dim_proj_1_in[ii],
+                dim_proj_1_out[ii],
+            )
+        )
+      else:
+        params["proj"].append(None)
+
+    dim_proj_0_in = hidden_dims[0][0]
+    dim_proj_0_out = hidden_dims[0][1]
+
+    if dim_proj_0_in != dim_proj_0_out:
+      key, subkey = jax.random.split(key)
+      params["proj_0"] = network_blocks.init_linear_layer(
+          subkey,
+          dim_proj_0_in,
+          dim_proj_0_out,
+      )
+    else:
+      params["proj_0"] = None
+
+    # ------------------------------------------------------------------
+    # Learned geometry-independent null nuclear summaries.
+    #
+    # We create one null summary per call to construct_symmetric_features_conv.
+    # This is robust even if hidden_dims change across layers.
+    #
+    # For layer i:
+    #   null_g1_nuc[i] replaces <h_I>_{I in N}
+    #   null_g2_nuc[i] replaces <m_{I alpha}>_{I in N}
+    # ------------------------------------------------------------------
+    params["null_g1_nuc"] = []
+    params["null_g2_nuc"] = []
+
+    n_two_layers = len(params["two"])
+
+    for ii in range(n_two_layers):
+      if ii == 0:
+        h1_dim = hidden_dims[0][0]
+        h2_dim = hidden_dims[0][1]
+      else:
+        h1_dim = dims_1_out[ii - 1]
+        h2_dim = dims_2_out[ii - 1]
+
+      key, subkey = jax.random.split(key)
+      params["null_g1_nuc"].append(
+          1.0e-3 * jax.random.normal(
+              subkey,
+              (1, h1_dim),
+          )
+      )
+
+      key, subkey = jax.random.split(key)
+      params["null_g2_nuc"].append(
+          1.0e-3 * jax.random.normal(
+              subkey,
+              (1, h2_dim),
+          )
+      )
+
+    # Extra one-particle-only layer, if present.
+    if len(params["two"]) != len(params["one"]):
+      final_h1_dim = dims_1_out[len(params["two"]) - 1]
+      final_h2_dim = dims_2_out[-1]
+
+      key, subkey = jax.random.split(key)
+      params["null_g1_nuc"].append(
+          1.0e-3 * jax.random.normal(
+              subkey,
+              (1, final_h1_dim),
+          )
+      )
+
+      key, subkey = jax.random.split(key)
+      params["null_g2_nuc"].append(
+          1.0e-3 * jax.random.normal(
+              subkey,
+              (1, final_h2_dim),
+          )
+      )
+
+    if do_attn:
+      params["attn"] = []
+      for i in range(len(params["two"])):
+        key, subkey = jax.random.split(key)
+        params["attn"].append(attn_init(subkey))
+      key, subkey = jax.random.split(key)
+
+    return params, dims_orbital_in
+
+  def construct_symmetric_features_conv(
+      h1: jnp.ndarray,
+      h2: jnp.ndarray,
+      null_g1_nuc: jnp.ndarray,
+      null_g2_nuc: jnp.ndarray,
+      proj: Optional[Mapping[str, jnp.ndarray]] = None,
+  ) -> jnp.ndarray:
+    """
+    Null-nuclear-summary ablation.
+
+    Full model:
+      g1 = [mean nuclear h1]
+           + [mean spin-up h1]
+           + [mean spin-down h1]
+
+      g2 = [mean nuclear-source pair messages]
+           + [mean spin-up-source messages]
+           + [mean spin-down-source messages]
+
+    This ablation:
+      g1 = [learned geometry-independent null nuclear summary]
+           + [mean spin-up h1]
+           + [mean spin-down h1]
+
+      g2 = [learned geometry-independent null nuclear-source summary]
+           + [mean spin-up-source messages]
+           + [mean spin-down-source messages]
+
+    This preserves the dimensionality and optimization capacity of the
+    shared backbone while removing geometry-dependent nuclear pooled
+    summaries from the shared feature pathway.
+    """
+
+    if proj is not None:
+      ph1 = network_blocks.linear_layer(h1, **proj)
+    else:
+      ph1 = h1
+
+    # Pair-gated message.
+    h2xh1 = h2 * ph1[:, None, :]
+
+    # Same split as the full model.
+    h2_upper, h2_below = mes.split_ea(h2xh1, axis=0)
+    hi, hz = mes.split_ea(h1)
+
+    spin_partitions = network_blocks.array_partitions(nspins)
+
+    # Electron-source pair summaries: unchanged.
+    g2_elec = [
+        jnp.mean(h, axis=0)
+        for h in jnp.split(h2_upper, spin_partitions, axis=0)
+        if h.shape[0] > 0
+    ]
+
+    # Nuclear-source pair summary:
+    # replace geometry-dependent nuclear pooled message with a learned
+    # geometry-independent null summary.
+    #
+    # h2_below has shape [n_nuc, n_particles, h2_dim].
+    # The real nuclear-source summary would have shape [n_particles, h2_dim].
+    g2_nuc_null = jnp.tile(
+        null_g2_nuc.astype(h2.dtype),
+        [h2_below.shape[1], 1],
+    )
+
+    g2 = [g2_nuc_null] + g2_elec
+    g2 = jnp.concatenate(g2, axis=1)
+
+    # Electron one-particle summaries: unchanged.
+    g1_elec = [
+        jnp.mean(h, axis=0, keepdims=1)
+        for h in jnp.split(hi, spin_partitions, axis=0)
+        if h.shape[0] > 0
+    ]
+
+    # Nuclear one-particle summary:
+    # replace geometry-dependent nuclear pooled state with a learned
+    # geometry-independent null summary.
+    #
+    # The real nuclear summary would have shape [1, h1_dim].
+    g1_nuc_null = null_g1_nuc.astype(h1.dtype)
+
+    g1 = [g1_nuc_null] + g1_elec
+    g1 = jnp.concatenate(g1, axis=1)
+
+    # Broadcast global one-particle summary to all target particles.
+    g1 = jnp.tile(g1, [h1.shape[0], 1])
+
+    return jnp.concatenate([h1, g1, g2], axis=1)
+
+  def _hi_next(
+      hi_in,
+      params,
+  ):
+    return activation_fn(
+        network_blocks.linear_layer(
+            hi_in,
+            **params,
+        )
+    )
+
+  def _hij_next(
+      hij_in,
+      params,
+  ):
+    return activation_fn(
+        network_blocks.vmap_linear_layer(
+            hij_in,
+            params["w"],
+            params["b"],
+        )
+    )
+
+  residual = lambda x, y: (x + y) / jnp.sqrt(2.0) if x.shape == y.shape else y
+
+  def apply(
+      params,
+      e2_features,
+  ):
+    # Keep full particle descriptors.
+    c1 = mes.get_part_features()
+    c2 = mes.get_pair_features()
+
+    # Keep full electron+nucleus pair features.
+    h2 = e2_features
+
+    # Keep exactly the same one-particle initialization as the full model.
+    hee, _, haa = mes.split_ee_ea_aa(h2)
+    ha = jnp.mean(haa, axis=0)
+    he = jnp.mean(hee, axis=0)
+    h1 = jnp.concatenate([he, ha], axis=0)
+
+    for i in range(len(params["two"])):
+      if i == 0:
+        h1 = jnp.concatenate([h1, c1], axis=-1)
+        h2 = jnp.concatenate([h2, c2], axis=-1)
+
+        h1 = network_blocks.linear_layer(h1, **params["one_reshp"])
+        h2 = network_blocks.linear_layer(h2, **params["two_reshp"])
+
+        h1 = activation_fn(h1)
+        h2 = activation_fn(h2)
+
+        h1_in = construct_symmetric_features_conv(
+            h1,
+            h2,
+            params["null_g1_nuc"][i],
+            params["null_g2_nuc"][i],
+            params["proj_0"],
+        )
+      else:
+        h1_in = construct_symmetric_features_conv(
+            h1,
+            h2,
+            params["null_g1_nuc"][i],
+            params["null_g2_nuc"][i],
+            params["proj"][i - 1],
+        )
+
+      h1_next = _hi_next(h1_in, params["one"][i])
+      h2_next = _hij_next(h2, params["two"][i])
+
+      h1 = residual(h1, h1_next)
+      h2 = residual(h2, h2_next)
+
+      if do_attn:
+        h2_attn = dh_scale * vmap_attn_apply(params["attn"][i], h2)
+        h2 = residual(h2, h2_attn)
+
+    # Extra one-particle layer.
+    if len(params["two"]) != len(params["one"]):
+      idx = len(params["two"])
+
+      h1_in = construct_symmetric_features_conv(
+          h1,
+          h2,
+          params["null_g1_nuc"][idx],
+          params["null_g2_nuc"][idx],
+          params["proj"][-1],
+      )
+
+      h1_next = _hi_next(h1_in, params["one"][-1])
+      h1 = residual(h1, h1_next)
+
+    # Final split: electronic states go to orbitals; nuclear states can still
+    # be used elsewhere, e.g. envelope construction depending on outer code.
+    h_to_orbitals, hz = mes.split_ea(h1)
+
+    return h_to_orbitals, hz
+
+  return FerminetModel(init, apply)
 
 def make_fermi_net_model_ef_shrd_sym_ablation_zero(
     natom,

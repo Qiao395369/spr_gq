@@ -200,6 +200,21 @@ def build_network(
 			activation_fn=activation_fn,
 			attn_params=attn,
 		)
+	elif gq_type == "ef_shrd_sym_ablation_null":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation_null(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			activation_fn=activation_fn,
+			attn_params=attn,
+		)
 	elif gq_type == "ef_shrd_sym_old":
 		ef=True
 		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_old(
