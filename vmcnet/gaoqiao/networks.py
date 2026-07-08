@@ -1920,8 +1920,10 @@ def make_fermi_net_model_ef_shrd_sym_ablation_zero(
         if h.size > 0
     ]
 
-    # Nuclear-source pair summary: zeroed but shape-preserved.
-    g2_nuc_zero = jnp.zeros_like(jnp.mean(h2_below, axis=0))
+    # g2_nuc_zero = jnp.zeros_like(jnp.mean(h2_below, axis=0))
+    g2_nuc_zero = jnp.zeros((h2_below.shape[1], h2_below.shape[2]),dtype=h2_below.dtype,)
+
+    g1_nuc_zero = jnp.zeros((1, hz.shape[-1]),dtype=hz.dtype,)
 
     g2 = [g2_nuc_zero] + g2_elec
     g2 = jnp.concatenate(g2, axis=1)
@@ -1934,7 +1936,7 @@ def make_fermi_net_model_ef_shrd_sym_ablation_zero(
     ]
 
     # Nuclear one-particle summary: zeroed but shape-preserved.
-    g1_nuc_zero = jnp.zeros_like(jnp.mean(hz, axis=0, keepdims=1))
+    # g1_nuc_zero = jnp.zeros_like(jnp.mean(hz, axis=0, keepdims=1))
 
     g1 = [g1_nuc_zero] + g1_elec
     g1 = jnp.concatenate(g1, axis=1)
