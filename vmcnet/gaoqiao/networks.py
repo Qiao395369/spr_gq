@@ -1586,7 +1586,7 @@ def make_fermi_net_model_ef_shrd_sym_ablation(
     (num_one_features, num_two_features), params['input'] = (feature_layer.init())
 
     key, subkey = jax.random.split(key)
-    params['one_reshp'] = network_blocks.init_linear_layer(subkey, num_one_features + dim_1_append, hidden_dims[0][0])
+    params['one_reshp'] = network_blocks.init_linear_layer(subkey, natom * num_two_features + dim_1_append, hidden_dims[0][0])
 
     key, subkey = jax.random.split(key)
     params['two_reshp'] = network_blocks.init_linear_layer(subkey, num_two_features + dim_2_append, hidden_dims[0][1])
@@ -1699,8 +1699,10 @@ def make_fermi_net_model_ef_shrd_sym_ablation(
     c2 = mes.get_pair_features()
     c1 = c1[:nele,...]
     c2 = c2[:nele,:nele,...]
-    h2 = e2_features[:nele,:nele,...]
-    h1 = jnp.mean(h2, axis=0)  #\Sigma_i hij :(ne,ne,nf_two)->(ne,nf_two)
+    h2 = e2_features[:nele,:nele,...]  #(ne,ne,nf_two)
+    h1_=e2_features[:nele,-natom:,...] #(ne,na,nf_two)
+    h1 = h1_.reshape((nele,-1))  #\Sigma_i hij :(na,ne,nf_two)->(ne,nf_two)
+
     for i in range(len(params['two'])):
       if i == 0:
         # h1 = jnp.concatenate([h1, c1], axis=-1)  # (ne+na,nf_two+3)
@@ -1733,6 +1735,7 @@ def make_fermi_net_model_ef_shrd_sym_ablation(
     return h_to_orbitals, None
 
   return FerminetModel(init, apply)
+
 def make_fermi_net_model_ef_shrd_sym_ablation_null(
     natom,
     ndim,
