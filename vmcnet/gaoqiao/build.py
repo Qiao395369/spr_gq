@@ -28,6 +28,7 @@ def build_network(
 	activation_type: str = "tanh",
 	jastrow_activation_type: str = "tanh",
 	dp_type: str = "element1",
+	alpha: float = 1.0,
 ):
 	if activation_type == "tanh":
 		activation_fn = jax.nn.tanh
@@ -203,6 +204,37 @@ def build_network(
 	elif gq_type == "ef_shrd_sym_ablation_null":
 		ef=True
 		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation_null(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			activation_fn=activation_fn,
+			attn_params=attn,
+		)
+	elif gq_type == "ef_shrd_sym_alpha":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_alpha(
+			n, 
+			ndim,
+			nspins,
+			feature_layer,
+			hidden_dims,
+			use_last_layer,
+			dim_extra_params=dim_extra_params,
+			do_aa=do_aa,
+			mes=mes,
+			activation_fn=activation_fn,
+			attn_params=attn,
+			alpha=alpha,
+		)
+	elif gq_type == "ef_shrd_sym_stopgrad":
+		ef=True
+		ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_stopgrad(
 			n, 
 			ndim,
 			nspins,
