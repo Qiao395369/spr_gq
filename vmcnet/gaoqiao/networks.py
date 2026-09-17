@@ -32,6 +32,22 @@ import vmcnet.gaoqiao.attn as attn
 import vmcnet.gaoqiao.tri as tri
 from vmcnet.gaoqiao.jastrows import JastrowModel
 
+import vmcnet.gaoqiao.so3_utils as so3_utils
+
+# ======================= SO(3) REAL V3 REBUILT =======================
+# 重要：当 so3_config != None 时，本文件不会调用旧 FermiNet backbone 来生成 determinant。
+# 本版本删除复数波函数实现；SO(3) 分支与保留的旧标量分支都只按实数处理。
+# SO(3) 浮点类型由 so3_config.float_dtype 指定，可选 float32 或 float64。
+# SO(3) 模式的 determinant 路径是：
+#   y_i^(0) -> 每个 (l,q) 独立的实线性 orbital head -> K 个 D_{l,q,k}
+#   每个 orbital 再乘 FermiNet 风格的原子核指数 envelope。
+#   A^(l)=sum_j y_j^(l)。
+#   l=0: Psi_0=sum_k D_{0,0,k}。
+#   l>0: Psi_l=sum_q A_q^(l) [sum_k D_{l,q,k}]。
+#   最终 Psi=exp(J_Kato) [Psi_0+sum_l Psi_l]。
+# 旧 FermiNet 的 single/double/orbital/det 代码仅在 so3_config is None 时保留兼容。
+# ==================================================================
+
 FermiLayers = Tuple[Tuple[int, int], ...]
 # Recursive types are not yet supported in pytype - b/109648354.
 # pytype: disable=not-supported-yet
@@ -222,6 +238,9 @@ class FermiNetOptions:
   gq_type: str = 'ef'
   jastrow: JastrowModel =None
   RHF: bool = False
+  so3_config: Any = None
+  # 原子核电荷；SO(3) 当前专用电子-电子 Kato Jastrow 不直接使用它，但保存在 options 中便于后续扩展电子-核 cusp。
+  charges: Any = None
 
 ## Network initialisation ##
 
@@ -425,6 +444,57 @@ def init_fermi_net_params(
     PyTree of network parameters. Spin-dependent parameters are only created for
     spin channels containing at least one particle.
   """
+  active_spin_channels = [spin for spin in nspins if spin > 0]
+  if len(active_spin_channels) == 0:
+    raise ValueError('No electrons present!')
+
+  # --------------------------------------------------------------------------
+  # 新 SO(3) 路径：提前返回，彻底绕开旧 FermiNet determinant backbone。
+  # --------------------------------------------------------------------------
+  if options.so3_config is not None:
+    if options.mes is None:
+      raise ValueError('SO(3) network requires options.mes (equal-footing particle system).')
+    if hf_solution is not None:
+      raise ValueError('当前 SO(3) determinant head 不使用旧 FermiNet 的 HF 初始化。')
+    params = {}
+    type_dim = options.mes.get_dim_part_features()
+    key, k_so3, k_det, k_jastrow = jax.random.split(key, 4)
+    params['so3'] = so3_utils.init_so3_params(
+        k_so3,
+        type_dim=type_dim,
+        config=options.so3_config,
+    )
+    sectors = so3_utils.sector_list(options.so3_config)
+    params['so3_det'] = so3_utils.init_sector_determinant_params(
+        k_det,
+        channels=options.so3_config.channels,
+        nspins=nspins,
+        determinants_per_l=options.determinants,
+        sectors=sectors,
+        natom=natom,
+        ndim=ndim,
+        full_det=options.full_det,
+        include_bias=options.bias_orbitals,
+        float_dtype=options.so3_config.float_dtype,
+        use_envelope=options.so3_config.use_envelope,
+        envelope_sigma_init=options.so3_config.envelope_sigma_init,
+        envelope_pi_init=options.so3_config.envelope_pi_init,
+    )
+    # 初始化满足电子-电子 Kato cusp 的 Padé Jastrow；同自旋 cusp=1/4，异自旋 cusp=1/2 固定，range b 可学习。
+    if options.so3_config.use_kato_jastrow:
+      params['so3_jastrow'] = so3_utils.init_kato_jastrow_params(
+          k_jastrow,
+          nspins=nspins,
+          b_init=options.so3_config.jastrow_b_init,
+          float_dtype=options.so3_config.float_dtype,
+      )
+    else:
+      params['so3_jastrow'] = None
+    return params
+
+  # --------------------------------------------------------------------------
+  # 以下为原有 FermiNet 初始化路径；SO(3) 模式不会执行到这里。
+  # --------------------------------------------------------------------------
   if options.envelope.apply_type == envelopes.EnvelopeType.PRE_ORBITAL:
     if options.bias_orbitals:
       raise ValueError('Cannot bias orbitals w/STO envelope.')
@@ -433,11 +503,6 @@ def init_fermi_net_params(
       raise ValueError('Cannot use last layer w/HF init')
     if options.envelope.apply_type not in ('sto', 'sto-poly'):
       raise ValueError('When using HF init, envelope_type must be `sto` or `sto-poly`.')
-
-  active_spin_channels = [spin for spin in nspins if spin > 0]
-  nchannels = len(active_spin_channels)
-  if nchannels == 0:
-    raise ValueError('No electrons present!')
 
   params = {}
   key, subkey = jax.random.split(key, num=2)
@@ -476,21 +541,14 @@ def init_fermi_net_params(
   else:
     nspin_orbitals_alloc = nspin_orbitals
 
-  # create envelope params
   if options.envelope.apply_type == envelopes.EnvelopeType.PRE_ORBITAL:
-    # Applied to output from final layer of 1e stream.
     output_dims = dims_orbital_in
-  elif options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT:
-    # Applied to orbitals.
-    output_dims = nspin_orbitals
-  elif options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_Z:
-    # Applied to orbitals.
-    output_dims = nspin_orbitals
-  elif options.envelope.apply_type == envelopes.EnvelopeType.PRE_DETERMINANT_TWIST:
-    # Applied to orbitals.
+  elif options.envelope.apply_type in (
+      envelopes.EnvelopeType.PRE_DETERMINANT,
+      envelopes.EnvelopeType.PRE_DETERMINANT_Z,
+      envelopes.EnvelopeType.PRE_DETERMINANT_TWIST):
     output_dims = nspin_orbitals
   elif options.envelope.apply_type == envelopes.EnvelopeType.POST_DETERMINANT:
-    # Applied to all determinants.
     output_dims = 1
   else:
     raise ValueError('Unknown envelope type')
@@ -518,8 +576,7 @@ def init_fermi_net_params(
         nspin_orbitals=nspin_orbitals_alloc,
         bias_orbitals=options.bias_orbitals)
     params['RHF_orbital']=None
-  
-  
+
   if options.jastrow.init is not None:
     key, subkey = jax.random.split(key, num=2)
     params['jastrow'] = options.jastrow.init(
@@ -796,8 +853,6 @@ def make_fermi_net_model(
     return h_to_orbitals, None
 
   return FerminetModel(init, apply)
-
-
 
 def make_fermi_net_model_ef(
     natom,
@@ -4138,11 +4193,10 @@ def fermi_net_orbitals_part1_ef(
 ):
   """
   """
-  pos = jnp.concatenate([pos.reshape(-1), atoms.reshape(-1)])  #(ne+na,3)
-  pp, r_pp = construct_input_features_ef(pos)  # (ne+na,ne+na,3),(ne+na,ne+na,1)
+  all_pos = jnp.concatenate([pos.reshape(-1), atoms.reshape(-1)])  #(ne+na,3)
+  pp, r_pp = construct_input_features_ef(all_pos)  # (ne+na,ne+na,3),(ne+na,ne+na,1)
   pp_features = options.feature_layer.apply(pp, r_pp, **params['input'])  # (ne+na,ne+na,nf_two)
-  hpp = pp_features
-  h_to_orbitals, hz = options.ferminet_model.apply(params, hpp,)
+  h_to_orbitals, hz = options.ferminet_model.apply(params, pp_features)
   # [h_to_orbitals, _] = options.mes.split_ea(h_to_orbitals)  #(ne,64)
   [ee, ea, aa] = options.mes.split_ee_ea_aa(pp)
   [r_ee, r_ea, r_aa] = options.mes.split_ee_ea_aa(r_pp)
@@ -4287,6 +4341,122 @@ def fermi_net(
 
   return sign_out, log_out
 
+
+def so3_multiplets_fn(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    options: FermiNetOptions = FermiNetOptions(),
+):
+  """运行 SO(3) backbone，返回每个 l 的粒子特征 y_j^(l) 与整体 multiplet A^(l)。"""
+  del nspins
+  if options.so3_config is None:
+    raise ValueError('SO(3) branch requested but options.so3_config is None.')
+  if options.mes is None:
+    raise ValueError('SO(3) branch requires options.mes.')
+  if 'so3' not in params:
+    raise ValueError('params does not contain SO(3) parameters; reinitialize the network.')
+  dtype = so3_utils.config_dtype(options.so3_config)
+  particle_pos = so3_utils.combine_particle_positions(pos, atoms, ndim=options.ndim, dtype=dtype)
+  type_features = jnp.asarray(options.mes.get_part_features(), dtype=dtype)
+  return so3_utils.apply_so3_network(
+      params['so3'], particle_pos, type_features, options.so3_config)
+
+
+def fermi_net_so3(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    return_det_dist=False,
+    options: FermiNetOptions = FermiNetOptions(),
+):
+  r"""新的 SO(3) 波函数前向传播。
+
+  用户指定的结构为
+
+      对每个 l、每个 q=-l,...,+l：
+
+          y_i^(0)
+              -> 独立 orbital head_(l,q)
+              -> 每个 orbital 乘原子核指数 envelope
+              -> K 个 D_{l,q,k}
+
+      l=0:
+          Psi_0 = sum_k D_{0,0,k}
+
+      l>0:
+          Psi_l = sum_q A_q^(l) [sum_k D_{l,q,k}]
+
+      最终：
+          Psi = exp(J_Kato) [Psi_0 + sum_{l>0} Psi_l]
+
+  因而 l=1 有 3K 个 determinant，l=2 有 5K 个 determinant；每个 A_q 分量都拥有自己独立的一组 K 个 determinant。
+  """
+  if options.so3_config is None:
+    raise ValueError('fermi_net_so3 requires options.so3_config.')
+  if 'so3_det' not in params:
+    raise ValueError('params does not contain so3_det parameters; reinitialize the network.')
+
+  # 运行 SO(3) backbone，得到每个 l 的逐粒子 y_j^(l) 和整体 multiplet A^(l)。
+  so3_out = so3_multiplets_fn(params, pos, atoms, nspins, options)
+  # 总电子数；统一粒子顺序固定为电子在前、原子核在后。
+  nelec = int(sum(nspins))
+  # SO(3) determinant 的 orbital head 仍只读取电子 scalar feature y_i^(0)，shape=(Ne,C)。
+  y0_electrons = so3_out['y'][0][:nelec, :, 0]
+  # 电子坐标恢复成 (Ne,3)，供 envelope 与 Kato Jastrow 使用。
+  dtype = so3_utils.config_dtype(options.so3_config)
+  electron_pos = jnp.asarray(pos, dtype=dtype).reshape((nelec, options.ndim))
+  atoms_typed = jnp.asarray(atoms, dtype=dtype).reshape((-1, options.ndim))
+  # 当前真正进入波函数的 l sector。
+  sectors = so3_utils.sector_list(options.so3_config)
+
+  # 为每个 (l,q) 分别生成 K 个带 envelope 的 Slater determinant。
+  # det_sign[l] / det_logabs[l] 的 shape=(2l+1,K)。
+  det_sign, det_logabs, orbitals = so3_utils.sector_determinants_from_y0(
+      y0_electrons,
+      electron_pos,
+      atoms_typed,
+      params['so3_det'],
+      nspins=nspins,
+      determinants_per_l=options.determinants,
+      sectors=sectors,
+      full_det=options.full_det,
+      eps=options.so3_config.eps,
+  )
+
+  # det_fn 只用于观察全部 (l,q,k) 项的相对 log amplitude；公共 Jastrow 因子会在 log_softmax 中抵消。
+  if return_det_dist:
+    return so3_utils.sector_term_log_distribution(
+        det_logabs,
+        so3_out['A'],
+        sectors,
+        eps=options.so3_config.eps,
+    )
+
+  # 计算电子-电子 Kato Jastrow 的 log factor J；最终波函数整体乘 exp(J)。
+  if params.get('so3_jastrow', None) is not None:
+    jastrow_log = so3_utils.kato_ee_jastrow(
+        electron_pos,
+        nspins=nspins,
+        params=params['so3_jastrow'],
+        eps=options.so3_config.eps,
+    )
+  else:
+    jastrow_log = None
+
+  # 先在每个 A_q 内对 K 个 determinant 等权求和，再乘该 A_q，最后对所有 (l,q) 求和并加上 Jastrow。
+  return so3_utils.assemble_sector_wavefunction(
+      det_sign,
+      det_logabs,
+      so3_out['A'],
+      sectors,
+      jastrow_log=jastrow_log,
+      eps=options.so3_config.eps,
+  )
+
+
 def orbitals_fn(
     params,
     pos: jnp.ndarray,
@@ -4294,6 +4464,26 @@ def orbitals_fn(
     nspins: Tuple[int, ...],
     options: FermiNetOptions = FermiNetOptions(),
 ):
+  """返回 orbital matrices；SO(3) 模式下返回 {l: matrices}，旧模式保持原行为。"""
+  if options.so3_config is not None:
+    so3_out = so3_multiplets_fn(params, pos, atoms, nspins, options)
+    nelec = int(sum(nspins))
+    y0_electrons = so3_out['y'][0][:nelec, :, 0]
+    dtype = so3_utils.config_dtype(options.so3_config)
+    electron_pos = jnp.asarray(pos, dtype=dtype).reshape((nelec, options.ndim))
+    atoms_typed = jnp.asarray(atoms, dtype=dtype).reshape((-1, options.ndim))
+    sectors = so3_utils.sector_list(options.so3_config)
+    return so3_utils.build_sector_orbitals(
+        y0_electrons,
+        electron_pos,
+        atoms_typed,
+        params['so3_det'],
+        nspins=nspins,
+        determinants_per_l=options.determinants,
+        sectors=sectors,
+        full_det=options.full_det,
+        eps=options.so3_config.eps,
+    )
   orbitals,_ = fermi_net_orbitals(
       params,
       pos,
@@ -4301,8 +4491,8 @@ def orbitals_fn(
       nspins=nspins,
       options=options,
   )
-
   return orbitals
+
 
 def return_hz_fn(
     params,
@@ -4311,6 +4501,10 @@ def return_hz_fn(
     nspins: Tuple[int, ...],
     options: FermiNetOptions = FermiNetOptions(),
 ):
+  if options.so3_config is not None:
+    so3_out = so3_multiplets_fn(params, pos, atoms, nspins, options)
+    nelec = int(sum(nspins))
+    return so3_out['y'][0][nelec:, :, 0]
   orbitals, (ae, r_ae, r_ee, he, hz) = fermi_net_orbitals(
       params,
       pos,
@@ -4318,7 +4512,6 @@ def return_hz_fn(
       nspins=nspins,
       options=options,
   )
-
   return hz
 
 def make_fermi_net(
@@ -4347,6 +4540,7 @@ def make_fermi_net(
     gq_type:str='ef',
     jastrow : Optional[JastrowModel] = None,
     RHF: bool = False,
+    so3_config: Optional[so3_utils.SO3Config] = None,
 ) -> Tuple[InitFermiNet, FermiNetLike, FermiNetOptions]:
   """Creates functions for initializing parameters and evaluating ferminet.
 
@@ -4387,7 +4581,15 @@ def make_fermi_net(
     assert (not equal_footing),"equal_footing should be False in type fermi"
   
   assert (det_mode == "det"),"only det mode is supported in gq"
-  assert (envelope and feature_layer and ferminet_model),("no envelope/feature_layer/ferminet_model")
+
+  if so3_config is not None:
+    if not equal_footing:
+      raise ValueError('SO(3) extension currently requires equal_footing=True.')
+    if mes is None:
+      raise ValueError('SO(3) extension requires a ManyElectronSystem (mes).')
+    so3_utils.config_dtype(so3_config)
+  else:
+    assert (envelope and feature_layer and ferminet_model),("no envelope/feature_layer/ferminet_model")
 
   gemi_ia=None
 
@@ -4413,6 +4615,8 @@ def make_fermi_net(
       gq_type=gq_type,
       jastrow=jastrow,
       RHF=RHF,
+      so3_config=so3_config,
+      charges=jnp.asarray(charges),
   )
 
   init = functools.partial(
@@ -4423,15 +4627,16 @@ def make_fermi_net(
       options=options,
       hf_solution=hf_solution,
   )
+  network_impl = fermi_net_so3 if so3_config is not None else fermi_net
   network = functools.partial(
-      fermi_net,
+      network_impl,
       nspins=nspins,
       return_det_dist=False,
       options=options,
   )
 
   det_fn = functools.partial(
-      fermi_net,
+      network_impl,
       nspins=nspins,
       return_det_dist=True,
       options=options,
@@ -4452,3 +4657,16 @@ def make_fermi_net(
 
   return init, network, det_fn, options, orb_fn, hz_fn
 
+
+
+
+# -----------------------------------------------------------------------------
+# 新 SO(3) 路径的核心结构（这是 SO(3) 模式下真正执行的 determinant 路径）
+# -----------------------------------------------------------------------------
+# K = options.determinants 表示“每个 A_q^(l) 分量有 K 个 determinant”。
+# sectors = (0,) + target_ls，例如 target_ls=(1,2) 时 sectors=(0,1,2)。
+# l=0 有 1*K 个 determinant；l=1 有 3*K 个；l=2 有 5*K 个。
+# 每个 orbital 先乘 FermiNet 风格原子核指数 envelope。
+# l=0: Psi_0=sum_k D_{0,0,k}。
+# l>0: Psi_l=sum_q A_q^(l) [sum_k D_{l,q,k}]。
+# 最终 Psi=exp(J_Kato)[Psi_0+sum_l Psi_l]，J_Kato 满足电子-电子 Kato cusp。

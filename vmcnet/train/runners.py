@@ -271,6 +271,19 @@ def _get_gaoqiao_model(
             "scale": config_gq.scale if config_gq.scale != 1.0 else [],
             "rescale": config_gq.rescale_input,
         }
+        so3_params = {
+            "lmax": config_gq.so3_params.lmax,
+            "channels": config_gq.so3_params.channels,
+            "n_layers": config_gq.so3_params.n_layers,
+            "n_rbf": config_gq.so3_params.n_rbf,
+            "cutoff": config_gq.so3_params.cutoff,
+            "wbn_layers": config_gq.so3_params.wbn_layers,
+            "wbn_bottleneck": config_gq.so3_params.wbn_bottleneck,
+            "target_ls": tuple(config_gq.so3_params.target_ls),
+            "init_l1": config_gq.so3_params.init_l1,
+            "eps": config_gq.so3_params.eps,
+            "float_dtype": config_gq.so3_params.float_dtype,
+        }
         # trimul_params = None
         # gemi_params = None
         # feat_params = None
@@ -302,6 +315,7 @@ def _get_gaoqiao_model(
             jastrow_activation_type=config_gq.jastrow_activation_type,
             dp_type=config_gq.dp_type,
             alpha=config_gq.alpha,
+            so3_params=so3_params,
         )        
 
     elif wfn_type == "gq_ferminet":

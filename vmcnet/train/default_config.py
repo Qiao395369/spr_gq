@@ -494,6 +494,56 @@ def get_default_gq_config() -> Dict:
         "lapnet_num_layers": 4,
         "lapnet_num_heads": 4,
         "lapnet_mlp_hidden_dims": 256,
+        "so3_params": {
+            # Maximum SO(3) angular momentum sector.
+            # Network contains l = 0, ..., lmax.
+            "lmax": 2,
+
+            # Multiplicity / hidden channels for every l sector.
+            "channels": 16,
+
+            # Number of SO(3)-equivariant message-passing layers.
+            "n_layers": 3,
+
+            # Number of radial basis functions.
+            "n_rbf": 8,
+
+            # Pair-distance cutoff.
+            # None means fully connected particle interactions.
+            "cutoff": None,
+
+            # Number of Wigner bilinear blocks after equivariant
+            # message-passing layers.
+            "wbn_layers": 1,
+
+            # Internal channel dimension of Wigner bilinear blocks.
+            # None means use `channels`.
+            "wbn_bottleneck": None,
+
+            # Non-zero angular-momentum sectors entering the final
+            # wavefunction. l=0 is added automatically.
+            #
+            # With:
+            #     target_ls = (1, 2)
+            #
+            # final sectors are:
+            #     (0, 1, 2)
+            "target_ls": (1, 2),
+
+            # Explicitly initialize l=1 geometric features from
+            # relative particle directions.
+            "init_l1": True,
+
+            # Numerical-stability epsilon.
+            "eps": 1.0e-12,
+
+            # SO(3) branch is real-valued.
+            # choices=["float32", "float64"]
+            #
+            # For float64:
+            # jax.config.update("jax_enable_x64", True)
+            "float_dtype": "float64",
+        },
     }
     return gq_config
 
