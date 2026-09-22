@@ -5,10 +5,13 @@
 # 整个 SO(3) 分支从参数、隐藏特征、球谐函数、CG 张量、Slater 轨道到最终波函数全部使用实数浮点类型。
 # 浮点类型通过 SO3Config.float_dtype 自定义，推荐使用 jnp.float32 或 jnp.float64。
 # 如果选择 jnp.float64，必须在程序入口提前执行 jax.config.update("jax_enable_x64", True)。
-# 整体数据流为：粒子坐标与类型 -> 初始 h_j^(l) -> 等变卷积 -> Wigner 双线性块 -> y_j^(l) -> A^(l)。
-# 然后电子的 y_i^(0) 经过每个 l 独立的线性 orbital head，得到每个 l 对应的 K 个 Slater determinant D_{l,k}。
-# 最终波函数为 Psi=sum_l sum_k alpha_{l,k} D_{l,k} q_l，其中 q_0=1，q_l=c_l^T A^(l)。
-# 这里所有 c_l、alpha_{l,k}、D_{l,k}、q_l 与 Psi 都是实数，不再拆分实部/虚部。
+# 整体数据流为：粒子坐标与类型 -> 初始 h_j^(l) -> 等变卷积 -> Wigner 双线性块 -> y_j^(l)。
+# 对每个 l，通过只混 channel、不混 q 的 readout 产生 R 份完整 multiplet A_{r,q}^(l)。
+# determinant 不绑定到 q；可选 per_l 模式使用 D_{l,r,k}，或 shared 模式让全部 l 共用 D_{r,k}。
+# 每个 determinant 的 orbital 输入由 y_i^(0) 与高阶 y_i^(l) 的旋转不变量组成，并乘各向同性可学习核指数 envelope。
+# 完整 multiplet 为 Psi_q^(l)=sum_r A_{r,q}^(l) S_{l,r}；S 由 per-l 或 shared scalar determinant bank 线性组合得到。
+# signed_network 默认取每个 l 的 q=0 分量再对 l 求和；完整 multiplet 可单独调用辅助函数取得。
+# 最后整个波函数乘满足电子-电子 Kato cusp 的 Padé Jastrow exp(J)。
 # 本文件使用“实球谐基”表示整数阶 SO(3) 不可约表示，因此 l=1 可以理解为普通三维实向量，l=2 是五维实表示。
 # 对每个 l，最后一维仍按 q=-l,...,+l 排列；q 只是实球谐基的分量标签，不再表示复数 Y_l^m 的相位分量。
 # ==========================================================================
@@ -64,6 +67,22 @@ class SO3Config:
     use_kato_jastrow: bool = True
     # jastrow_b_init 是 Padé 分母 1+b*r 中 b 的正初值；cusp 斜率由固定 a 系数严格控制。
     jastrow_b_init: float = 1.0
+    # det_rank=R：每个 l 使用 R 份独立的完整 SO(3) multiplet readout；每个 r 再配 K 个 scalar determinant。
+    # 因此每个 l 的 determinant 数为 R*K，而不是 (2l+1)*K；同一个 r 的 determinant 因子共享给全部 q 分量。
+    det_rank: int = 4
+    # det_bank_mode 控制 scalar determinant bank 是否在不同 l 之间共享：
+    #   "per_l"  : 之前的方法；每个 l 都有自己独立的 R*K 个 determinant。
+    #   "shared" : 新的省算力方法；所有 l 共用同一组 R*K determinant，但每个 l 保留独立 alpha_{l,r,k}。
+    # shared 模式下实际需要计算的唯一 Slater determinant 数与 lmax/target_ls 无关。
+    det_bank_mode: str = "shared"
+    # True 时 determinant orbital 不只读取 y_i^(0)，还读取每个高阶 l 的 channel-wise RMS invariant。
+    # 这样 determinant 能感知 p/d/... 几何信息，但本身仍然是 SO(3) scalar。
+    use_invariant_orbital_features: bool = True
+    # scalar signed_network 如何从每个 l 的完整 multiplet 中选出一个标量分量。
+    # "q0"：取 q=0；"sum"：固定等权求和所有 q。完整 multiplet 本身不受这个选择影响。
+    output_projection: str = "q0"
+    # isotropic envelope 中 sigma=softplus(raw_sigma)+envelope_sigma_floor，保证指数衰减系数严格为正。
+    envelope_sigma_floor: float = 1.0e-6
 # 把用户给出的 dtype 统一解析成 JAX dtype，并限制为 float32 或 float64。
 def resolve_float_dtype(dtype_like: Any):
     # jnp.dtype 可以同时接受 jnp.float32、jnp.float64 和字符串。
@@ -86,6 +105,29 @@ def resolve_float_dtype(dtype_like: Any):
 def config_dtype(config: SO3Config):
     # 所有参数初始化和前向传播都应调用同一个解析函数，保证 dtype 全局一致。
     return resolve_float_dtype(config.float_dtype)
+
+# 规范化 determinant bank 模式。
+def normalize_det_bank_mode(mode: str) -> str:
+    mode = str(mode).lower()
+    if mode not in ("per_l", "shared"):
+        raise ValueError(
+            f"det_bank_mode 只支持 'per_l' 或 'shared'，收到 {mode!r}。"
+        )
+    return mode
+
+# 返回实际需要计算的唯一 Slater determinant 数。
+def unique_determinant_count(
+    determinants_per_rank: int,
+    det_rank: int,
+    sectors: Sequence[int],
+    det_bank_mode: str,
+) -> int:
+    K = int(determinants_per_rank)
+    R = int(det_rank)
+    mode = normalize_det_bank_mode(det_bank_mode)
+    if mode == "shared":
+        return R * K
+    return len(tuple(sectors)) * R * K
 
 # ============================================================================
 # NaN / Inf 调试开关。
@@ -539,12 +581,19 @@ def init_so3_params(key, type_dim: int, config: SO3Config) -> Mapping[str, objec
     # 固定结构。
     params['wbn'] = tuple(wbn)
     # readout 只收缩 channel，不作用于 irrep 分量 q。
+    # 每个 l 产生 R 份完整 multiplet；R 是 multiplicity/rank 维，而不是磁量子数维。
+    R = int(config.det_rank)
+    if R <= 0:
+        raise ValueError('SO3Config.det_rank 必须大于 0。')
     params['readout'] = {}
-    # 每个 l 有独立 readout 向量。
     for l in range(config.lmax + 1):
         key, k = jax.random.split(key)
-        params['readout'][str(l)] = _randn(k, (C,), 1.0 / math.sqrt(C), dtype)
-    # 新结构不再把 A^(l) 投影成单个 q_l；每个 A_q^(l) 都直接拥有自己的一组 K 个 determinant，因此不再需要 state_coeff。
+        # shape=(R,C)；A[l] 最终为 (R,2l+1)。
+        params['readout'][str(l)] = _randn(k, (R, C), 1.0 / math.sqrt(C), dtype)
+    # determinant 绝不按 q 参数化；q 维只存在于完整 irrep/multiplet 中。
+    # scalar 输出如何投影 q 由 config.output_projection 决定，不使用可训练 q-specific 系数。
+    if config.output_projection not in ('q0', 'sum'):
+        raise ValueError("SO3Config.output_projection 目前只支持 'q0' 或 'sum'。")
     # 返回参数树。
     return params
 # 初始化每个粒子的全部 irrep feature。
@@ -678,18 +727,18 @@ def wigner_bilinear_block(h: IrrepFeatures, block_params: Mapping[str, object], 
 def readout_particle_features(h: IrrepFeatures, params: Mapping[str, object], config: SO3Config):
     # y 就是最终逐粒子 feature，不改变 channel 与 irrep 分量。
     y = {l: h[l] for l in range(config.lmax + 1)}
-    # A_channels 只对粒子 j 求和，仍保留 channel c。
+    # A_channels 只对粒子 j 求和，仍保留 channel c 与 irrep 分量 q。
     A_channels = {}
-    # A 再对 channel 做可学习 readout，得到长度 2l+1 的最终 multiplet。
+    # A[l] shape=(R,2l+1)：R 份完整 multiplet。
     A = {}
     # 逐个 l 处理。
     for l in range(config.lmax + 1):
         # A_channels[c,q]=sum_j y[j,c,q]。
         A_channels[l] = jnp.sum(y[l], axis=0)
-        # w[c] 只收缩 channel，不碰 q。
+        # w[r,c] 只混 multiplicity/channel c，绝不混 q，因此每个 r 都仍严格属于同一个 l irrep。
         w = params['readout'][str(l)]
-        # A[q]=sum_c w[c] A_channels[c,q]。
-        A[l] = jnp.einsum('c,cq->q', w, A_channels[l])
+        # A[r,q]=sum_c w[r,c] A_channels[c,q]。
+        A[l] = jnp.einsum('rc,cq->rq', w, A_channels[l])
         _debug_array(f'readout/y_l{l}', y[l])
         _debug_array(f'readout/A_channels_l{l}', A_channels[l])
         _debug_array(f'readout/A_l{l}', A[l])
@@ -728,6 +777,47 @@ def apply_so3_network(params: Mapping[str, object], positions: Array, type_featu
     y, A_channels, A = readout_particle_features(h, params, config)
     # 返回所有需要的中间量。
     return {'h': h, 'y': y, 'A_channels': A_channels, 'A': A}
+
+# 返回 determinant orbital head 的 scalar 输入维数。
+def scalar_orbital_feature_dim(config: SO3Config) -> int:
+    # 基础 y^(0) 提供 C 个 scalar channel。
+    C = int(config.channels)
+    # 如果关闭高阶 invariant，只使用原始 y^(0)。
+    if not config.use_invariant_orbital_features:
+        return C
+    # 对每个 l=1,...,lmax 再加入 C 个 channel-wise RMS invariant，因此总维数 C*(lmax+1)。
+    return C * (int(config.lmax) + 1)
+
+# 从逐粒子 irrep feature 构造 determinant 可使用的旋转标量 feature。
+def make_scalar_orbital_features(
+    y: Mapping[int, Array],
+    nelec: int,
+    config: SO3Config,
+) -> Array:
+    # l=0 本身就是 scalar，取唯一 q=0 分量，shape=(Ne,C)。
+    scalar_parts = [jnp.asarray(y[0][:nelec, :, 0])]
+    # 如果用户只想使用 y^(0)，直接返回。
+    if not config.use_invariant_orbital_features:
+        out = scalar_parts[0]
+        _debug_array('orbital_features/y0_only', out)
+        return out
+    # 对每个高阶 irrep 取 channel-wise RMS：
+    #   s_{i,c}^{(l)} = sqrt(mean_q y_{i,c,q}^2 + eps^2)。
+    # 实 SO(3) irrep 的旋转矩阵是正交的，因此 q 上的平方和是严格旋转不变量。
+    eps_value = jnp.asarray(config.eps, dtype=scalar_parts[0].dtype)
+    for l in range(1, config.lmax + 1):
+        yl = jnp.asarray(y[l][:nelec], dtype=scalar_parts[0].dtype)
+        rms = jnp.sqrt(jnp.mean(yl * yl, axis=-1) + eps_value * eps_value)
+        scalar_parts.append(rms)
+        _debug_array(f'orbital_features/invariant_l{l}', rms)
+    # 最终 shape=(Ne,C*(lmax+1))。
+    out = jnp.concatenate(scalar_parts, axis=-1)
+    expected = scalar_orbital_feature_dim(config)
+    if out.shape[-1] != expected:
+        raise ValueError(f'scalar orbital feature dim 应为 {expected}，实际为 {out.shape[-1]}。')
+    _debug_array('orbital_features/combined', out)
+    return out
+
 # 返回实际进入最终波函数的 sector 列表；l=0 自动放在第一项。
 def sector_list(config: SO3Config) -> Tuple[int, ...]:
     # 去重并保持用户 target_ls 的原始顺序。
@@ -745,10 +835,29 @@ def sector_list(config: SO3Config) -> Tuple[int, ...]:
     # 返回 tuple。
     return tuple(sectors)
 # ============================================================================
-# 每个 A^(l) 分量各自对应 K 个 determinant 的新波函数结构。
-# 对 l=0：只有 q=0，直接把 K 个 determinant 求和。
-# 对 l>0：每个 q=-l,...,+l 都有独立的 K 个 determinant，先对 k 求和，再乘对应 A_q^(l)，最后对全部 (l,q) 求和。
-# 最终还在所有 determinant orbital 上乘 FermiNet 风格的原子核指数 envelope，并在总波函数上乘电子-电子 Kato Jastrow。
+# SO(3)-safe rank-R determinant 结构。
+#
+# 对每个 l：
+#   A^(l) 的 shape=(R,2l+1)，每个 r 是一份完整 multiplet。
+#   determinant 只带 (l,r,k)，绝不带 q：
+#
+#       S_{l,r}(X) = sum_k alpha_{l,r,k} D_{l,r,k}(X)
+#
+#   因为 D 与 alpha 都是 rotation scalar，所以
+#
+#       Psi_q^(l)(X) = sum_r A_{r,q}^(l)(X) S_{l,r}(X)
+#
+#   仍严格按照 l 阶 irrep 变换。
+#
+# determinant orbital 的输入只包含 SO(3) scalar feature：
+#   y_i^(0) 以及高阶 y_i^(l) 的 channel-wise RMS invariant。
+#
+# envelope 使用各向同性的可学习 sigma：
+#   e_{e,o}^{k} = sum_m pi_{k,o,m} exp[-sigma_{k,o,m} |r_e-R_m|]
+#
+# 因此 envelope 本身也是严格的 rotation/translation scalar。
+#
+# 最后整个波函数乘 electron-electron Kato Padé Jastrow exp(J)。
 # ============================================================================
 
 # 把正数 value 转成 softplus 的 unconstrained 参数初值，使 softplus(raw)=value。
@@ -757,111 +866,202 @@ def _inverse_softplus(value: float, dtype) -> Array:
     value = max(float(value), 1.0e-8)
     return jnp.asarray(math.log(math.expm1(value)), dtype=dtype)
 
-# 初始化单个 (l,q,spin) orbital head 对应的 FermiNet 风格 envelope 参数。
+# 初始化单个 (l,r,spin) orbital head 对应的各向同性 FermiNet 风格 envelope 参数。
 def _init_orbital_envelope_params(
     key,
-    determinants_per_l: int,
+    determinants_per_rank: int,
     norb: int,
     natom: int,
-    ndim: int,
     sigma_init: float,
+    sigma_floor: float,
     pi_init: float,
     dtype,
 ):
-    # K 是当前 A_q 分量对应的 determinant 数。
-    K = int(determinants_per_l)
-    # sigma 的 shape=(K,norb,natom,ndim,ndim)，与 FermiNet 公式中的 Sigma_{im}^{k alpha} 一一对应。
-    eye = jnp.eye(ndim, dtype=dtype)
-    sigma = jnp.broadcast_to(
-        jnp.asarray(sigma_init, dtype=dtype) * eye,
-        (K, norb, natom, ndim, ndim),
-    )
-    # 给 Sigma 一个很小的随机扰动，避免所有 determinant/orbital 的 envelope 在初始化时完全相同。
+    # K 是当前 scalar rank r 对应的 determinant 数。
+    K = int(determinants_per_rank)
+    if sigma_init <= sigma_floor:
+        raise ValueError(
+            f'envelope_sigma_init={sigma_init} 必须大于 envelope_sigma_floor={sigma_floor}。'
+        )
+    # sigma 必须为正；保存 raw_sigma，前向时通过 softplus+floor 得到真正衰减系数。
+    raw0 = _inverse_softplus(float(sigma_init) - float(sigma_floor), dtype)
+    raw_sigma = jnp.full((K, norb, natom), raw0, dtype=dtype)
+    # 加很小的 scalar 随机扰动；不会引入空间方向，因此不破坏 SO(3)。
     key, k_sigma = jax.random.split(key)
-    sigma = sigma + _randn(k_sigma, sigma.shape, 1.0e-3, dtype)
-    # pi 的 shape=(K,norb,natom)；初始让所有原子核等权贡献，总尺度约为 pi_init。
+    raw_sigma = raw_sigma + _randn(k_sigma, raw_sigma.shape, 1.0e-3, dtype)
+    # pi shape=(K,norb,natom)；初始各核等权，总尺度约为 pi_init。
     pi = jnp.full(
         (K, norb, natom),
         jnp.asarray(pi_init / max(natom, 1), dtype=dtype),
         dtype=dtype,
     )
-    # pi 可以取正也可以取负，与标准 FermiNet envelope 一样保持为普通可学习参数。
-    return {'sigma': sigma, 'pi': pi}
+    return {'raw_sigma': raw_sigma, 'pi': pi}
 
-# 初始化“每个 A_q^(l) 都有 K 个 determinant”的全部 orbital head 与 envelope 参数。
+# 初始化一个 R x K scalar determinant bank；该 bank 可属于某个 l，也可以被所有 l 共享。
+def _init_determinant_bank(
+    key,
+    input_dim: int,
+    nspins: Sequence[int],
+    determinants_per_rank: int,
+    det_rank: int,
+    natom: int,
+    full_det: bool,
+    include_bias: bool,
+    dtype,
+    use_envelope: bool,
+    envelope_sigma_init: float,
+    envelope_sigma_floor: float,
+    envelope_pi_init: float,
+):
+    K = int(determinants_per_rank)
+    R = int(det_rank)
+    active_spins = tuple(int(n) for n in nspins if int(n) > 0)
+    nelec = int(sum(active_spins))
+
+    rank_heads = []
+    rank_envelopes = []
+
+    for _ in range(R):
+        spin_heads = []
+        spin_envelopes = []
+
+        for nspin in active_spins:
+            norb = nelec if full_det else nspin
+            out_dim = K * norb
+
+            key, k_head = jax.random.split(key)
+            # determinant head 只读取 SO(3) scalar/invariant feature，因此输出仍是 rotation scalar。
+            w = _randn(
+                k_head,
+                (int(input_dim), out_dim),
+                1.0 / math.sqrt(max(int(input_dim), 1)),
+                dtype,
+            )
+            head = {'w': w}
+            if include_bias:
+                head['b'] = jnp.zeros((out_dim,), dtype=dtype)
+            spin_heads.append(head)
+
+            if use_envelope:
+                key, k_env = jax.random.split(key)
+                env = _init_orbital_envelope_params(
+                    k_env,
+                    determinants_per_rank=K,
+                    norb=norb,
+                    natom=int(natom),
+                    sigma_init=envelope_sigma_init,
+                    sigma_floor=envelope_sigma_floor,
+                    pi_init=envelope_pi_init,
+                    dtype=dtype,
+                )
+            else:
+                env = None
+            spin_envelopes.append(env)
+
+        rank_heads.append(tuple(spin_heads))
+        rank_envelopes.append(tuple(spin_envelopes))
+
+    return key, tuple(rank_heads), tuple(rank_envelopes)
+
+# 初始化 rank-R scalar determinant 参数。
+#
+# det_bank_mode="per_l":
+#   heads[l][r][spin]，每个 l 独立计算 R*K 个 determinant（之前的方法）。
+#
+# det_bank_mode="shared":
+#   heads[r][spin]，所有 l 共享同一个 R*K determinant bank（省算力方法）。
+#
+# 两种模式下 alpha[l][r,k] 始终按 l 独立，因此即便 determinant 共享，
+# 不同 l 仍可从同一个 antisymmetric basis 中学习不同线性组合。
 def init_sector_determinant_params(
     key,
-    channels: int,
+    input_dim: int,
     nspins: Sequence[int],
-    determinants_per_l: int,
+    determinants_per_rank: int,
     sectors: Sequence[int],
+    det_rank: int,
     natom: int,
-    ndim: int = 3,
     full_det: bool = True,
     include_bias: bool = False,
     float_dtype: Any = jnp.float32,
     use_envelope: bool = True,
     envelope_sigma_init: float = 1.0,
+    envelope_sigma_floor: float = 1.0e-6,
     envelope_pi_init: float = 1.0,
+    det_bank_mode: str = "per_l",
 ):
-    # 解析统一实 dtype。
     dtype = resolve_float_dtype(float_dtype)
-    # K 是“每个 A 分量”的 determinant 数，而不是每个 l 的总 determinant 数。
-    K = int(determinants_per_l)
+    K = int(determinants_per_rank)
+    R = int(det_rank)
+    sectors = tuple(int(l) for l in sectors)
+    mode = normalize_det_bank_mode(det_bank_mode)
+
     if K <= 0:
-        raise ValueError('determinants_per_l 必须大于 0。')
-    # active_spins 只保留非空自旋通道。
+        raise ValueError('determinants_per_rank 必须大于 0。')
+    if R <= 0:
+        raise ValueError('det_rank 必须大于 0。')
+    if int(input_dim) <= 0:
+        raise ValueError('input_dim 必须大于 0。')
     active_spins = tuple(int(n) for n in nspins if int(n) > 0)
-    # 总电子数。
     nelec = int(sum(active_spins))
     if nelec <= 0:
         raise ValueError('至少需要一个电子才能构造 Slater determinant。')
-    if int(natom) <= 0:
-        raise ValueError('SO(3) envelope 至少需要一个原子核。')
-    # heads[l][q_index][spin_index] 保存线性 orbital head。
-    params = {'heads': {}, 'envelope': {}}
-    # 逐 l 建立参数；l 对应 2*l+1 个 A 分量。
+    if use_envelope and int(natom) <= 0:
+        raise ValueError('启用 SO(3) envelope 时至少需要一个原子核。')
+
+    params = {'heads': None, 'envelope': None, 'alpha': {}}
+
+    if mode == 'per_l':
+        params['heads'] = {}
+        params['envelope'] = {}
+        for l in sectors:
+            key, heads, envs = _init_determinant_bank(
+                key,
+                input_dim=input_dim,
+                nspins=nspins,
+                determinants_per_rank=K,
+                det_rank=R,
+                natom=natom,
+                full_det=full_det,
+                include_bias=include_bias,
+                dtype=dtype,
+                use_envelope=use_envelope,
+                envelope_sigma_init=envelope_sigma_init,
+                envelope_sigma_floor=envelope_sigma_floor,
+                envelope_pi_init=envelope_pi_init,
+            )
+            params['heads'][str(l)] = heads
+            params['envelope'][str(l)] = envs
+    else:
+        # 所有 l 只初始化一次 orbital/envelope bank。
+        key, heads, envs = _init_determinant_bank(
+            key,
+            input_dim=input_dim,
+            nspins=nspins,
+            determinants_per_rank=K,
+            det_rank=R,
+            natom=natom,
+            full_det=full_det,
+            include_bias=include_bias,
+            dtype=dtype,
+            use_envelope=use_envelope,
+            envelope_sigma_init=envelope_sigma_init,
+            envelope_sigma_floor=envelope_sigma_floor,
+            envelope_pi_init=envelope_pi_init,
+        )
+        params['heads'] = heads
+        params['envelope'] = envs
+
+    # 每个 l 始终有独立 alpha，因此 shared 只共享昂贵的 determinant basis，
+    # 不共享不同 l 对 determinant basis 的线性组合。
+    alpha0 = 1.0 / math.sqrt(R * K)
     for l in sectors:
-        l = int(l)
-        nq = 2 * l + 1
-        q_heads = []
-        q_envelopes = []
-        # q_index=0,...,2l 对应物理标签 q=-l,...,+l。
-        for q_index in range(nq):
-            spin_heads = []
-            spin_envelopes = []
-            # 不同 spin row channel 仍然使用独立 orbital head；full_det 时每一行都输出 Ne 个轨道列。
-            for nspin in active_spins:
-                norb = nelec if full_det else nspin
-                out_dim = K * norb
-                key, k_head = jax.random.split(key)
-                # 每个 (l,q,spin) 都有完全独立的 K*norb 输出，因此 l=1 总共有 3K 个 determinant。
-                w = _randn(k_head, (channels, out_dim), 1.0 / math.sqrt(max(channels, 1)), dtype)
-                head = {'w': w}
-                if include_bias:
-                    head['b'] = jnp.zeros((out_dim,), dtype=dtype)
-                spin_heads.append(head)
-                # envelope 与 orbital head 同样按 (l,q,spin) 独立参数化。
-                if use_envelope:
-                    key, k_env = jax.random.split(key)
-                    env = _init_orbital_envelope_params(
-                        k_env,
-                        determinants_per_l=K,
-                        norb=norb,
-                        natom=int(natom),
-                        ndim=int(ndim),
-                        sigma_init=envelope_sigma_init,
-                        pi_init=envelope_pi_init,
-                        dtype=dtype,
-                    )
-                else:
-                    env = None
-                spin_envelopes.append(env)
-            q_heads.append(tuple(spin_heads))
-            q_envelopes.append(tuple(spin_envelopes))
-        params['heads'][str(l)] = tuple(q_heads)
-        params['envelope'][str(l)] = tuple(q_envelopes)
-    # 这里故意不再创建 alpha：用户要求同一 A_q 下 K 个 determinant 直接等权求和。
+        params['alpha'][str(l)] = jnp.full(
+            (R, K),
+            jnp.asarray(alpha0, dtype=dtype),
+            dtype=dtype,
+        )
+
     return params
 
 # 应用某一个实线性 orbital head。
@@ -879,33 +1079,39 @@ def _apply_orbital_head(x: Array, head: Mapping[str, Array]) -> Array:
     _debug_array('orbital_head/output', out)
     return out
 
-# 应用图中 FermiNet 风格的原子核指数 envelope：
-#   e_{j i}^{k alpha} = sum_m pi_{i m}^{k alpha} exp(-| Sigma_{i m}^{k alpha} (r_j^alpha-R_m) |)。
+# 应用 SO(3)-safe 的各向同性原子核指数 envelope：
+#   e_{e,o}^{k} = sum_m pi_{k,o,m} exp[-sigma_{k,o,m} |r_e-R_m|]。
 def apply_orbital_envelope(
     electron_pos: Array,
     atoms: Array,
     envelope_params: Optional[Mapping[str, Array]],
+    sigma_floor: float = 1.0e-6,
     eps: float = 1.0e-12,
 ) -> Array:
-    # 如果禁用 envelope，调用者会直接跳过；这里仍允许 None 方便接口统一。
     if envelope_params is None:
         raise ValueError('apply_orbital_envelope 收到 None；禁用 envelope 时不应调用该函数。')
-    # pi shape=(K,norb,natom)。
+
+    # pi 与 raw_sigma 都是 (K,norb,natom)；没有 Cartesian matrix index，因此不会挑选固定空间方向。
     pi = envelope_params['pi']
-    # sigma shape=(K,norb,natom,3,3)。
-    sigma = envelope_params['sigma']
-    dtype = sigma.dtype
+    raw_sigma = envelope_params['raw_sigma']
+    dtype = raw_sigma.dtype
     electron_pos = jnp.asarray(electron_pos, dtype=dtype)
     atoms = jnp.asarray(atoms, dtype=dtype)
-    # diff[e,m,d]=r_e-R_m，shape=(nspin,natom,3)。
+
+    # diff[e,m,d]=r_e-R_m。
     diff = electron_pos[:, None, :] - atoms[None, :, :]
-    # transformed[e,k,o,m,a]=sum_b Sigma[k,o,m,a,b]*diff[e,m,b]。
-    transformed = jnp.einsum('komab,emb->ekoma', sigma, diff, optimize=True)
-    # norm shape=(nspin,K,norb,natom)。加 eps^2 仅用于避免电子恰落在原子核时 AD 产生 0/0。
     eps_value = jnp.asarray(eps, dtype=dtype)
-    radius = jnp.sqrt(jnp.sum(transformed * transformed, axis=-1) + eps_value * eps_value)
-    # 对每个原子核求加权指数衰减并求和，得到 shape=(nspin,K,norb)。
-    env = jnp.sum(pi[None, ...] * jnp.exp(-radius), axis=-1)
+    # radius[e,m] 是严格 rotation scalar；eps^2 让电子恰在核上时一、二阶 AD 保持有限。
+    radius = jnp.sqrt(jnp.sum(diff * diff, axis=-1) + eps_value * eps_value)
+
+    # sigma>0，shape=(K,norb,natom)。
+    sigma = jax.nn.softplus(raw_sigma) + jnp.asarray(sigma_floor, dtype=dtype)
+
+    # decay[e,k,o,m]=exp[-sigma[k,o,m] * radius[e,m]]。
+    decay = jnp.exp(-radius[:, None, None, :] * sigma[None, ...])
+    # 对原子核 m 求和，得到 shape=(nspin,K,norb)。
+    env = jnp.sum(pi[None, ...] * decay, axis=-1)
+
     if SO3_DEBUG_VERBOSE:
         _debug_array('envelope/pi', pi)
         _debug_array('envelope/sigma', sigma)
@@ -913,71 +1119,264 @@ def apply_orbital_envelope(
     _debug_array('envelope/value', env)
     return env
 
-# 从电子 y_i^(0) 为每个 (l,q) 构造 K 个 Slater orbital matrix，并在每个 orbital element 上乘 envelope。
-def build_sector_orbitals(
-    y0_electrons: Array,
+# 从一个 determinant bank 构造 R 组、每组 K 个 Slater orbital matrix。
+def _build_orbitals_from_bank(
+    scalar_electron_features: Array,
     electron_pos: Array,
     atoms: Array,
-    det_params: Mapping[str, object],
+    head_bank,
+    envelope_bank,
     nspins: Sequence[int],
-    determinants_per_l: int,
-    sectors: Sequence[int],
-    full_det: bool = True,
-    eps: float = 1.0e-12,
+    determinants_per_rank: int,
+    det_rank: int,
+    full_det: bool,
+    envelope_sigma_floor: float,
+    eps: float,
+    debug_label: str,
 ):
-    # K 是每个 A_q 分量的 determinant 数。
-    K = int(determinants_per_l)
+    K = int(determinants_per_rank)
+    R = int(det_rank)
     active_spins = tuple(int(n) for n in nspins if int(n) > 0)
     nelec = int(sum(active_spins))
-    y0_electrons = jnp.asarray(y0_electrons)
-    electron_pos = jnp.asarray(electron_pos, dtype=y0_electrons.dtype).reshape((nelec, -1))
-    atoms = jnp.asarray(atoms, dtype=y0_electrons.dtype)
-    _debug_array('det/y0_electrons', y0_electrons)
-    _debug_array('det/electron_pos', electron_pos)
-    if y0_electrons.shape[0] != nelec:
-        raise ValueError(f'y0_electrons 第一维应为 {nelec}，实际为 {y0_electrons.shape[0]}。')
-    # 计算自旋 split 边界，并同时切分 feature 与电子坐标。
+
     split_points = []
     running = 0
     for nspin in active_spins[:-1]:
         running += nspin
         split_points.append(running)
-    y_by_spin = jnp.split(y0_electrons, split_points, axis=0)
+    x_by_spin = jnp.split(scalar_electron_features, split_points, axis=0)
     pos_by_spin = jnp.split(electron_pos, split_points, axis=0)
+
+    rank_results = []
+    for r in range(R):
+        heads = head_bank[r]
+        envs = envelope_bank[r]
+        spin_mats = []
+
+        for x, epos, head, env_params, nspin in zip(
+            x_by_spin,
+            pos_by_spin,
+            heads,
+            envs,
+            active_spins,
+        ):
+            raw = _apply_orbital_head(x, head)
+            norb = nelec if full_det else nspin
+            mat = raw.reshape(nspin, K, norb)
+
+            if env_params is not None:
+                env = apply_orbital_envelope(
+                    epos,
+                    atoms,
+                    env_params,
+                    sigma_floor=envelope_sigma_floor,
+                    eps=eps,
+                )
+                mat = mat * env
+
+            mat = jnp.transpose(mat, (1, 0, 2))
+            spin_mats.append(mat)
+
+        if full_det:
+            rank_mat = jnp.concatenate(spin_mats, axis=1)
+            _debug_array(f'det/orbitals_{debug_label}_r{r}', rank_mat)
+        else:
+            rank_mat = tuple(spin_mats)
+            for iblock, block in enumerate(rank_mat):
+                _debug_array(
+                    f'det/orbitals_{debug_label}_r{r}_spinblock{iblock}',
+                    block,
+                )
+        rank_results.append(rank_mat)
+
+    return tuple(rank_results)
+
+# 构造 Slater matrices。
+# 返回格式对两种模式保持一致：result[l][r]。
+# shared 模式下各 l 指向同一组已经计算好的 matrices，不会重新执行 orbital head。
+def build_sector_orbitals(
+    scalar_electron_features: Array,
+    electron_pos: Array,
+    atoms: Array,
+    det_params: Mapping[str, object],
+    nspins: Sequence[int],
+    determinants_per_rank: int,
+    sectors: Sequence[int],
+    det_rank: int,
+    full_det: bool = True,
+    envelope_sigma_floor: float = 1.0e-6,
+    eps: float = 1.0e-12,
+    det_bank_mode: str = "per_l",
+):
+    mode = normalize_det_bank_mode(det_bank_mode)
+
+    # print("\n========== SO3 DET DEBUG ==========")
+    # print("Forward det_bank_mode:", det_bank_mode)
+
+    # print("heads type:", type(det_params["heads"]))
+    # print("envelope type:", type(det_params["envelope"]))
+
+    # if isinstance(det_params["heads"], dict):
+    #     print("heads keys:", list(det_params["heads"].keys()))
+    # else:
+    #     print("heads length:", len(det_params["heads"]))
+
+    # if isinstance(det_params["envelope"], dict):
+    #     print("envelope keys:", list(det_params["envelope"].keys()))
+    # else:
+    #     print("envelope length:", len(det_params["envelope"]))
+
+    # print("===================================\n")
+    
+    active_spins = tuple(int(n) for n in nspins if int(n) > 0)
+    nelec = int(sum(active_spins))
+    sectors = tuple(int(l) for l in sectors)
+
+    scalar_electron_features = jnp.asarray(scalar_electron_features)
+    electron_pos = jnp.asarray(
+        electron_pos,
+        dtype=scalar_electron_features.dtype,
+    ).reshape((nelec, -1))
+    atoms = jnp.asarray(atoms, dtype=scalar_electron_features.dtype)
+
+    if scalar_electron_features.shape[0] != nelec:
+        raise ValueError(
+            f'scalar_electron_features 第一维应为 {nelec}，实际为 {scalar_electron_features.shape[0]}。'
+        )
+
+    _debug_array('det/scalar_electron_features', scalar_electron_features)
+    _debug_array('det/electron_pos', electron_pos)
+
     result = {}
-    # 每个 l 返回长度 nq=2l+1 的 tuple；每个元素就是该 A_q 对应的 K 个 Slater matrix。
-    for l in sectors:
-        l = int(l)
-        nq = 2 * l + 1
-        q_results = []
-        for q_index in range(nq):
-            q_label = q_index - l
-            heads = det_params['heads'][str(l)][q_index]
-            envs = det_params['envelope'][str(l)][q_index]
-            spin_mats = []
-            for x, epos, head, env_params, nspin in zip(y_by_spin, pos_by_spin, heads, envs, active_spins):
-                raw = _apply_orbital_head(x, head)
-                norb = nelec if full_det else nspin
-                # mat 先保持 (nspin,K,norb)，便于 envelope 按电子行逐元素相乘。
-                mat = raw.reshape(nspin, K, norb)
-                if env_params is not None:
-                    env = apply_orbital_envelope(epos, atoms, env_params, eps=eps)
-                    mat = mat * env
-                # determinant batch 需要 (K,nspin,norb)。
-                mat = jnp.transpose(mat, (1, 0, 2))
-                spin_mats.append(mat)
-            if full_det:
-                q_mat = jnp.concatenate(spin_mats, axis=1)
-                _debug_array(f'det/orbitals_l{l}_q{q_label}', q_mat)
-            else:
-                q_mat = tuple(spin_mats)
-                for iblock, block in enumerate(q_mat):
-                    _debug_array(f'det/orbitals_l{l}_q{q_label}_spinblock{iblock}', block)
-            q_results.append(q_mat)
-        result[l] = tuple(q_results)
+    if mode == 'shared':
+        shared = _build_orbitals_from_bank(
+            scalar_electron_features,
+            electron_pos,
+            atoms,
+            det_params['heads'],
+            det_params['envelope'],
+            nspins=nspins,
+            determinants_per_rank=determinants_per_rank,
+            det_rank=det_rank,
+            full_det=full_det,
+            envelope_sigma_floor=envelope_sigma_floor,
+            eps=eps,
+            debug_label='shared',
+        )
+        for l in sectors:
+            result[l] = shared
+    else:
+        for l in sectors:
+            result[l] = _build_orbitals_from_bank(
+                scalar_electron_features,
+                electron_pos,
+                atoms,
+                det_params['heads'][str(l)],
+                det_params['envelope'][str(l)],
+                nspins=nspins,
+                determinants_per_rank=determinants_per_rank,
+                det_rank=det_rank,
+                full_det=full_det,
+                envelope_sigma_floor=envelope_sigma_floor,
+                eps=eps,
+                debug_label=f'l{l}',
+            )
+
     return result
 
-# 对每个 (l,q,k) 计算 Slater determinant 的 sign 与 log|det|。
+# 对一个 R x K orbital bank 求 determinant。
+def _determinants_from_orbital_bank(
+    rank_orbitals,
+    K: int,
+    dtype,
+    full_det: bool,
+    debug_label: str,
+):
+    rank_signs = []
+    rank_logs = []
+
+    for r, orbitals_r in enumerate(rank_orbitals):
+        if full_det:
+            sign_r, log_r = jnp.linalg.slogdet(orbitals_r)
+        else:
+            sign_r = jnp.ones((K,), dtype=dtype)
+            log_r = jnp.zeros((K,), dtype=dtype)
+            for block in orbitals_r:
+                p, q = jnp.linalg.slogdet(block)
+                sign_r = sign_r * p
+                log_r = log_r + q
+
+        _debug_array(f'det/slogdet_sign_{debug_label}_r{r}', sign_r)
+        _debug_array(f'det/slogdet_logabs_{debug_label}_r{r}', log_r)
+        rank_signs.append(sign_r)
+        rank_logs.append(log_r)
+
+    return jnp.stack(rank_signs, axis=0), jnp.stack(rank_logs, axis=0)
+
+# 计算 scalar Slater determinant。
+# 输出 API 始终保持 det_sign[l].shape=(R,K)，方便后续每个 l 使用独立 alpha。
+# shared 模式只执行一次 R*K 个 slogdet，然后把结果复用于全部 l。
+def sector_determinants_from_scalar_features(
+    scalar_electron_features: Array,
+    electron_pos: Array,
+    atoms: Array,
+    det_params: Mapping[str, object],
+    nspins: Sequence[int],
+    determinants_per_rank: int,
+    sectors: Sequence[int],
+    det_rank: int,
+    full_det: bool = True,
+    envelope_sigma_floor: float = 1.0e-6,
+    eps: float = 1.0e-12,
+    det_bank_mode: str = "per_l",
+):
+    mode = normalize_det_bank_mode(det_bank_mode)
+    sectors = tuple(int(l) for l in sectors)
+    K = int(determinants_per_rank)
+
+    orbitals = build_sector_orbitals(
+        scalar_electron_features,
+        electron_pos,
+        atoms,
+        det_params,
+        nspins,
+        determinants_per_rank,
+        sectors,
+        det_rank,
+        full_det=full_det,
+        envelope_sigma_floor=envelope_sigma_floor,
+        eps=eps,
+        det_bank_mode=mode,
+    )
+
+    signs = {}
+    logabs = {}
+
+    if mode == 'shared':
+        first_l = sectors[0]
+        shared_sign, shared_log = _determinants_from_orbital_bank(
+            orbitals[first_l],
+            K=K,
+            dtype=scalar_electron_features.dtype,
+            full_det=full_det,
+            debug_label='shared',
+        )
+        for l in sectors:
+            signs[l] = shared_sign
+            logabs[l] = shared_log
+    else:
+        for l in sectors:
+            signs[l], logabs[l] = _determinants_from_orbital_bank(
+                orbitals[l],
+                K=K,
+                dtype=scalar_electron_features.dtype,
+                full_det=full_det,
+                debug_label=f'l{l}',
+            )
+
+    return signs, logabs, orbitals
+
+# 兼容旧的函数名；新语义已经不是只从 y0 构造，而是从 scalar/invariant feature 构造。
 def sector_determinants_from_y0(
     y0_electrons: Array,
     electron_pos: Array,
@@ -989,43 +1388,28 @@ def sector_determinants_from_y0(
     full_det: bool = True,
     eps: float = 1.0e-12,
 ):
-    orbitals = build_sector_orbitals(
+    # 只有在 det_rank=1 且 head 输入维数等于 y0 最后一维时，这个兼容入口才有明确定义。
+    first_l = int(tuple(sectors)[0])
+    heads_root = det_params['heads']
+    R = len(heads_root[str(first_l)]) if isinstance(heads_root, dict) else len(heads_root)
+    if R != 1:
+        raise ValueError(
+            '新版 rank-R 结构请调用 sector_determinants_from_scalar_features；'
+            'sector_determinants_from_y0 仅保留给 det_rank=1 的旧调用。'
+        )
+    return sector_determinants_from_scalar_features(
         y0_electrons,
         electron_pos,
         atoms,
         det_params,
-        nspins,
-        determinants_per_l,
-        sectors,
+        nspins=nspins,
+        determinants_per_rank=determinants_per_l,
+        sectors=sectors,
+        det_rank=1,
         full_det=full_det,
         eps=eps,
+        det_bank_mode='per_l' if isinstance(det_params['heads'], dict) else 'shared',
     )
-    signs = {}
-    logabs = {}
-    K = int(determinants_per_l)
-    # signs[l] 与 logabs[l] 的 shape 都是 (2l+1,K)。
-    for l in sectors:
-        l = int(l)
-        q_signs = []
-        q_logs = []
-        for q_index, q_orbitals in enumerate(orbitals[l]):
-            q_label = q_index - l
-            if full_det:
-                sign_q, log_q = jnp.linalg.slogdet(q_orbitals)
-            else:
-                sign_q = jnp.ones((K,), dtype=y0_electrons.dtype)
-                log_q = jnp.zeros((K,), dtype=y0_electrons.dtype)
-                for block in q_orbitals:
-                    p, q = jnp.linalg.slogdet(block)
-                    sign_q = sign_q * p
-                    log_q = log_q + q
-            _debug_array(f'det/slogdet_sign_l{l}_q{q_label}', sign_q)
-            _debug_array(f'det/slogdet_logabs_l{l}_q{q_label}', log_q)
-            q_signs.append(sign_q)
-            q_logs.append(log_q)
-        signs[l] = jnp.stack(q_signs, axis=0)
-        logabs[l] = jnp.stack(q_logs, axis=0)
-    return signs, logabs, orbitals
 
 # 初始化电子-电子 Kato cusp Jastrow 的可学习 Padé range 参数。
 def init_kato_jastrow_params(
@@ -1060,19 +1444,24 @@ def kato_ee_jastrow(
     # 正的可学习 range 参数 b；softplus 保证优化过程中不会穿过负值导致分母奇异。
     b_same = jax.nn.softplus(jnp.asarray(params['raw_b_same'], dtype=dtype))
     b_opp = jax.nn.softplus(jnp.asarray(params['raw_b_opposite'], dtype=dtype))
-    # 根据 nspins 构造每个电子的 spin-channel 标签；例如 (Nup,Ndn)->[0,...,0,1,...,1]。
+
+    # 根据 nspins 构造每个电子的 spin-channel 标签。
     labels = []
     for ispin, nspin in enumerate(nspins):
         labels.extend([ispin] * int(nspin))
     spin_label = jnp.asarray(labels, dtype=jnp.int32)
     if spin_label.shape[0] != nelec:
-        raise ValueError(f'nspins 总电子数 {spin_label.shape[0]} 与 electron_pos 第一维 {nelec} 不一致。')
+        raise ValueError(
+            f'nspins 总电子数 {spin_label.shape[0]} 与 electron_pos 第一维 {nelec} 不一致。'
+        )
+
     # 只取 i<j，完全避免 ee 距离矩阵对角线 r_ii=0 的自动微分奇点。
     ii, jj = jnp.triu_indices(nelec, k=1)
     diff = electron_pos[ii] - electron_pos[jj]
     eps_value = jnp.asarray(eps, dtype=dtype)
     rij = jnp.sqrt(jnp.sum(diff * diff, axis=-1) + eps_value * eps_value)
     same = spin_label[ii] == spin_label[jj]
+
     # 3D Coulomb Kato 条件：same-spin a=1/4，opposite-spin a=1/2。
     a = jnp.where(
         same,
@@ -1080,9 +1469,11 @@ def kato_ee_jastrow(
         jnp.asarray(0.50, dtype=dtype),
     )
     b = jnp.where(same, b_same, b_opp)
-    # u_ij(r)=a*r/(1+b*r)，因此 u'_ij(0)=a，严格固定 cusp；b 只控制有限距离形状。
+
+    # u_ij(r)=a*r/(1+b*r)，因此 u'_ij(0)=a；b 只控制有限距离形状。
     u = a * rij / (1.0 + b * rij)
     J = jnp.sum(u)
+
     _debug_scalar('jastrow/b_same', b_same)
     _debug_scalar('jastrow/b_opposite', b_opp)
     _debug_scalar('jastrow/J', J)
@@ -1092,103 +1483,285 @@ def kato_ee_jastrow(
 def real_signed_logsumexp(signs: Array, logabs: Array):
     _debug_array('logsumexp/input_signs', signs)
     _debug_array('logsumexp/input_logabs', logabs)
+
     finite = jnp.isfinite(logabs)
+    # 先把 NaN/+Inf/-Inf 全部替换为 -Inf，再进入 exp；不要在 jnp.where 的未选分支里计算 exp(NaN)。
     safe_logs = jnp.where(finite, logabs, -jnp.inf)
     maxlog = jnp.max(safe_logs)
-    base = jnp.where(jnp.isfinite(maxlog), maxlog, jnp.asarray(0.0, dtype=logabs.dtype))
-    scaled = jnp.sum(jnp.where(finite, signs * jnp.exp(logabs - base), jnp.asarray(0.0, dtype=logabs.dtype)))
+    base = jnp.where(
+        jnp.isfinite(maxlog),
+        maxlog,
+        jnp.asarray(0.0, dtype=logabs.dtype),
+    )
+    scaled_terms = signs * jnp.exp(safe_logs - base)
+    scaled = jnp.sum(
+        jnp.where(
+            finite,
+            scaled_terms,
+            jnp.asarray(0.0, dtype=logabs.dtype),
+        )
+    )
+
     _debug_scalar('logsumexp/maxlog', maxlog)
     _debug_scalar('logsumexp/base', base)
     _debug_scalar('logsumexp/scaled', scaled)
+
     final_sign = jnp.sign(scaled)
     mag = jnp.abs(scaled)
-    final_logabs = jnp.where(mag > 0, base + jnp.log(mag), -jnp.inf)
+    final_logabs = jnp.where(
+        mag > 0,
+        base + jnp.log(mag),
+        -jnp.inf,
+    )
+
     _debug_scalar('logsumexp/final_sign', final_sign)
     _debug_scalar('logsumexp/final_logabs', final_logabs)
     return final_sign, final_logabs
 
-# 按用户指定的新公式组装最终实波函数：
-#   Psi_0 = sum_k D_{0,0,k}
-#   Psi_l = sum_q A_q^(l) [sum_k D_{l,q,k}],  l>0
-#   Psi   = exp(J) [Psi_0 + sum_{l>0} Psi_l].
+# 把 alpha_{l,r,k} D_{l,r,k} 在 k 上求和，得到每个 rank r 的 scalar factor S_{l,r}。
+def rank_determinant_sums(
+    det_signs: Mapping[int, Array],
+    det_logabs: Mapping[int, Array],
+    det_params: Mapping[str, object],
+    sectors: Sequence[int],
+):
+    rank_sign = {}
+    rank_logabs = {}
+
+    for l in sectors:
+        l = int(l)
+        alpha = jnp.asarray(det_params['alpha'][str(l)], dtype=det_logabs[l].dtype)
+
+        if alpha.shape != det_logabs[l].shape:
+            raise ValueError(
+                f'l={l} 的 alpha shape={alpha.shape} 与 determinant shape={det_logabs[l].shape} 不一致。'
+            )
+
+        signs_l = []
+        logs_l = []
+
+        for r in range(alpha.shape[0]):
+            a = alpha[r]
+            a_abs = jnp.abs(a)
+            # alpha 可以在训练中穿过 0；先对安全下界取 log，避免未选 jnp.where 分支里的 log(0) 污染梯度。
+            tiny = jnp.asarray(jnp.finfo(det_logabs[l].dtype).tiny, dtype=det_logabs[l].dtype)
+            safe_alog = jnp.log(jnp.maximum(a_abs, tiny))
+            term_sign = det_signs[l][r] * jnp.sign(a)
+            term_log = jnp.where(
+                (a_abs > 0) & jnp.isfinite(det_logabs[l][r]),
+                det_logabs[l][r] + safe_alog,
+                -jnp.inf,
+            )
+            s, q = real_signed_logsumexp(term_sign, term_log)
+            signs_l.append(s)
+            logs_l.append(q)
+
+        rank_sign[l] = jnp.stack(signs_l, axis=0)
+        rank_logabs[l] = jnp.stack(logs_l, axis=0)
+
+        _debug_array(f'rank_sum/sign_l{l}', rank_sign[l])
+        _debug_array(f'rank_sum/logabs_l{l}', rank_logabs[l])
+
+    return rank_sign, rank_logabs
+
+# 构造完整 SO(3) multiplet：
+#   Psi_q^(l)=sum_r A_{r,q}^(l) S_{l,r}。
+# 返回每个 l 的 signed-log multiplet，shape=(2l+1,)。
+def sector_wavefunction_multiplets(
+    det_signs: Mapping[int, Array],
+    det_logabs: Mapping[int, Array],
+    A: Mapping[int, Array],
+    det_params: Mapping[str, object],
+    sectors: Sequence[int],
+):
+    rank_sign, rank_logabs = rank_determinant_sums(
+        det_signs,
+        det_logabs,
+        det_params,
+        sectors,
+    )
+
+    multiplet_sign = {}
+    multiplet_logabs = {}
+
+    for l in sectors:
+        l = int(l)
+        A_l = jnp.asarray(A[l], dtype=rank_logabs[l].dtype)
+
+        if A_l.shape[0] != rank_logabs[l].shape[0]:
+            raise ValueError(
+                f'l={l} 的 A rank={A_l.shape[0]} 与 determinant rank={rank_logabs[l].shape[0]} 不一致。'
+            )
+
+        q_signs = []
+        q_logs = []
+
+        for q_index in range(A_l.shape[1]):
+            aq = A_l[:, q_index]
+            aq_abs = jnp.abs(aq)
+            # A 分量允许穿过 0；同样先构造安全 log，避免 log(0) 的 AD NaN。
+            tiny = jnp.asarray(jnp.finfo(rank_logabs[l].dtype).tiny, dtype=rank_logabs[l].dtype)
+            safe_aqlog = jnp.log(jnp.maximum(aq_abs, tiny))
+
+            term_sign = rank_sign[l] * jnp.sign(aq)
+            term_log = jnp.where(
+                (aq_abs > 0) & jnp.isfinite(rank_logabs[l]),
+                rank_logabs[l] + safe_aqlog,
+                -jnp.inf,
+            )
+
+            s, q = real_signed_logsumexp(term_sign, term_log)
+            q_signs.append(s)
+            q_logs.append(q)
+
+        multiplet_sign[l] = jnp.stack(q_signs, axis=0)
+        multiplet_logabs[l] = jnp.stack(q_logs, axis=0)
+
+        _debug_array(f'multiplet/sign_l{l}', multiplet_sign[l])
+        _debug_array(f'multiplet/logabs_l{l}', multiplet_logabs[l])
+
+    return multiplet_sign, multiplet_logabs
+
+# 从完整 multiplet 中选择 scalar network 输出。
+# 重要：SO(3) 对称结构保存在 sector_wavefunction_multiplets 的完整 q 向量中；
+# 这里的 q0/sum 只是为了适配现有 VMC signed_network 的标量返回接口。
+def project_sector_multiplets(
+    multiplet_sign: Mapping[int, Array],
+    multiplet_logabs: Mapping[int, Array],
+    sectors: Sequence[int],
+    projection: str = 'q0',
+):
+    sector_signs = []
+    sector_logs = []
+
+    for l in sectors:
+        l = int(l)
+        signs_l = multiplet_sign[l]
+        logs_l = multiplet_logabs[l]
+
+        if projection == 'q0':
+            # q=-l,...,+l，因此 q=0 的数组下标就是 l。
+            s = signs_l[l]
+            q = logs_l[l]
+        elif projection == 'sum':
+            # 固定等权 covector (1,...,1)；完整 multiplet 本身仍在投影前保留。
+            s, q = real_signed_logsumexp(signs_l, logs_l)
+        else:
+            raise ValueError(f"未知 output_projection={projection!r}；只支持 'q0' 或 'sum'。")
+
+        sector_signs.append(s)
+        sector_logs.append(q)
+
+    return real_signed_logsumexp(
+        jnp.stack(sector_signs, axis=0),
+        jnp.stack(sector_logs, axis=0),
+    )
+
+# 组装最终标量波函数，并乘公共 Kato Jastrow。
 def assemble_sector_wavefunction(
     det_signs: Mapping[int, Array],
     det_logabs: Mapping[int, Array],
     A: Mapping[int, Array],
+    det_params: Mapping[str, object],
     sectors: Sequence[int],
+    projection: str = 'q0',
     jastrow_log: Optional[Array] = None,
     eps: float = 1.0e-30,
 ):
-    # eps 仅用于兼容旧调用签名；signed-log 求和本身不需要用 eps 修改数学结果。
+    # eps 保留在接口中便于兼容；signed-log 求和本身不需要人为截断。
     del eps
-    component_signs = []
-    component_logs = []
-    # 外层先遍历 l，再遍历该 irrep 的每个 q 分量。
-    for l in sectors:
-        l = int(l)
-        nq = 2 * l + 1
-        if det_signs[l].shape[0] != nq or det_logabs[l].shape[0] != nq:
-            raise ValueError(f'l={l} 应有 {nq} 个 q 分量的 determinant。')
-        for q_index in range(nq):
-            q_label = q_index - l
-            # 第一步：当前 A_q 对应的 K 个 determinant 先等权求和。
-            det_sum_sign, det_sum_log = real_signed_logsumexp(
-                det_signs[l][q_index],
-                det_logabs[l][q_index],
-            )
-            # l=0 按用户要求不乘 A^(0)，直接使用 K 个 determinant 的和。
-            if l == 0:
-                aq = jnp.asarray(1.0, dtype=det_sum_log.dtype)
-            else:
-                aq = jnp.asarray(A[l][q_index], dtype=det_sum_log.dtype)
-            aq_abs = jnp.abs(aq)
-            aq_sign = jnp.sign(aq)
-            term_sign = det_sum_sign * aq_sign
-            term_log = jnp.where(
-                (aq_abs > 0) & jnp.isfinite(det_sum_log),
-                det_sum_log + jnp.log(aq_abs),
-                -jnp.inf,
-            )
-            _debug_scalar(f'assemble/A_l{l}_q{q_label}', aq)
-            _debug_scalar(f'assemble/detsum_sign_l{l}_q{q_label}', det_sum_sign)
-            _debug_scalar(f'assemble/detsum_log_l{l}_q{q_label}', det_sum_log)
-            _debug_scalar(f'assemble/term_log_l{l}_q{q_label}', term_log)
-            component_signs.append(term_sign)
-            component_logs.append(term_log)
-    # 第二步：把所有 (l,q) 乘积项直接求和。
-    signs = jnp.stack(component_signs, axis=0)
-    logs = jnp.stack(component_logs, axis=0)
-    _debug_array('assemble/component_signs', signs)
-    _debug_array('assemble/component_logs', logs)
-    final_sign, final_logabs = real_signed_logsumexp(signs, logs)
-    # 第三步：全局 Kato Jastrow 乘 exp(J)，在 log|Psi| 上等价于直接加 J；它不会改变波函数符号。
+
+    multiplet_sign, multiplet_logabs = sector_wavefunction_multiplets(
+        det_signs,
+        det_logabs,
+        A,
+        det_params,
+        sectors,
+    )
+
+    final_sign, final_logabs = project_sector_multiplets(
+        multiplet_sign,
+        multiplet_logabs,
+        sectors,
+        projection=projection,
+    )
+
     if jastrow_log is not None:
-        final_logabs = final_logabs + jnp.asarray(jastrow_log, dtype=final_logabs.dtype)
+        final_logabs = final_logabs + jnp.asarray(
+            jastrow_log,
+            dtype=final_logabs.dtype,
+        )
         _debug_scalar('assemble/jastrow_log', jastrow_log)
         _debug_scalar('assemble/final_logabs_with_jastrow', final_logabs)
+
     return final_sign, final_logabs
 
-# 返回每个 (l,q,k) 原始项的归一化 log 模长，主要用于 det_fn/诊断；Jastrow 是所有项共享因子，因此在 log_softmax 中会抵消。
+# 计算 scalar 输出投影下，每个 rank r 的 A 因子 B_{l,r}。
+def projected_rank_amplitudes(
+    A: Mapping[int, Array],
+    sectors: Sequence[int],
+    projection: str,
+):
+    out = {}
+
+    for l in sectors:
+        l = int(l)
+        A_l = A[l]
+
+        if projection == 'q0':
+            out[l] = A_l[:, l]
+        elif projection == 'sum':
+            out[l] = jnp.sum(A_l, axis=-1)
+        else:
+            raise ValueError(f"未知 output_projection={projection!r}；只支持 'q0' 或 'sum'。")
+
+    return out
+
+# 返回每个 (l,r,k) 对 scalar 输出的原始 log 模长，供 det_fn/诊断。
+# 公共 Jastrow 因子对所有项相同，因此在 log_softmax 中抵消。
 def sector_term_log_distribution(
     det_logabs: Mapping[int, Array],
     A: Mapping[int, Array],
+    det_params: Mapping[str, object],
     sectors: Sequence[int],
+    projection: str = 'q0',
     eps: float = 1.0e-30,
 ):
-    # dtype 从第一个 sector 的 determinant 读取。
     first_l = int(tuple(sectors)[0])
     dtype = det_logabs[first_l].dtype
     eps_value = jnp.asarray(eps, dtype=dtype)
+    B = projected_rank_amplitudes(A, sectors, projection)
+
     logs = []
+
     for l in sectors:
         l = int(l)
-        nq = 2 * l + 1
-        for q_index in range(nq):
-            # l=0 不乘 A0；其它 l 每一个 q 都乘自己的 A_q。
-            if l == 0:
-                aqlog = jnp.asarray(0.0, dtype=dtype)
-            else:
-                aqlog = jnp.log(jnp.maximum(jnp.abs(A[l][q_index]), eps_value))
-            logs.append(det_logabs[l][q_index] + aqlog)
-    logs = jnp.concatenate(logs, axis=0)
-    return jax.nn.log_softmax(logs)
+        alpha = jnp.asarray(det_params['alpha'][str(l)], dtype=dtype)
+        b = jnp.asarray(B[l], dtype=dtype)
+
+        if alpha.shape != det_logabs[l].shape:
+            raise ValueError(
+                f'l={l} alpha shape={alpha.shape} 与 determinant shape={det_logabs[l].shape} 不一致。'
+            )
+        if b.shape[0] != alpha.shape[0]:
+            raise ValueError(
+                f'l={l} projected A rank={b.shape[0]} 与 alpha rank={alpha.shape[0]} 不一致。'
+            )
+
+        # 每个 (r,k) 的模长：
+        # log|D| + log|alpha| + log|B_r|。
+        alog = jnp.log(jnp.maximum(jnp.abs(alpha), eps_value))
+        blog = jnp.log(jnp.maximum(jnp.abs(b), eps_value))[:, None]
+        logs.append(det_logabs[l] + alog + blog)
+
+    logs = jnp.concatenate([x.reshape(-1) for x in logs], axis=0)
+
+    # 正常情况下直接 log_softmax；若极端情况下全部为 -inf，返回均匀诊断分布避免 NaN。
+    finite_any = jnp.any(jnp.isfinite(logs))
+    safe_logs = jnp.where(
+        finite_any,
+        logs,
+        jnp.zeros_like(logs),
+    )
+    return jax.nn.log_softmax(safe_logs)
+

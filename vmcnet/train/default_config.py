@@ -495,55 +495,42 @@ def get_default_gq_config() -> Dict:
         "lapnet_num_heads": 4,
         "lapnet_mlp_hidden_dims": 256,
         "so3_params": {
-            # Maximum SO(3) angular momentum sector.
-            # Network contains l = 0, ..., lmax.
-            "lmax": 2,
+        # SO(3) backbone
+        "lmax": 2,
+        "channels": 16,
+        "n_layers": 3,
+        "n_rbf": 8,
+        "cutoff": None,
+        "wbn_layers": 1,
+        "wbn_bottleneck": None,
+        "target_ls": (1, 2),
+        "init_l1": True,
+        "eps": 1.0e-12,
+        "float_dtype": "float64",
 
-            # Multiplicity / hidden channels for every l sector.
-            "channels": 16,
+        # Rank-R multiplet × scalar determinant expansion
+        "det_rank": 2,
+        # determinant bank 选择：
+        #   "per_l"  = 之前的方法，每个 l 独立 R*K 个 determinant；
+        #   "shared" = 新方法，所有 l 共用 R*K 个 determinant。
+        "det_bank_mode": "shared",
+        "use_invariant_orbital_features": True,
 
-            # Number of SO(3)-equivariant message-passing layers.
-            "n_layers": 3,
+        # 现有 signed_network 必须返回一个 scalar。
+        # "q0"：每个 l 取 q=0；推荐。
+        # "sum"：固定等权求和所有 q，仅用于你确实想要这种投影的情况。
+        "output_projection": "q0",
 
-            # Number of radial basis functions.
-            "n_rbf": 8,
+        # SO(3)-safe isotropic FermiNet-style nuclear envelope
+        "use_envelope": True,
+        "envelope_sigma_init": 1.0,
+        "envelope_sigma_floor": 1.0e-6,
+        "envelope_pi_init": 1.0,
 
-            # Pair-distance cutoff.
-            # None means fully connected particle interactions.
-            "cutoff": None,
-
-            # Number of Wigner bilinear blocks after equivariant
-            # message-passing layers.
-            "wbn_layers": 1,
-
-            # Internal channel dimension of Wigner bilinear blocks.
-            # None means use `channels`.
-            "wbn_bottleneck": None,
-
-            # Non-zero angular-momentum sectors entering the final
-            # wavefunction. l=0 is added automatically.
-            #
-            # With:
-            #     target_ls = (1, 2)
-            #
-            # final sectors are:
-            #     (0, 1, 2)
-            "target_ls": (1, 2),
-
-            # Explicitly initialize l=1 geometric features from
-            # relative particle directions.
-            "init_l1": True,
-
-            # Numerical-stability epsilon.
-            "eps": 1.0e-12,
-
-            # SO(3) branch is real-valued.
-            # choices=["float32", "float64"]
-            #
-            # For float64:
-            # jax.config.update("jax_enable_x64", True)
-            "float_dtype": "float64",
-        },
+        # Electron-electron Kato Padé Jastrow
+        "use_kato_jastrow": True,
+        "jastrow_b_init": 1.0,
+    },
     }
     return gq_config
 

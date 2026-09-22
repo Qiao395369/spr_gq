@@ -465,20 +465,28 @@ def init_fermi_net_params(
         config=options.so3_config,
     )
     sectors = so3_utils.sector_list(options.so3_config)
+
+    # determinant orbital head 的输入维数：
+    # y^(0) scalar + 可选的高阶 irrep channel-wise RMS invariants。
+    orbital_input_dim = so3_utils.scalar_orbital_feature_dim(
+        options.so3_config,
+    )
     params['so3_det'] = so3_utils.init_sector_determinant_params(
         k_det,
-        channels=options.so3_config.channels,
+        input_dim=orbital_input_dim,
         nspins=nspins,
-        determinants_per_l=options.determinants,
+        determinants_per_rank=options.determinants,
         sectors=sectors,
+        det_rank=options.so3_config.det_rank,
         natom=natom,
-        ndim=ndim,
         full_det=options.full_det,
         include_bias=options.bias_orbitals,
         float_dtype=options.so3_config.float_dtype,
         use_envelope=options.so3_config.use_envelope,
         envelope_sigma_init=options.so3_config.envelope_sigma_init,
+        envelope_sigma_floor=options.so3_config.envelope_sigma_floor,
         envelope_pi_init=options.so3_config.envelope_pi_init,
+        det_bank_mode=options.so3_config.det_bank_mode,
     )
     # 初始化满足电子-电子 Kato cusp 的 Padé Jastrow；同自旋 cusp=1/4，异自旋 cusp=1/2 固定，range b 可学习。
     if options.so3_config.use_kato_jastrow:
@@ -4363,6 +4371,126 @@ def so3_multiplets_fn(
   return so3_utils.apply_so3_network(
       params['so3'], particle_pos, type_features, options.so3_config)
 
+def _so3_forward_parts(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    options: FermiNetOptions,
+):
+  """运行 SO(3) backbone，并构造 q-independent rank-R scalar determinants。"""
+  if options.so3_config is None:
+    raise ValueError('_so3_forward_parts requires options.so3_config.')
+  if 'so3_det' not in params:
+    raise ValueError('params does not contain so3_det parameters; reinitialize the network.')
+
+  # 运行 SO(3) backbone。
+  so3_out = so3_multiplets_fn(
+      params,
+      pos,
+      atoms,
+      nspins,
+      options,
+  )
+
+  nelec = int(sum(nspins))
+  dtype = so3_utils.config_dtype(options.so3_config)
+
+  # 电子坐标用于 isotropic nuclear envelope 与 Kato Jastrow。
+  electron_pos = jnp.asarray(
+      pos,
+      dtype=dtype,
+  ).reshape((nelec, options.ndim))
+  atoms_typed = jnp.asarray(
+      atoms,
+      dtype=dtype,
+  ).reshape((-1, options.ndim))
+
+  # determinant 不直接读取某个 q，而只读取 rotation-scalar/invariant feature。
+  scalar_electron_features = so3_utils.make_scalar_orbital_features(
+      so3_out['y'],
+      nelec=nelec,
+      config=options.so3_config,
+  )
+
+  sectors = so3_utils.sector_list(options.so3_config)
+
+  # det_sign[l] / det_logabs[l] shape=(R,K)，完全没有 q 维。
+  det_sign, det_logabs, orbitals = (
+      so3_utils.sector_determinants_from_scalar_features(
+          scalar_electron_features,
+          electron_pos,
+          atoms_typed,
+          params['so3_det'],
+          nspins=nspins,
+          determinants_per_rank=options.determinants,
+          sectors=sectors,
+          det_rank=options.so3_config.det_rank,
+          full_det=options.full_det,
+          envelope_sigma_floor=options.so3_config.envelope_sigma_floor,
+          eps=options.so3_config.eps,
+          det_bank_mode=options.so3_config.det_bank_mode,
+      )
+  )
+
+  return (
+      so3_out,
+      scalar_electron_features,
+      electron_pos,
+      atoms_typed,
+      sectors,
+      det_sign,
+      det_logabs,
+      orbitals,
+  )
+
+
+def so3_wavefunction_multiplets_fn(
+    params,
+    pos: jnp.ndarray,
+    atoms: jnp.ndarray,
+    nspins: Tuple[int, ...],
+    options: FermiNetOptions = FermiNetOptions(),
+):
+  r"""返回投影前的完整 SO(3) 波函数 multiplet。
+
+  对每个 l：
+
+      S_{l,r}(X) = sum_k alpha_{l,r,k} D_{l,r,k}(X)
+
+      Psi_q^(l)(X) = sum_r A_{r,q}^(l)(X) S_{l,r}(X)
+
+  返回两个 dict：
+      signs[l].shape   = (2*l+1,)
+      logabs[l].shape = (2*l+1,)
+
+  这个函数最直接体现 SO(3) 结构；scalar signed_network 只是随后从完整
+  multiplet 中做固定 q 投影以适配现有 VMC 接口。
+  """
+  (
+      so3_out,
+      _,
+      _,
+      _,
+      sectors,
+      det_sign,
+      det_logabs,
+      _,
+  ) = _so3_forward_parts(
+      params,
+      pos,
+      atoms,
+      nspins,
+      options,
+  )
+
+  return so3_utils.sector_wavefunction_multiplets(
+      det_sign,
+      det_logabs,
+      so3_out['A'],
+      params['so3_det'],
+      sectors,
+  )
 
 def fermi_net_so3(
     params,
@@ -4372,70 +4500,70 @@ def fermi_net_so3(
     return_det_dist=False,
     options: FermiNetOptions = FermiNetOptions(),
 ):
-  r"""新的 SO(3) 波函数前向传播。
+  r"""SO(3)-safe rank-R determinant 波函数前向传播。
 
-  用户指定的结构为
+  对每个 l，backbone 产生 R 份完整 multiplet：
 
-      对每个 l、每个 q=-l,...,+l：
+      A_{r,q}^(l),  r=1,...,R,  q=-l,...,+l.
 
-          y_i^(0)
-              -> 独立 orbital head_(l,q)
-              -> 每个 orbital 乘原子核指数 envelope
-              -> K 个 D_{l,q,k}
+  determinant orbital 只读取 rotation scalar/invariant feature，因此
 
-      l=0:
-          Psi_0 = sum_k D_{0,0,k}
+      D_{l,r,k}(RX) = D_{l,r,k}(X),
 
-      l>0:
-          Psi_l = sum_q A_q^(l) [sum_k D_{l,q,k}]
+  且每个 determinant 不带 q。先定义
 
-      最终：
-          Psi = exp(J_Kato) [Psi_0 + sum_{l>0} Psi_l]
+      S_{l,r}(X)
+        = sum_k alpha_{l,r,k} D_{l,r,k}(X).
 
-  因而 l=1 有 3K 个 determinant，l=2 有 5K 个 determinant；每个 A_q 分量都拥有自己独立的一组 K 个 determinant。
+  然后完整 multiplet 为
+
+      Psi_q^(l)(X)
+        = sum_r A_{r,q}^(l)(X) S_{l,r}(X).
+
+  因为 S_{l,r} 是 scalar，同一 r 的 factor 同时乘整个 q 向量，所以不会像
+  q-specific determinant 那样破坏 irrep 的 q mixing。
+
+  orbital 上额外乘各向同性、可学习的核指数 envelope：
+
+      e = sum_m pi_m exp[-sigma_m |r-R_m|],
+
+  sigma>0，通过 softplus 参数化，因此 envelope 也是 SO(3) scalar。
+
+  最后 scalar signed_network 按 so3_config.output_projection 选择 q 投影，
+  再乘 electron-electron Kato Jastrow exp(J)。
   """
   if options.so3_config is None:
     raise ValueError('fermi_net_so3 requires options.so3_config.')
-  if 'so3_det' not in params:
-    raise ValueError('params does not contain so3_det parameters; reinitialize the network.')
 
-  # 运行 SO(3) backbone，得到每个 l 的逐粒子 y_j^(l) 和整体 multiplet A^(l)。
-  so3_out = so3_multiplets_fn(params, pos, atoms, nspins, options)
-  # 总电子数；统一粒子顺序固定为电子在前、原子核在后。
-  nelec = int(sum(nspins))
-  # SO(3) determinant 的 orbital head 仍只读取电子 scalar feature y_i^(0)，shape=(Ne,C)。
-  y0_electrons = so3_out['y'][0][:nelec, :, 0]
-  # 电子坐标恢复成 (Ne,3)，供 envelope 与 Kato Jastrow 使用。
-  dtype = so3_utils.config_dtype(options.so3_config)
-  electron_pos = jnp.asarray(pos, dtype=dtype).reshape((nelec, options.ndim))
-  atoms_typed = jnp.asarray(atoms, dtype=dtype).reshape((-1, options.ndim))
-  # 当前真正进入波函数的 l sector。
-  sectors = so3_utils.sector_list(options.so3_config)
-
-  # 为每个 (l,q) 分别生成 K 个带 envelope 的 Slater determinant。
-  # det_sign[l] / det_logabs[l] 的 shape=(2l+1,K)。
-  det_sign, det_logabs, orbitals = so3_utils.sector_determinants_from_y0(
-      y0_electrons,
+  (
+      so3_out,
+      _,
       electron_pos,
-      atoms_typed,
-      params['so3_det'],
-      nspins=nspins,
-      determinants_per_l=options.determinants,
-      sectors=sectors,
-      full_det=options.full_det,
-      eps=options.so3_config.eps,
+      _,
+      sectors,
+      det_sign,
+      det_logabs,
+      _,
+  ) = _so3_forward_parts(
+      params,
+      pos,
+      atoms,
+      nspins,
+      options,
   )
 
-  # det_fn 只用于观察全部 (l,q,k) 项的相对 log amplitude；公共 Jastrow 因子会在 log_softmax 中抵消。
+  # det_fn 用于观察真正进入 scalar 输出的 (l,r,k) 项。
   if return_det_dist:
     return so3_utils.sector_term_log_distribution(
         det_logabs,
         so3_out['A'],
+        params['so3_det'],
         sectors,
+        projection=options.so3_config.output_projection,
         eps=options.so3_config.eps,
     )
 
-  # 计算电子-电子 Kato Jastrow 的 log factor J；最终波函数整体乘 exp(J)。
+  # 电子-电子 Kato Jastrow 是所有 determinant/multiplet 分量共享的 scalar。
   if params.get('so3_jastrow', None) is not None:
     jastrow_log = so3_utils.kato_ee_jastrow(
         electron_pos,
@@ -4446,12 +4574,13 @@ def fermi_net_so3(
   else:
     jastrow_log = None
 
-  # 先在每个 A_q 内对 K 个 determinant 等权求和，再乘该 A_q，最后对所有 (l,q) 求和并加上 Jastrow。
   return so3_utils.assemble_sector_wavefunction(
       det_sign,
       det_logabs,
       so3_out['A'],
+      params['so3_det'],
       sectors,
+      projection=options.so3_config.output_projection,
       jastrow_log=jastrow_log,
       eps=options.so3_config.eps,
   )
@@ -4466,25 +4595,25 @@ def orbitals_fn(
 ):
   """返回 orbital matrices；SO(3) 模式下返回 {l: matrices}，旧模式保持原行为。"""
   if options.so3_config is not None:
-    so3_out = so3_multiplets_fn(params, pos, atoms, nspins, options)
-    nelec = int(sum(nspins))
-    y0_electrons = so3_out['y'][0][:nelec, :, 0]
-    dtype = so3_utils.config_dtype(options.so3_config)
-    electron_pos = jnp.asarray(pos, dtype=dtype).reshape((nelec, options.ndim))
-    atoms_typed = jnp.asarray(atoms, dtype=dtype).reshape((-1, options.ndim))
-    sectors = so3_utils.sector_list(options.so3_config)
-    return so3_utils.build_sector_orbitals(
-        y0_electrons,
-        electron_pos,
-        atoms_typed,
-        params['so3_det'],
-        nspins=nspins,
-        determinants_per_l=options.determinants,
-        sectors=sectors,
-        full_det=options.full_det,
-        eps=options.so3_config.eps,
+    (
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        orbitals,
+    ) = _so3_forward_parts(
+        params,
+        pos,
+        atoms,
+        nspins,
+        options,
     )
-  orbitals,_ = fermi_net_orbitals(
+    return orbitals
+
+  orbitals, _ = fermi_net_orbitals(
       params,
       pos,
       atoms=atoms,
