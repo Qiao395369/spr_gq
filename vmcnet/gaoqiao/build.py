@@ -266,90 +266,9 @@ def build_network(
             attn_params=attn,
         )
 
-    elif gq_type == "ef_shrd_sym_extreme":
-        ef = True
-        ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_extreme(
-            n,
-            ndim,
-            nspins,
-            feature_layer,
-            hidden_dims,
-            use_last_layer,
-            dim_extra_params=dim_extra_params,
-            do_aa=do_aa,
-            mes=mes,
-            activation_fn=activation_fn,
-            attn_params=attn,
-        )
-
     elif gq_type == "ef_shrd_sym_ablation":
         ef = True
         ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation(
-            n,
-            ndim,
-            nspins,
-            feature_layer,
-            hidden_dims,
-            use_last_layer,
-            dim_extra_params=dim_extra_params,
-            do_aa=do_aa,
-            mes=mes,
-            activation_fn=activation_fn,
-            attn_params=attn,
-        )
-
-    elif gq_type == "ef_shrd_sym_ablation_zero":
-        ef = True
-        ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation_zero(
-            n,
-            ndim,
-            nspins,
-            feature_layer,
-            hidden_dims,
-            use_last_layer,
-            dim_extra_params=dim_extra_params,
-            do_aa=do_aa,
-            mes=mes,
-            activation_fn=activation_fn,
-            attn_params=attn,
-        )
-
-    elif gq_type == "ef_shrd_sym_ablation_null":
-        ef = True
-        ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_ablation_null(
-            n,
-            ndim,
-            nspins,
-            feature_layer,
-            hidden_dims,
-            use_last_layer,
-            dim_extra_params=dim_extra_params,
-            do_aa=do_aa,
-            mes=mes,
-            activation_fn=activation_fn,
-            attn_params=attn,
-        )
-
-    elif gq_type == "ef_shrd_sym_alpha":
-        ef = True
-        ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_alpha(
-            n,
-            ndim,
-            nspins,
-            feature_layer,
-            hidden_dims,
-            use_last_layer,
-            dim_extra_params=dim_extra_params,
-            do_aa=do_aa,
-            mes=mes,
-            activation_fn=activation_fn,
-            attn_params=attn,
-            alpha=alpha,
-        )
-
-    elif gq_type == "ef_shrd_sym_stopgrad":
-        ef = True
-        ferminet_model = networks.make_fermi_net_model_ef_shrd_sym_stopgrad(
             n,
             ndim,
             nspins,
