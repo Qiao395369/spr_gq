@@ -242,6 +242,7 @@ def _get_and_init_model(
 
 def _get_gaoqiao_model(
         config_gq,
+        dtype,
         wfn_type,
         nelec,
         charges,
@@ -281,9 +282,9 @@ def _get_gaoqiao_model(
         "wbn_layers": p.wbn_layers,
         "wbn_bottleneck": p.wbn_bottleneck,
         "target_ls": tuple(p.target_ls),
+        "basis": getattr(p, "basis", "real"),
         "init_l1": p.init_l1,
         "eps": p.eps,
-        "float_dtype": p.float_dtype,
         "det_rank": p.det_rank,
         "det_bank_mode": p.det_bank_mode,
         "use_invariant_orbital_features": p.use_invariant_orbital_features,
@@ -295,6 +296,12 @@ def _get_gaoqiao_model(
         "use_kato_jastrow": p.use_kato_jastrow,
         "jastrow_b_init": p.jastrow_b_init,
     }
+        if config_gq.type == "so3" and str(so3_params["basis"]).lower() == "complex":
+            raise ValueError(
+                "当前 VMC 训练路径只向动能与优化器传递 log|psi|，会丢失复波函数的相位。"
+                "复基 SO(3) 可通过 build_network 进行前向求值；训练请先选 "
+                "basis='real' 或 'complex_to_real'。"
+            )
         # trimul_params = None
         # gemi_params = None
         # feat_params = None
@@ -327,6 +334,7 @@ def _get_gaoqiao_model(
             dp_type=config_gq.dp_type,
             alpha=config_gq.alpha,
             so3_params=so3_params,
+            dtype=dtype,
         )        
 
     elif wfn_type == "gq_ferminet":
@@ -495,8 +503,8 @@ def _get_gaoqiao_model(
 
     # @jax.jit
     def log_psi_apply_novmap(params,xp,xe):
-        _, logabsdet = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
-        return logabsdet
+        _, logabspsi = network_wfn(params,xe,xp) #xe(ne,3),xp(na,3)
+        return logabspsi
 
     # @jax.jit
     def log_psi_apply_vmap_two_dim(params, xp, xe):
@@ -744,6 +752,7 @@ def _setup_vmc(
     if config.wfn_type in ["gaoqiao","gq_ferminet","psiformer","lapnet"]:
         log_psi_apply_vmap_two_dim, log_psi_apply_vmap_one_dim, log_psi_apply, det_fn_novmap,det_fn_vmap,orb_fn_vmap, params, key =  _get_gaoqiao_model(
         config_gq=config.gq,
+        dtype=config.dtype,
         wfn_type=config.wfn_type,
         nelec=nelec_total,
         charges=ion_charges,
@@ -1361,113 +1370,6 @@ def run_molecule() -> None:
         _compute_and_save_energy_statistics(
             local_energies_filepath, eval_logdir, "statistics", config.eval.nchains, ion_pos.shape[0], config.eval.repeat_single_mol,0
         )
-
-
-def do_inference()-> None:
-    # TODO: integrate the stuff in mcmc/statistics and write out an evaluation summary
-    # (energy, var, overall mean acceptance ratio, std error, iac) to eval_logdir, post evaluation
-    infer_config, config = train.parse_config_flags.inference_parse_flags(FLAGS)
-
-    config.notes = config.notes + " (reloaded from {}/{})".format(infer_config.logdir, infer_config.checkpoint_relative_file_path,)
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(config.logging_level)
-    logdir = _get_logdir_and_save_config(infer_config, config, True)
-    # _save_git_hash(logdir)
-    dtype_to_use = _get_dtype(config)
-
-    ion_pos, ion_charges, nelec , nspins, single_nspins= _get_electron_ion_config_as_arrays(config.eval, dtype=dtype_to_use)
-
-    key = jax.random.PRNGKey(config.initial_seed)
-
-    nelec_total = int(jnp.sum(nelec))
-
-    if config.wfn_type in ["gaoqiao","gq_ferminet"]:
-        log_psi_apply, log_psi_apply_novmap,params, key =  _get_gaoqiao_model(
-                    config_gq=config.gq,
-                    wfn_type=config.wfn_type,
-                    nelec=nelec_total,
-                    charges=ion_charges,
-                    nspins=nspins,
-                    key=key,
-                    apply_pmap=apply_pmap,
-                    )
-    
-    get_amplitude_fn = pacore.get_amplitude_from_data
-    
-    checkpoint_file_path = os.path.join(infer_config.logdir, infer_config.checkpoint_relative_file_path)
-    directory, filename = os.path.split(checkpoint_file_path)
-
-    (reload_at_epoch,data,params,reloaded_optimizer_state,key,) = utils.io.reload_vmc_state(directory, filename)
-
-    if config.distribute:
-        (data,params,reloaded_optimizer_state,key,) = distribute_vmc_state_from_checkpoint(data, params, reloaded_optimizer_state, key)
-
-    eval_update_param_fn, eval_burning_step, eval_walker_fn = _setup_eval(
-        config.eval,
-        config.problem,
-        ion_pos,
-        ion_charges,
-        log_psi_apply,
-        log_psi_apply_novmap,
-        pacore.get_position_from_data,
-        apply_pmap=config.distribute,
-    )
-    optimizer_state = None
-
-    if not config.eval.use_data_from_training :
-        logging.info("new data creating...")
-        key, data = _make_new_data_for_eval(
-                                            config,log_psi_apply,params,ion_pos,ion_charges,nelec,single_nspins,key,
-                                            is_pmapped=config.distribute, dtype=dtype_to_use,)
-
-    if config.density_plot:
-        filename=config.density_plot_filename
-        data, key = mcmc.metropolis.burn_data(eval_burning_step, config.eval.nburn, params, data, key)
-        f = open(filename, "w", buffering=1, newline="\n")
-        if os.path.getsize(filename) == 0:
-            f.write("                x        y        z\n")
-        print("Save configs to file: %s" % filename)
-        for _ in range(config.density_plot_nepochs):
-            
-            accept_ratio, data, key = eval_walker_fn(params, data, key)
-            positions = data["walker_data"]["elec_position"].reshape(-1,3)
-            logging.info("num: %6d saves" % positions.shape[0])
-            for row in positions:
-                f.write(f"{'coordinate:'}  {row[0]}  {row[1]}  {row[2]}\n")
-        import sys 
-        sys.exit()
-
-    
-    eval_logdir = os.path.join(logdir, "data")
-    logging.info("Saving to %s", eval_logdir)
-    _burn_and_run_vmc(
-                        config.eval,eval_logdir,params,optimizer_state,data,eval_burning_step,
-                        eval_walker_fn,eval_update_param_fn,get_amplitude_fn,key,
-                        is_eval=True, is_pmapped=config.distribute,)
-
-    # need to check for local_energy.txt because when config.eval.nepochs=0 the file is
-    # not created regardless of config.eval.record_local_energies
-    local_es_were_recorded = os.path.exists(os.path.join(eval_logdir, "local_energies.txt"))
-    if config.eval.record_local_energies and local_es_were_recorded:
-        local_energies_filepath = os.path.join(eval_logdir, "local_energies.txt")
-        _compute_and_save_energy_statistics(local_energies_filepath, eval_logdir, "statistics",config.eval.nchains,ion_pos.shape[0],0)
-
-
-def vmc_statistics() -> None:
-    """Calculate statistics from a VMC evaluation run and write them to disc."""
-    id = "53833"
-    local_energies_file_path="../local_energy/multi_energy"+id+".txt"
-    output_file_path="../local_energy/statistics"+id
-    nchains=128
-    walkers=20
-    cut=5000
-    repeat_single_mol=False
-    output_dir, output_filename = os.path.split(os.path.abspath(output_file_path))
-    _compute_and_save_energy_statistics(
-            local_energies_file_path, output_dir, output_filename, nchains, walkers, repeat_single_mol, cut
-        )
-    logging.info("Done!")
 
 
 if __name__ == "__main__":

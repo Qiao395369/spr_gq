@@ -1,3 +1,4 @@
+import dataclasses
 from typing import Optional, Tuple, Union
 import vmcnet.gaoqiao.envelopes as envelopes
 import vmcnet.gaoqiao.networks as networks
@@ -22,15 +23,18 @@ def _get_activation(name: str):
 
 def _make_so3_config(
     so3_params: Optional[Union[dict, so3_utils.SO3Config]],
+    dtype: Optional[object] = None,
 ) -> so3_utils.SO3Config:
-    """Accept a config dict, an SO3Config object, or None for defaults."""
+    """构造 SO(3) 配置；顶层 dtype 指定时，以它为准。"""
     if so3_params is None:
-        return so3_utils.SO3Config()
-    if isinstance(so3_params, so3_utils.SO3Config):
-        return so3_params
-    if isinstance(so3_params, dict):
-        return so3_utils.SO3Config(**so3_params)
-    raise TypeError("so3_params must be None, dict, or so3_utils.SO3Config")
+        config = so3_utils.SO3Config()
+    elif isinstance(so3_params, so3_utils.SO3Config):
+        config = so3_params
+    elif isinstance(so3_params, dict):
+        config = so3_utils.SO3Config(**so3_params)
+    else:
+        raise TypeError("so3_params must be None, dict, or so3_utils.SO3Config")
+    return config if dtype is None else dataclasses.replace(config, float_dtype=dtype)
 
 
 def build_network(
@@ -65,6 +69,7 @@ def build_network(
     # May be a dict accepted by so3_utils.SO3Config, an SO3Config object,
     # or None to use SO3Config defaults.
     so3_params: Optional[Union[dict, so3_utils.SO3Config]] = None,
+    dtype: Optional[object] = None,
 ):
     activation_fn = _get_activation(activation_type)
     jastrow_activation_fn = _get_activation(jastrow_activation_type)
@@ -120,10 +125,8 @@ def build_network(
     # NEW SO(3) BRANCH
     # ==================================================================
     if gq_type == "so3":
-        if do_complex:
-            raise ValueError(
-                'gq_type="so3" is real-only; set do_complex=False.'
-            )
+        # SO(3) 的数域由 so3_params["basis"] 决定；旧 do_complex 标志
+        # 只属于普通 FermiNet，不应阻止复基 SO(3) 模式的构建。
         if det_mode != "det":
             raise ValueError(
                 'gq_type="so3" currently requires det_mode="det".'
@@ -133,9 +136,10 @@ def build_network(
                 "RHF=True is ignored by the current SO(3) determinant head."
             )
 
-        so3_config = _make_so3_config(so3_params)
+        so3_config = _make_so3_config(so3_params, dtype=dtype)
         # Performs dtype validation. In particular float64 requires JAX x64.
         so3_utils.config_dtype(so3_config)
+        so3_utils.sector_list(so3_config)
 
         logging.info("wfn type: so3; config=%s", so3_config)
 
@@ -372,9 +376,9 @@ def build_network(
 # ----------------------------------------------------------------------
 # Example: SO(3)
 # ----------------------------------------------------------------------
-# If float_dtype="float64", call this once at program startup BEFORE
-# creating the SO3Config / network:
-#     jax.config.update("jax_enable_x64", True)
+# 训练和推断时，SO(3) 的精度由顶层 config.dtype 决定。
+# 单独调用 build_network 时默认使用 float32；如需 float64，
+# 须先启用 JAX x64，再传入 dtype="float64"。
 #
 # so3_params = {
 #     "lmax": 2,
@@ -384,10 +388,10 @@ def build_network(
 #     "cutoff": None,
 #     "wbn_layers": 1,
 #     "wbn_bottleneck": None,
-#     "target_ls": (1, 2),
+#     "target_ls": (0, 1, 2),  # 必须显式包含 l=0；也可只写 (0,)
+#     "basis": "real",       # real、complex、complex_to_real
 #     "init_l1": True,
 #     "eps": 1.0e-12,
-#     "float_dtype": "float32",
 # }
 #
 # params, network, det_fn, orbitals, hz = build_network(

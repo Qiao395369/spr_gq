@@ -34,19 +34,10 @@ from vmcnet.gaoqiao.jastrows import JastrowModel
 
 import vmcnet.gaoqiao.so3_utils as so3_utils
 
-# ======================= SO(3) REAL V3 REBUILT =======================
-# 重要：当 so3_config != None 时，本文件不会调用旧 FermiNet backbone 来生成 determinant。
-# 本版本删除复数波函数实现；SO(3) 分支与保留的旧标量分支都只按实数处理。
-# SO(3) 浮点类型由 so3_config.float_dtype 指定，可选 float32 或 float64。
-# SO(3) 模式的 determinant 路径是：
-#   y_i^(0) -> 每个 (l,q) 独立的实线性 orbital head -> K 个 D_{l,q,k}
-#   每个 orbital 再乘 FermiNet 风格的原子核指数 envelope。
-#   A^(l)=sum_j y_j^(l)。
-#   l=0: Psi_0=sum_k D_{0,0,k}。
-#   l>0: Psi_l=sum_q A_q^(l) [sum_k D_{l,q,k}]。
-#   最终 Psi=exp(J_Kato) [Psi_0+sum_l Psi_l]。
-# 旧 FermiNet 的 single/double/orbital/det 代码仅在 so3_config is None 时保留兼容。
-# ==================================================================
+# SO(3) 模式由 so3_config.basis 选择实基、复基或复基主干末端转实基。
+# 主干输出完整 multiplet；行列式头只读取旋转标量，并在各 q 分量间共享。
+# 复基模式最终返回复 phase 与实 logabs；另外两种模式返回实 sign。
+# so3_config is None 时仍使用原有 FermiNet 路径。
 
 FermiLayers = Tuple[Tuple[int, int], ...]
 # Recursive types are not yet supported in pytype - b/109648354.
@@ -3064,7 +3055,10 @@ def so3_multiplets_fn(
     raise ValueError('params does not contain SO(3) parameters; reinitialize the network.')
   dtype = so3_utils.config_dtype(options.so3_config)
   particle_pos = so3_utils.combine_particle_positions(pos, atoms, ndim=options.ndim, dtype=dtype)
-  type_features = jnp.asarray(options.mes.get_part_features(), dtype=dtype)
+  type_features = jnp.asarray(
+      options.mes.get_part_features(),
+      dtype=so3_utils.feature_dtype(options.so3_config),
+  )
   return so3_utils.apply_so3_network(
       params['so3'], particle_pos, type_features, options.so3_config)
 
@@ -3158,7 +3152,7 @@ def so3_wavefunction_multiplets_fn(
       Psi_q^(l)(X) = sum_r A_{r,q}^(l)(X) S_{l,r}(X)
 
   返回两个 dict：
-      signs[l].shape   = (2*l+1,)
+      phases[l].shape  = (2*l+1,)；复基时为复 phase，否则为实 sign
       logabs[l].shape = (2*l+1,)
 
   这个函数最直接体现 SO(3) 结构；scalar signed_network 只是随后从完整
@@ -3414,6 +3408,8 @@ def make_fermi_net(
     if mes is None:
       raise ValueError('SO(3) extension requires a ManyElectronSystem (mes).')
     so3_utils.config_dtype(so3_config)
+    so3_utils.feature_dtype(so3_config)
+    so3_utils.sector_list(so3_config)
   else:
     assert (envelope and feature_layer and ferminet_model),("no envelope/feature_layer/ferminet_model")
 
@@ -3489,10 +3485,9 @@ def make_fermi_net(
 # -----------------------------------------------------------------------------
 # 新 SO(3) 路径的核心结构（这是 SO(3) 模式下真正执行的 determinant 路径）
 # -----------------------------------------------------------------------------
-# K = options.determinants 表示“每个 A_q^(l) 分量有 K 个 determinant”。
-# sectors = (0,) + target_ls，例如 target_ls=(1,2) 时 sectors=(0,1,2)。
-# l=0 有 1*K 个 determinant；l=1 有 3*K 个；l=2 有 5*K 个。
-# 每个 orbital 先乘 FermiNet 风格原子核指数 envelope。
-# l=0: Psi_0=sum_k D_{0,0,k}。
-# l>0: Psi_l=sum_q A_q^(l) [sum_k D_{l,q,k}]。
-# 最终 Psi=exp(J_Kato)[Psi_0+sum_l Psi_l]，J_Kato 满足电子-电子 Kato cusp。
+# K = options.determinants 表示每个 rank 使用 K 个 determinant；同一 rank
+# 的标量行列式和在该 l 的全部角分量之间共享。
+# target_ls 必须显式包含 0；例如 (0,1,2) 或只用 (0,)。
+# shared 行列式库共用 R*K 个实行列式，per_l 为每阶各建 R*K 个。
+# Psi_q^(l)=sum_r A_(r,q)^(l) [sum_k alpha_(l,r,k) D_(l,r,k)]。
+# 输出前再按 output_projection 取 q=0 或固定求和，并乘 exp(J_Kato)。

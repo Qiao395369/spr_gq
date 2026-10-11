@@ -103,7 +103,7 @@ def get_default_config() -> ConfigDict:
                 "save_to_current_datetime_subfolder": True,
                 "subfolder_name": NO_NAME,
                 "logging_level": "INFO",
-                "dtype": "float32",
+                "dtype": "float32",  # 同时控制 SO(3) 的实数精度
                 "distribute": False,
                 "debug_nans": False,  # If true, OVERRIDES config.distribute to be False
                 "initial_seed": 0,
@@ -503,11 +503,10 @@ def get_default_gq_config() -> Dict:
         "cutoff": None,
         "wbn_layers": 1,
         "wbn_bottleneck": None,
-        "target_ls": (1, 2),
+        "target_ls": (0, 1, 2),  # 必须显式包含 0；仅标量可设为 (0,)
+        "basis": "real",  # real、complex、complex_to_real
         "init_l1": True,
         "eps": 1.0e-12,
-        "float_dtype": "float64",
-
         # Rank-R multiplet × scalar determinant expansion
         "det_rank": 2,
         # determinant bank 选择：

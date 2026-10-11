@@ -13,17 +13,17 @@
   实部和虚部，以及高阶特征的 Hermitian 范数，组成行列式轨道的实数输入。
 
 配置、球谐、CG、等变网络、标量行列式与 Jastrow 都在本文件实现。
-``networks.py`` 尚未改为导入本文件；可先使用下面的独立入口。
+``networks.py`` 已通过本模块接入 SO(3) 分支；也可使用下面的独立入口。
 
 最短调用示例（type_features 的行顺序为电子在前、原子核在后）::
 
-    cfg = SO3Config(basis="complex", lmax=2)
+    cfg = SO3Config(basis="real", lmax=2)
     params = init_wavefunction_params(key, type_dim, nspins, natom, K, cfg)
     out = evaluate_wavefunction(params, electrons, atoms, type_features,
                                 nspins, K, cfg)
     psi = out["phase"] * jnp.exp(out["logabs"])
 
-改成 ``basis="real"`` 即沿用原实基；``basis="complex_to_real"`` 则
+改成 ``basis="complex"`` 可得到复值输出；``basis="complex_to_real"`` 则
 保留复数主干，在主干末端换基并分离两组实特征。不能直接取复基
 分量的实部。固定 q 投影后的标量值一般不具备完整 l>0 等变性。
 """
@@ -47,8 +47,9 @@ IrrepFeatures = Dict[int, Array]
 class SO3Config:
     """网络结构、精度、行列式和输出方式的静态配置。
 
-    ``float_dtype`` 指坐标及标量头的实数精度：float32 对应 complex64，
-    float64 对应 complex128。使用 float64 时须在 JAX 初始化前开启 x64。
+    ``float_dtype`` 是内部使用的实数精度：float32 对应 complex64，
+    float64 对应 complex128。训练和推断入口从顶层 config.dtype 传入；
+    使用 float64 时须先开启 JAX 的 x64。
     ``basis="complex_to_real"`` 在主干末端把 C 个复 channel 换成
     2C 个实 channel，随后使用实数读出层和实数行列式。
     ``target_ls=(0,)`` 只为 l=0 构造行列式和最终 multiplet；若
