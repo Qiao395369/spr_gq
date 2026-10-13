@@ -284,6 +284,7 @@ def _get_gaoqiao_model(
         "target_ls": tuple(p.target_ls),
         "basis": getattr(p, "basis", "real"),
         "init_l1": p.init_l1,
+        "regularize_angular_origin": getattr(p, "regularize_angular_origin", False),
         "eps": p.eps,
         "det_rank": p.det_rank,
         "det_bank_mode": p.det_bank_mode,

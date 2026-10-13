@@ -54,6 +54,8 @@ class SO3Config:
     2C 个实 channel，随后使用实数读出层和实数行列式。
     ``target_ls=(0,)`` 只为 l=0 构造行列式和最终 multiplet；若
     ``lmax>0``，主干仍会计算高阶隐藏特征，轨道头可读取其不变量。
+    ``regularize_angular_origin=True`` 让高阶边角向特征在粒子重合处
+    按 r^l 衰减；默认 False 保持旧 checkpoint 的模型定义。
     """
 
     lmax: int = 2
@@ -78,6 +80,7 @@ class SO3Config:
     output_projection: str = "q0"
     envelope_sigma_floor: float = 1.0e-6
     basis: str = "real"
+    regularize_angular_origin: bool = False
 
 
 def _basis(config: SO3Config) -> str:
@@ -156,15 +159,19 @@ def combine_particle_positions(pos: Array, atoms: Array, ndim: int = 3, dtype=No
 
 
 def pair_geometry(positions: Array, eps: float = 1e-12):
-    """返回 rel、dist、unit、nonself；自边用安全方向避免 norm(0) 导数。"""
+    """返回 rel、dist、unit、nonself；所有零距离都使用安全范数。
+
+    非自边恰好重合时，sqrt(r²+eps²) 避免 norm(0) 的未定义导数。
+    对通常的非零粒子距离，eps=1e-12 的影响可忽略。
+    """
     n = positions.shape[0]
     rel = positions[None, :, :] - positions[:, None, :]
     nonself = ~jnp.eye(n, dtype=bool)
     safe_rel = jnp.where(nonself[..., None], rel,
                          jnp.asarray((0., 0., 1.), dtype=positions.dtype))
-    safe_dist = jnp.linalg.norm(safe_rel, axis=-1)
-    unit = safe_rel / jnp.maximum(safe_dist[..., None],
-                                 jnp.asarray(eps, dtype=positions.dtype))
+    safe_dist = jnp.sqrt(jnp.sum(safe_rel * safe_rel, axis=-1)
+                         + jnp.asarray(eps, dtype=positions.dtype) ** 2)
+    unit = safe_rel / safe_dist[..., None]
     dist = jnp.where(nonself, safe_dist, 0.)
     return rel, dist, unit, nonself
 
@@ -522,11 +529,20 @@ def init_so3_params(key, type_dim: int, config: SO3Config) -> Mapping[str, objec
 
 
 def _edge_data(positions: Array, config: SO3Config):
-    """几何、径向基和球谐只算一次，供初始化与所有卷积层复用。"""
+    """几何、径向基和球谐只算一次，供初始化与所有卷积层复用。
+
+    可选的角向原点正则化把 Y_l(r_hat) 乘以
+    [r/sqrt(1+r²)]^l。它在 r->0 时表现为 r^l Y_l(r_hat)，
+    即正则固体球谐；远处乘子有界，不会无限放大高阶消息。
+    """
     _, dist, unit, nonself = pair_geometry(positions, config.eps)
     rbf = radial_basis(dist, config.n_rbf, config.cutoff)
     rbf = rbf * nonself[..., None]  # 排除 i=j 自边。
     Y = all_spherical_harmonics(config.lmax, unit, basis=_backbone_basis(config))
+    if config.regularize_angular_origin:
+        radius_factor = dist / jnp.sqrt(1. + dist * dist)
+        Y = {l: values if l == 0 else values * radius_factor[..., None] ** l
+             for l, values in Y.items()}
     return rbf, Y
 
 

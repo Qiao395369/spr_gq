@@ -506,6 +506,9 @@ def get_default_gq_config() -> Dict:
         "target_ls": (0, 1, 2),  # 必须显式包含 0；仅标量可设为 (0,)
         "basis": "real",  # real、complex、complex_to_real
         "init_l1": True,
+        # 新实验可开启：使 l>0 边角向特征在粒子重合处趋于零。
+        # 默认关闭，保证旧 checkpoint 的模型定义不变。
+        "regularize_angular_origin": False,
         "eps": 1.0e-12,
         # Rank-R multiplet × scalar determinant expansion
         "det_rank": 2,
