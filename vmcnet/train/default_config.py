@@ -444,6 +444,29 @@ def get_default_pretrain_config() -> Dict:
         "eps":1e-4,
         "offblock_lambda":0.0,
         "hf_coeff":1,
+        # Optional teacher -> SO(3) distillation, run before VMC on a fresh run.
+        # When enabled, it replaces the Hartree--Fock pretraining stage.
+        "teacher": {
+            "enabled": False,
+            "checkpoint": "",
+            "config": "",
+            "loss_mode": "signed_mse",  # signed_mse or scale_aligned
+            "steps": 2000,
+            "batch_size": 16,
+            "mix_start_step": -1,  # -1 uses the distillation default (steps // 4)
+            "student_fraction": 0.5,
+            "burn_in": 200,
+            "student_burn_in": 100,
+            "mcmc_steps": 10,
+            "proposal_std": 0.25,
+            "learning_rate": 1.0e-5,
+            "gradient_clip": 1.0,
+            "max_backtracks": 16,
+            "save_every": 200,
+            "test_energy": False,
+            "energy_samples": 16,
+            "energy_burn_in": 100,
+        },
     }
     return pretrain_config
 

@@ -713,6 +713,21 @@ def _get_clipping_fn(
 
 # TODO: don't forget to update type hint to be more general when
 # _make_initial_distributed_data is more general
+def _checked_pretrained_params(initialized: P, pretrained: P,
+                               apply_pmap: bool) -> P:
+    """Validate and place distilled student weights on VMC devices."""
+    expected = utils.distribute.get_first(initialized) if apply_pmap else initialized
+    if jax.tree_util.tree_structure(expected) != jax.tree_util.tree_structure(pretrained):
+        raise ValueError("预训练学生参数结构与当前 VMC 网络不一致。")
+    for old, new in zip(jax.tree_util.tree_leaves(expected),
+                        jax.tree_util.tree_leaves(pretrained)):
+        if np.shape(old) != np.shape(new):
+            raise ValueError("预训练学生参数形状与当前 VMC 网络不一致。")
+    params = jax.tree_util.tree_map(jnp.asarray, pretrained)
+    if apply_pmap:
+        params = utils.distribute.replicate_all_local_devices(params)
+    return params
+
 def _setup_vmc(
     config: ConfigDict,
     ion_pos: Array,
@@ -724,6 +739,7 @@ def _setup_vmc(
     dtype=jnp.float32,
     apply_pmap: bool = True,
     reload_from_checkpoint: bool = False,
+    initial_params: Optional[P] = None,
 ) -> Tuple[
     ModelApply[flax.core.FrozenDict],
     mcmc.metropolis.BurningStep[flax.core.FrozenDict, dwpa.DWPAData],
@@ -774,6 +790,11 @@ def _setup_vmc(
         )
     else:
         raise ValueError("unknown gq_wfn_type: %s "%(config.wfn_type))
+
+    if initial_params is not None:
+        # Distillation has finished, so both the walker amplitudes and the VMC
+        # optimizer must be initialized from the trained student parameters.
+        params = _checked_pretrained_params(params, initial_params, apply_pmap)
     
     get_amplitude_fn = pacore.get_amplitude_from_data
     update_data_fn = pacore.get_update_data_fn(log_psi_apply_vmap_two_dim)
@@ -1077,6 +1098,42 @@ def _compute_and_save_energy_statistics(
     )
 
 import os
+def _run_teacher_pretraining(config: ConfigDict, logdir: str) -> P:
+    """Run teacher distillation and return its student weights for VMC setup."""
+    from vmcnet.train import pretrain_from_trained_net as teacher_pretrain
+
+    teacher = config.pretrain.teacher
+    if not teacher.checkpoint or not teacher.config:
+        raise ValueError("启用 teacher 预训练时，必须指定 pretrain.teacher.checkpoint 和 config。")
+    if jax.process_count() != 1:
+        raise ValueError("teacher 预训练目前只支持单主机运行。")
+    if teacher.mix_start_step < -1:
+        raise ValueError("pretrain.teacher.mix_start_step 必须为 -1 或非负数。")
+    output_dir = os.path.join(logdir, "teacher_pretrain")
+    arguments = [
+        "--teacher-checkpoint", str(teacher.checkpoint),
+        "--teacher-config", str(teacher.config),
+        "--student-config", os.path.join(logdir, "config.json"),
+        "--output-dir", output_dir,
+    ]
+    for field in ("loss_mode", "steps", "batch_size", "student_fraction",
+                  "burn_in", "student_burn_in", "mcmc_steps", "proposal_std",
+                  "learning_rate", "gradient_clip", "max_backtracks", "save_every",
+                  "energy_samples", "energy_burn_in"):
+        arguments.extend(("--" + field.replace("_", "-"), str(teacher[field])))
+    if teacher.mix_start_step >= 0:
+        arguments.extend(("--mix-start-step", str(teacher.mix_start_step)))
+    arguments.extend(("--seed", str(config.initial_seed)))
+    if teacher.test_energy:
+        arguments.append("--test-energy")
+    logging.info("开始 teacher → SO(3) 预训练，结果保存到 %s", output_dir)
+    output = teacher_pretrain.main(arguments)
+    _, _, student_params, _, _ = utils.io.reload_vmc_state(
+        str(output), "pretrained_student.npz")
+    logging.info("预训练完成；使用 %s 中的学生参数初始化 VMC。", output)
+    return student_params
+
+
 def run_molecule() -> None:
     """Run VMC on a molecule."""
     # jax.config.update("jax_debug_nans", True)  # 发现 NaN/Inf 的原语会报错
@@ -1086,6 +1143,16 @@ def run_molecule() -> None:
         reload_config.logdir != train.default_config.NO_RELOAD_LOG_DIR
         and reload_config.use_checkpoint_file
     )
+
+    if config.pretrain.teacher.enabled and not reload_from_checkpoint:
+        from vmcnet.train.pretrain_from_trained_net import validate_problem_match
+
+        teacher_config_path = config.pretrain.teacher.config
+        if not teacher_config_path:
+            raise ValueError("启用 teacher 预训练时，必须指定 pretrain.teacher.config。")
+        teacher_config = utils.io.load_config_dict("", teacher_config_path)
+        validate_problem_match(teacher_config, config)
+        logging.info("teacher 配置 %s 与 student 的 problem/dtype 一致；未补全或继承配置。", teacher_config_path)
 
     if reload_from_checkpoint:
         config.notes = config.notes + " (reloaded from {}/{}{})".format(
@@ -1104,6 +1171,14 @@ def run_molecule() -> None:
     apply_pmap = config.distribute or reload_config.to_pmap
 
     dtype_to_use = _get_dtype(config)
+
+    # This stage is only run on a new training run. Resuming an existing VMC
+    # checkpoint must preserve its parameters and never redo distillation.
+    teacher_pretraining = bool(config.pretrain.teacher.enabled) and not reload_from_checkpoint
+    if config.pretrain.teacher.enabled and reload_from_checkpoint:
+        logging.info("正在恢复已有 VMC checkpoint，跳过 teacher 预训练。")
+    pretrained_params = (_run_teacher_pretraining(config, logdir)
+                         if teacher_pretraining else None)
 
     ion_pos, ion_charges, nelec ,nspins, single_nspins= _get_electron_ion_config_as_arrays(
         config.problem, 
@@ -1141,6 +1216,7 @@ def run_molecule() -> None:
         dtype=dtype_to_use,
         apply_pmap=apply_pmap,
         reload_from_checkpoint=reload_from_checkpoint,
+        initial_params=pretrained_params,
     )
 
     start_epoch = 0
@@ -1219,7 +1295,10 @@ def run_molecule() -> None:
 
     logging.info("Saving to %s", logdir)
     config_pretrain = config.pretrain
-    if config_pretrain.iterations > 0 and start_epoch == 0:
+    if config_pretrain.teacher.enabled and config_pretrain.iterations > 0:
+        logging.info("启用了 teacher 预训练，跳过 Hartree--Fock 预训练。")
+    if (config_pretrain.iterations > 0 and start_epoch == 0
+            and not config_pretrain.teacher.enabled):
         hartree_fock, hf_novmaps = create_hf_data(ion_pos, config.problem.atoms_symbol, nspins)
         def hf_novmap(params,xp,xe):
             del params, xp
