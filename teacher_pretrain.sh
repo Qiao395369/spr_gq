@@ -9,20 +9,13 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 后续 Python 模块导入和相对路径均以项目根目录为起点。
 cd "$repo_dir"
 
-# 若调用者设置了 PYTHON_BIN，则优先用它；否则使用本机现有的 vmcnet Python。
-python_bin="${PYTHON_BIN:-/Users/gaoqiao/miniforge3/envs/vmcnet_env_python3.10/bin/python}"
+# 使用调用者事先激活的环境中的 python。
 # 这两个文件必须属于同一次 CH4 teacher 训练：前者是参数与 walker，后者定义网络和分子。
 teacher_checkpoint="$repo_dir/teacher_net/CH4/150000_101158.npz"
 teacher_config="$repo_dir/teacher_net/CH4/config_101158.json"
 # 可通过环境变量 OUTPUT_DIR 改结果目录；它不受下面 --config.logdir 控制。
 output_dir="${OUTPUT_DIR:-$repo_dir/../results/CH4_teacher_pretrain}"
 
-# -x 检查路径存在且可执行，避免导入阶段才发现 Python 环境路径写错。
-if [[ ! -x "$python_bin" ]]; then
-  # >&2 把错误信息写到标准错误输出。
-  echo "Python 不可执行: $python_bin；请设置 PYTHON_BIN。" >&2
-  exit 1
-fi
 # 依次检查 teacher 参数文件和配置文件；-f 要求是普通文件。
 for input_file in "$teacher_checkpoint" "$teacher_config"; do
   if [[ ! -f "$input_file" ]]; then
@@ -108,7 +101,7 @@ ARGS=(
 # 两个路径仅作为这次 Python 子进程的环境变量；"${ARGS[@]}" 保留数组中每个参数的边界。
 # Python 的 "-" 表示从标准输入读取下方代码；<<'PY' 禁止 shell 展开其中的变量。
 STUDENT_CONFIG_PATH="$student_config" TEACHER_CONFIG_PATH="$teacher_config" \
-  "$python_bin" - "${ARGS[@]}" <<'PY'
+  python - "${ARGS[@]}" <<'PY'
 # 读取 shell 传入的环境变量与 --config.* 命令行参数。
 import os
 import sys
@@ -181,5 +174,5 @@ PRETRAIN_ARGS=(
   --energy-burn-in 100
 )
 # "${PRETRAIN_ARGS[@]}" 传入固定参数；"$@" 额外转发脚本调用者给出的参数。
-"$python_bin" -m vmcnet.train.pretrain_from_trained_net "${PRETRAIN_ARGS[@]}" "$@"
+python -m vmcnet.train.pretrain_from_trained_net "${PRETRAIN_ARGS[@]}" "$@"
 

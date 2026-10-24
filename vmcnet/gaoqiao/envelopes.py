@@ -1326,3 +1326,40 @@ def make_copied_atom_isotropic_envelope(
     return sumexp
 
   return Envelope(EnvelopeType.PRE_DETERMINANT_TWIST,init,apply)
+
+
+def make_ds_hz_degenerate_envelope(
+    hiddens: Tuple[int, ...] = (8, 8),
+    activation_fn=jax.nn.tanh,
+) -> Envelope:
+  """Creates the nucleus-shared envelope of the degenerate ds_hz MLP.
+
+  For each spin channel and output index a, the envelope is
+  (1 + pi[a]) * sum_I exp(-(0.5 + sigma[a]) * |r_i - R_I|).
+  The trainable arrays represent the original MLP's final biases, shared
+  across nuclei. They have no positivity constraints. This matches ds_hz
+  when its other parameters remain zero and no residual preserves hz;
+  it is not equivalent to every possible ds_hz hidden-width configuration.
+
+  Factory, init and apply call signatures match make_ds_hz_envelope.
+  The parameter tree is intentionally compact, not MLP-checkpoint compatible.
+  """
+  del hiddens, activation_fn
+
+  def init(key, hz_size, output_dims):
+    del key, hz_size
+    return [
+        {'pi': jnp.zeros((output_dim,)),
+         'sigma': jnp.zeros((output_dim,))}
+        for output_dim in output_dims
+    ]
+
+  def apply(*, hz, ae, pi, sigma) -> jnp.ndarray:
+    del hz
+    r_ae = jnp.linalg.norm(ae, axis=-1)
+    return jnp.sum(
+        jnp.exp(-r_ae[:, :, None] * (0.5 + sigma)) * (1.0 + pi),
+        axis=1,
+    )
+
+  return Envelope(EnvelopeType.PRE_DETERMINANT_Z, init, apply)

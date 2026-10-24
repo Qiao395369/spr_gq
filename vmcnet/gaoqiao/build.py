@@ -99,6 +99,8 @@ def build_network(
         envelope = envelopes.make_ds_hz_envelope(**make_envelope_kwargs,activation_fn=activation_fn)
     elif envelope_type == "ds_hz_old":
         envelope = envelopes.make_ds_hz_envelope_old(**make_envelope_kwargs,activation_fn=activation_fn)
+    elif envelope_type == "ds_hz_deg":
+        envelope = envelopes.make_ds_hz_degenerate_envelope(**make_envelope_kwargs,activation_fn=activation_fn)
     elif envelope_type == "iso":
         envelope = envelopes.make_isotropic_envelope()
     elif envelope_type == "iso_new":
