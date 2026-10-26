@@ -28,6 +28,42 @@ from vmcnet.train.pretrain_from_trained_net import (
 
 
 class TeacherPretrainTest(unittest.TestCase):
+    def test_relative_mse_weights_each_ratio_equally_and_keeps_sign(self):
+        teacher_log = jnp.asarray((-1000., 0., 1000.))
+        teacher_sign = jnp.asarray((1., -1., 1.))
+        student_sign = jnp.asarray((1., 1., 1.))
+        student_log = teacher_log + jnp.log(jnp.asarray((2., 1., 0.5)))
+        loss, (alignment, agreement) = signed_amplitude_loss(
+            teacher_sign, teacher_log, student_sign, student_log, "relative_mse")
+        # 比值是 [2,-1,0.5]，不能按 teacher 原始幅度给三个点不同的权重。
+        self.assertAlmostEqual(float(loss), (1. + 4. + 0.25) / 3., places=5)
+        self.assertEqual(float(alignment), 1.)
+        self.assertAlmostEqual(float(agreement), 2. / 3., places=5)
+
+    def test_relative_mse_log_gradient_and_trainable_scale(self):
+        teacher_log = jnp.asarray((1., -2., 3.))
+        teacher_sign = jnp.asarray((1., -1., 1.))
+        student_sign = jnp.asarray((-1., -1., 1.))
+        student_log = teacher_log + jnp.log(jnp.asarray((2., 0.5, 1.)))
+
+        def objective(logs, scale):
+            return signed_amplitude_loss(teacher_sign, teacher_log,
+                student_sign, logs, "relative_mse", scale)[0]
+
+        grads, scale_grad = jax.grad(objective, argnums=(0, 1))(student_log, 0.)
+        ratio = np.asarray((-2., 0.5, 1.))
+        expected = 2. * (ratio - 1.) * ratio / 3.
+        np.testing.assert_allclose(grads, expected, rtol=1e-6, atol=1e-7)
+        self.assertAlmostEqual(float(scale_grad), float(expected.sum()), places=5)
+        calibrated, _ = signed_amplitude_loss(teacher_sign, teacher_log,
+            teacher_sign, teacher_log - jnp.log(3.), "relative_mse", jnp.log(3.))
+        self.assertAlmostEqual(float(calibrated), 0., places=10)
+
+    def test_relative_mse_does_not_silently_hide_teacher_nodes(self):
+        loss, _ = signed_amplitude_loss(jnp.asarray((0.,)), jnp.asarray((-jnp.inf,)),
+            jnp.ones(1), jnp.zeros(1), "relative_mse")
+        self.assertFalse(bool(jnp.isfinite(loss)))
+
     def test_fixed_teacher_data_keeps_coordinates_and_targets_and_uses_every_point(self):
         positions = jnp.arange(9.).reshape(3, 1, 3)
         original = np.asarray(positions).copy()

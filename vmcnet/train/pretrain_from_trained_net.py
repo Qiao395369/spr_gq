@@ -256,8 +256,22 @@ def signed_amplitude_loss(teacher_sign, teacher_logabs, student_sign,
     A common stopped scale changes the *numerical size* of the batch loss, but
     not its minimizer.  ``signed_mse`` still fits the teacher's global scale.
     ``scale_aligned`` fits an optimal global signed multiplier in each batch.
+    ``relative_mse`` computes mean((student / teacher - 1)**2), using signed
+    log ratios. It must not use the amplitude weighting of the other modes.
     """
     student_logabs = student_logabs + student_log_scale
+    if mode == "relative_mse":
+        # r = sign_S * sign_T * exp(log|S| - log|T|)。expm1 在 r≈1 时
+        # 避免先求 exp 再减 1 的精度损失，且不需要求出原始概率幅。
+        sign_ratio = student_sign * teacher_sign
+        residual = sign_ratio * jnp.expm1(student_logabs - teacher_logabs) + (sign_ratio - 1)
+        loss = jnp.mean(jnp.square(residual))
+        # teacher 节点上的相对误差没有定义。显式触发训练的非有限检查，
+        # 不通过加 eps、裁剪比值或丢弃样本偷偷改变目标。
+        valid_teacher = jnp.all((teacher_sign != 0) & jnp.isfinite(teacher_logabs))
+        loss = jnp.where(valid_teacher, loss, jnp.asarray(jnp.nan, dtype=loss.dtype))
+        return loss, (jnp.asarray(1., dtype=loss.dtype),
+                      jnp.mean(teacher_sign == student_sign))
     if mode == "scale_aligned":
         # This mode is invariant to an overall scale.  Match its numerical
         # range before exponentiation, or the student norm can underflow for
@@ -277,7 +291,7 @@ def signed_amplitude_loss(teacher_sign, teacher_logabs, student_sign,
         alignment = jnp.mean(target * student) / (
             jnp.mean(student * student) + tiny)
     else:
-        raise ValueError("loss_mode 必须是 signed_mse 或 scale_aligned。")
+        raise ValueError("loss_mode 必须是 signed_mse、scale_aligned 或 relative_mse。")
     residual = alignment * student - target
     loss = jnp.mean(residual * residual) / (target_norm + tiny)
     sign_agreement = jnp.mean(teacher_sign == student_sign)
@@ -639,7 +653,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--teacher-config", type=Path, required=True)
     parser.add_argument("--student-config", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--loss-mode", choices=("signed_mse", "scale_aligned"),
+    parser.add_argument("--loss-mode", choices=("signed_mse", "scale_aligned", "relative_mse"),
                         default="signed_mse")
     parser.add_argument("--sampling-strategy", choices=("dynamic_mixed", "fixed_teacher"),
                         default="dynamic_mixed",
@@ -697,6 +711,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None):
     args = parse_args(argv)
+    logging.info("预训练策略=%s，损失=%s", args.sampling_strategy, args.loss_mode)
+    if (args.loss_mode == "relative_mse" and args.sampling_strategy == "dynamic_mixed"
+            and args.mix_start_step < args.steps):
+        logging.info("relative_mse 的物理 L2 等价关系要求 teacher 分布；混入 student 点后目标加权会改变。")
     for path in (args.teacher_checkpoint, args.teacher_config, args.student_config):
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -768,7 +786,7 @@ def main(argv=None):
     # The two random networks may differ in log amplitude by tens or more.
     # A trainable log scale avoids vanishing signed-MSE gradients.  It is
     # folded into the student's output parameters when saving the checkpoint.
-    if args.loss_mode == "signed_mse":
+    if args.loss_mode in ("signed_mse", "relative_mse"):
         initial_positions = (fixed_positions[:args.batch_size]
                              if fixed_positions is not None else teacher_positions)
         teacher_logs = (fixed_targets[1][:args.batch_size] if fixed_targets is not None

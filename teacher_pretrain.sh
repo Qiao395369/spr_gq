@@ -159,7 +159,7 @@ PRETRAIN_ARGS=(
   --teacher-config "$teacher_config"          # 与 checkpoint 配对的原始 teacher 配置。
   --student-config "$student_config"          # 上面临时生成的完整 student JSON。
   --output-dir "$output_dir"                  # 蒸馏结果的目标目录。
-  --loss-mode scale_aligned                    # 每批拟合最佳整体乘数；也可选 signed_mse。
+  --loss-mode scale_aligned                    # 可选 signed_mse、scale_aligned、relative_mse。
   --sampling-strategy fixed_teacher            # 固定 teacher 点训练；dynamic_mixed 保留原动态策略。
   --fixed-sample-count 0                       # 0 冻结 batch-size 个点；设更大值则先采满再训练，所有点都训练。
   --steps 2000                                # student 参数更新次数。

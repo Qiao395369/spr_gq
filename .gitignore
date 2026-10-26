@@ -9,6 +9,7 @@ logs/
 __pycache__/
 *.py[cod]
 *$py.class
+teacher_pretrain.sh
 
 # C extensions
 *.so

@@ -450,7 +450,7 @@ def get_default_pretrain_config() -> Dict:
             "enabled": False,
             "checkpoint": "",
             "config": "",
-            "loss_mode": "signed_mse",  # signed_mse or scale_aligned
+            "loss_mode": "signed_mse",  # signed_mse, scale_aligned or relative_mse
             "sampling_strategy": "dynamic_mixed",  # dynamic_mixed or fixed_teacher
             "fixed_sample_count": 0,  # 0 uses batch_size; all fixed samples are training data
             "steps": 2000,

@@ -85,6 +85,20 @@ teacher_accept/student_accept 为 NaN，表示训练期间没有执行采样，�
 student 求一个最佳整体乘数，再比较带符号概率幅。两个模式都使用同一批
 预训练定义，只改变是否要求匹配全局尺度。
 
+第三个选项 `--loss-mode relative_mse` 直接比较带符号比值：
+`mean((student / teacher - 1)**2)`，保留可训练的 log_scale 来匹配整体幅度。
+点来自 teacher 的 |psi|² 分布时，其期望为
+`integral((student - teacher)**2) / integral(teacher**2)`，消除了原幅度 MSE
+对高幅值 teacher 点的额外加权。该等价关系不适用于混入 student 样本后的分布。
+建议与 fixed_teacher 配合；一体化入口设置
+`--config.pretrain.teacher.loss_mode=relative_mse`。现有两种损失和默认值保留。
+例如 `./teacher_pretrain.sh --loss-mode relative_mse` 会覆盖脚本中的损失设置。
+
+比值用符号和 log|psi| 差计算，并用 expm1 保持接近匹配时的精度；
+不加分母 eps、不裁剪比值、不剔除样本。teacher 精确为零时相对误差未定义，
+或者近节点的比值导致数值溢出时，训练按现有非有限检查明确停止。
+relative_mse 对整体符号相反的 student 仍有惩罚，区别于 scale_aligned。
+
 结果目录包含 `teacher_source/teacher.npz`、原始和补齐后的 teacher 配置、
 `student_config_original.json`、可供 VMC 加载且与 teacher 物理体系已核对一致的 `config.json`、
 `pretrain_settings.json`、`pretrain_metrics.csv` 和
