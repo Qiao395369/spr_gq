@@ -63,10 +63,14 @@ ARGS=(
   --config.vmc.optimizer.spring.det_regularization_scale=0  # 日后行列式正则项的系数。
 
   --config.wfn_type=gaoqiao                            # 使用项目中的 gaoqiao 波函数入口。
-  --config.gq.type=so3                                # student 的网络结构选择 SO(3) 分支。
+  --config.gq.type=ef_shrd_sym                                # student 的网络结构选择 SO(3) 分支。
   --config.gq.dp_type=full                             # 粒子类型特征采用 full 编码。
   --config.gq.det_mode=det                             # 使用行列式输出头。
   --config.gq.ndet=16                                 # 每个 rank 的行列式数 K。
+  --config.gq.wfn_depth=4 \
+  --config.gq.h1=32 \
+  --config.gq.h2=8 \
+  --config.gq.envelope_type=ds_hz_deg \
 
   --config.gq.so3_params.basis=real                     # 主干、读出和行列式均使用实数表示。
   --config.gq.so3_params.lmax=2                        # 主干保留 l=0、1、2 阶隐藏特征。

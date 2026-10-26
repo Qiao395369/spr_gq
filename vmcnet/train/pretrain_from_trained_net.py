@@ -1,4 +1,4 @@
-"""Distill a trained real-valued gaoqiao wavefunction into a fresh SO(3) net.
+"""Distill a trained real-valued gaoqiao wavefunction into a fresh gaoqiao net.
 
 The teacher checkpoint and its *original* config are copied into every result
 directory.  The student is trained on signed wavefunction values, not orbital
@@ -75,13 +75,14 @@ def validate_configs(teacher: Any, student: Any) -> Molecule:
     validate_problem_match(teacher, student)
     if teacher.wfn_type != "gaoqiao" or student.wfn_type != "gaoqiao":
         raise ValueError("teacher 和 student 的 wfn_type 都必须是 'gaoqiao'。")
-    if teacher.gq.type != "ef_shrd_sym" or student.gq.type != "so3":
-        raise ValueError("此脚本实现 ef_shrd_sym → so3；请检查两个配置的 gq.type。")
+    if teacher.gq.type != "ef_shrd_sym":
+        raise ValueError("当前 teacher 要求 gq.type='ef_shrd_sym'。")
     if teacher.dtype != student.dtype:
         raise ValueError("teacher 和 student 必须使用同一 dtype。")
     if bool(teacher.gq.do_complex) or bool(student.gq.do_complex):
         raise ValueError("带符号实波函数损失要求 do_complex=False。")
-    if str(student.gq.so3_params.basis).lower() == "complex":
+    if (student.gq.type == "so3"
+            and str(student.gq.so3_params.basis).lower() == "complex"):
         raise ValueError("当前预训练要求实值 SO(3) 输出；请用 real 或 complex_to_real。")
 
     teacher_ions = _ions_from_config(teacher)
@@ -435,6 +436,36 @@ def _fold_so3_log_scale(params: Any, log_scale: jax.Array) -> Any:
     return result
 
 
+def _fold_student_log_scale(params: Any, log_scale: jax.Array,
+                            config: Any) -> Any:
+    """将预训练的整体幅度存入普通网络参数，保持 checkpoint 可直接用于 VMC。
+
+    SO(3) 仍缩放最终 alpha。其他 gaoqiao 网络的轨道输出为线性层：
+    将所有自旋的轨道权重（及偏置）乘 exp(log_scale / N)，每个 N 电子
+    行列式就乘 exp(log_scale)。RHF 使用共享的 RHF_orbital，同样只缩放一次。
+    不新增参数叶子，不改变 envelope、Jastrow 或网络结构。
+    """
+    if config.gq.type == "so3":
+        return _fold_so3_log_scale(params, log_scale)
+    if config.gq.det_mode != "det":
+        raise ValueError("普通 gaoqiao student 的尺度保存要求 det_mode='det'。")
+    count = sum(int(n) for n in config.problem.nspins)
+    field = "RHF_orbital" if config.gq.RHF else "orbital"
+    layers = params.get(field)
+    if count <= 0 or not layers:
+        raise ValueError(f"无法将整体幅度写入 student 的 {field} 参数。")
+    dtype = jax.tree_util.tree_leaves(layers)[0].dtype
+    scale = jnp.exp(jnp.asarray(log_scale / count, dtype=dtype))
+    scaled = jax.tree_util.tree_map(lambda value: value * scale, layers)
+    if (not bool(jnp.isfinite(scale)) or float(scale) == 0.
+            or not all(bool(jnp.all(jnp.isfinite(value)))
+                       for value in jax.tree_util.tree_leaves(scaled))):
+        raise FloatingPointError("student 轨道整体缩放超出当前 dtype 的有限范围。")
+    result = dict(params)
+    result[field] = scaled
+    return result
+
+
 def _unique_output_directory(requested: Path) -> Path:
     requested = requested.resolve()
     output = requested
@@ -637,7 +668,7 @@ def main(argv=None):
     student_move_metadata = None
     # The two random networks may differ in log amplitude by tens or more.
     # A trainable log scale avoids vanishing signed-MSE gradients.  It is
-    # folded into the SO(3) determinant weights when saving the checkpoint.
+    # folded into the student's output parameters when saving the checkpoint.
     if args.loss_mode == "signed_mse":
         teacher_logs = jax.vmap(lambda x: teacher_network(
             teacher_params, x, molecule.ions)[1])(teacher_positions)
@@ -722,8 +753,8 @@ def main(argv=None):
             if (step + 1) % args.save_every == 0 or step + 1 == args.steps:
                 metrics_file.flush()
                 source = student_positions if student_positions is not None else teacher_positions
-                saved_params = _fold_so3_log_scale(
-                    trainable["network"], trainable["log_scale"])
+                saved_params = _fold_student_log_scale(
+                    trainable["network"], trainable["log_scale"], student_config)
                 _save_student_checkpoint(output, "pretrained_student.npz",
                                          student_config, molecule, student_network,
                                          saved_params, source, key)
@@ -735,7 +766,11 @@ def main(argv=None):
                              float(student_accept))
     with (output / "calibration.json").open("w", encoding="utf-8") as file:
         json.dump({"final_student_log_scale": float(trainable["log_scale"]),
-                   "folded_into_so3_alpha": True}, file, indent=2)
+                   "student_type": student_config.gq.type,
+                   "folded_into_so3_alpha": student_config.gq.type == "so3",
+                   "folded_into": ("so3_det.alpha" if student_config.gq.type == "so3"
+                                   else "RHF_orbital" if student_config.gq.RHF else "orbital")},
+                  file, indent=2)
     if args.test_energy:
         # The student walkers have already been sampled under the final network
         # unless training ended before the student chain was introduced.

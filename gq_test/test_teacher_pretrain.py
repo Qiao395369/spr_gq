@@ -19,12 +19,44 @@ from vmcnet.train.default_config import get_default_config
 from vmcnet.train import runners
 from vmcnet.mcmc import dynamic_width_position_amplitude as dwpa
 from vmcnet.train.pretrain_from_trained_net import (
-    Molecule, _fold_so3_log_scale, initial_teacher_positions,
+    Molecule, _fold_so3_log_scale, _fold_student_log_scale, construct_network, initial_teacher_positions,
     check_checkpoint_amplitudes, evaluate_student_energy, make_energy_components,
     validate_problem_match, make_metropolis_sampler, signed_amplitude_loss, validate_configs)
 
 
 class TeacherPretrainTest(unittest.TestCase):
+    def test_non_so3_students_keep_scale_and_checkpoint_structure(self):
+        teacher = get_default_config()
+        teacher.gq.type = "ef_shrd_sym"
+        teacher.problem.nspins = (1, 1)
+        teacher.problem.single_nspins = ((1, 0), (0, 1))
+        teacher.problem.ion_charges = (1., 1.)
+        teacher.problem.atoms_symbol = ("H", "H")
+        student = ConfigDict(teacher.to_dict())
+        del student.gq["so3_params"]  # 普通 student 不应依赖 SO(3) 配置。
+        student.gq.h1, student.gq.h2, student.gq.nh = 4, 2, 2
+        student.gq.wfn_depth, student.gq.ndet = 2, 2
+        student.gq.jastrow_type = "null"
+        student.gq.envelope_type = "iso"
+        student.gq.dp_type = "original"
+        positions = jnp.asarray(((0.3, 0.2, 0.7), (-0.5, 0.4, -0.8)))
+        for kind, rhf in (("ef_shrd_sym", False),
+                          ("ef_shrd_sym_proj", False),
+                          ("ef_shrd_sym_ablation", False), ("ef_shrd_sym", True)):
+            with self.subTest(kind=kind, rhf=rhf):
+                student.gq.type, student.gq.RHF = kind, rhf
+                molecule = validate_configs(teacher, student)
+                params, network = construct_network(student, molecule, jax.random.PRNGKey(7))
+                folded = _fold_student_log_scale(params, jnp.log(3.), student)
+                sign, logabs = network(params, positions, molecule.ions)
+                new_sign, new_logabs = network(folded, positions, molecule.ions)
+                self.assertTrue(bool(jnp.isfinite(logabs)))
+                self.assertEqual(float(sign), float(new_sign))
+                self.assertAlmostEqual(float(new_logabs - logabs), float(jnp.log(3.)), places=4)
+                self.assertEqual(jax.tree_util.tree_structure(params),
+                                 jax.tree_util.tree_structure(folded))
+                runners._checked_pretrained_params(params, folded, apply_pmap=False)
+
     def test_reload_reads_saved_config_without_filling_fields(self):
         parser = runners.train.parse_config_flags
         reload = SimpleNamespace(logdir="/old/run", config_relative_file_path="config.json")

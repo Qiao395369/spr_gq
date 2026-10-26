@@ -85,11 +85,27 @@ python -m vmcnet.train.runners \
 存下来的学生 `config.json` 默认把后续 VMC 结果写入与预训练目录并列的
 `N2_teacher_pretrain_vmc` 目录；原始学生配置另存，便于比较。
 
-这些流程只支持单个固定分子几何、实值 `ef_shrd_sym → so3`。学生训练与评估
-自动沿用 teacher 的核顺序和电子自旋分块。原有 teacher 参数按 checkpoint 读取，输入配置缺少的新字段
+这些流程支持单个固定分子几何、实值波函数。teacher 仍为 `ef_shrd_sym`，
+student 可选择 `wfn_type=gaoqiao` 下由 `build_network` 支持的 `gq.type`，
+例如 `so3`、`ef_shrd_sym`、`ef_shrd_sym_proj`、`ef_shrd_sym_ablation`。一体化运行通过
+`--config.gq.type=ef_shrd_sym` 等选项选择；独立运行在 student JSON 中选择。
+普通 student 使用 `wfn_depth`、`h1`、`h2`、`nh` 等结构参数，不需要 `so3_params`。
+其他顶层 `wfn_type`（例如 `psiformer`）不属于此入口的支持范围。
+预训练入口沿用现有网络构建器，网络类型与 envelope 等配置必须能在原构建器中正常运行。
+现有 `fermi` 分支存在 feature 接口参数不匹配，`ef_shrd` 在小体系测试中存在
+轨道维度不匹配；放开 student 类型限制不会修复这些网络自身的问题。
+
+teacher/student 的完整 `problem` 和 `dtype` 必须一致，否则停止；不会继承或覆盖
+student 配置。仅在预训练重建 teacher 时补全其旧配置，student 和普通 reload
+不自动补全。原有 teacher 参数按 checkpoint 读取，teacher 配置缺少的新字段
 只从当前默认配置补齐；补齐项会记录在 `pretrain_settings.json`，不能将补齐
 误认为历史训练当时显式使用的参数。对早于 `dp_type` 和独立 Jastrow 激活
 选项的普通网络配置，补全会使用当时的粒子类型编码和激活选择。预训练开始前
 还会核对参数结构，并在 checkpoint 含 walker 幅值时比较保存的与重算的
 `log|ψ|`；不一致则停止。若旧代码本身改变过层结构，仅补配置无法兼容，
 需要原训练版本的网络实现。
+
+保存时，SO(3) 的整体幅度写入 `so3_det.alpha`；普通 gaoqiao student 将轨道
+输出层乘以 `exp(log_scale / N)`（N 为电子数），使行列式整体乘以 `exp(log_scale)`。
+RHF 对共享的 `RHF_orbital` 处理，其他网络对 `orbital` 处理。参数树结构不变，
+保存后的 checkpoint 可直接由同配置的 VMC 网络读取。

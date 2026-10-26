@@ -272,31 +272,33 @@ def _get_gaoqiao_model(
             "scale": config_gq.scale if config_gq.scale != 1.0 else [],
             "rescale": config_gq.rescale_input,
         }
-        p = config_gq.so3_params
-        so3_params = {
-        "lmax": p.lmax,
-        "channels": p.channels,
-        "n_layers": p.n_layers,
-        "n_rbf": p.n_rbf,
-        "cutoff": p.cutoff,
-        "wbn_layers": p.wbn_layers,
-        "wbn_bottleneck": p.wbn_bottleneck,
-        "target_ls": tuple(p.target_ls),
-        "basis": getattr(p, "basis", "real"),
-        "init_l1": p.init_l1,
-        "regularize_angular_origin": getattr(p, "regularize_angular_origin", False),
-        "eps": p.eps,
-        "det_rank": p.det_rank,
-        "det_bank_mode": p.det_bank_mode,
-        "use_invariant_orbital_features": p.use_invariant_orbital_features,
-        "output_projection": p.output_projection,
-        "use_envelope": p.use_envelope,
-        "envelope_sigma_init": p.envelope_sigma_init,
-        "envelope_sigma_floor": p.envelope_sigma_floor,
-        "envelope_pi_init": p.envelope_pi_init,
-        "use_kato_jastrow": p.use_kato_jastrow,
-        "jastrow_b_init": p.jastrow_b_init,
-    }
+        so3_params = None
+        if config_gq.type == "so3":
+            p = config_gq.so3_params
+            so3_params = {
+                "lmax": p.lmax,
+                "channels": p.channels,
+                "n_layers": p.n_layers,
+                "n_rbf": p.n_rbf,
+                "cutoff": p.cutoff,
+                "wbn_layers": p.wbn_layers,
+                "wbn_bottleneck": p.wbn_bottleneck,
+                "target_ls": tuple(p.target_ls),
+                "basis": getattr(p, "basis", "real"),
+                "init_l1": p.init_l1,
+                "regularize_angular_origin": getattr(p, "regularize_angular_origin", False),
+                "eps": p.eps,
+                "det_rank": p.det_rank,
+                "det_bank_mode": p.det_bank_mode,
+                "use_invariant_orbital_features": p.use_invariant_orbital_features,
+                "output_projection": p.output_projection,
+                "use_envelope": p.use_envelope,
+                "envelope_sigma_init": p.envelope_sigma_init,
+                "envelope_sigma_floor": p.envelope_sigma_floor,
+                "envelope_pi_init": p.envelope_pi_init,
+                "use_kato_jastrow": p.use_kato_jastrow,
+                "jastrow_b_init": p.jastrow_b_init,
+            }
         if config_gq.type == "so3" and str(so3_params["basis"]).lower() == "complex":
             raise ValueError(
                 "当前 VMC 训练路径只向动能与优化器传递 log|psi|，会丢失复波函数的相位。"
@@ -1126,7 +1128,7 @@ def _run_teacher_pretraining(config: ConfigDict, logdir: str) -> P:
     arguments.extend(("--seed", str(config.initial_seed)))
     if teacher.test_energy:
         arguments.append("--test-energy")
-    logging.info("开始 teacher → SO(3) 预训练，结果保存到 %s", output_dir)
+    logging.info("开始 teacher → %s 预训练，结果保存到 %s", config.gq.type, output_dir)
     output = teacher_pretrain.main(arguments)
     _, _, student_params, _, _ = utils.io.reload_vmc_state(
         str(output), "pretrained_student.npz")

@@ -103,7 +103,7 @@ def get_default_config() -> ConfigDict:
                 "save_to_current_datetime_subfolder": True,
                 "subfolder_name": NO_NAME,
                 "logging_level": "INFO",
-                "dtype": "float32",  # 同时控制 SO(3) 的实数精度
+                "dtype": "float64",  # 同时控制 SO(3) 的实数精度
                 "distribute": False,
                 "debug_nans": False,  # If true, OVERRIDES config.distribute to be False
                 "initial_seed": 0,
@@ -330,10 +330,10 @@ def get_default_vmc_config() -> Dict:
         "nburn": 5000,
         "fwdlap_inner_size": 0,
         "det_penalty_weight": 1.0,
-        "nsteps_per_param_update": 10,
+        "nsteps_per_param_update": 40,
         "nmoves_per_width_update": 100,
         "std_move": 0.25,
-        "init_width":1.0,
+        "init_width":0.5,
         "checkpoint_every": 10000,
         "best_checkpoint_every": 10000,
         "checkpoint_dir": "checkpoints",
@@ -392,7 +392,7 @@ def get_default_vmc_config() -> Dict:
             "spring": {
                 # Learning rate settings
                 "schedule_type": "inverse_time",  # constant or inverse_time
-                "learning_rate": 5e-2,
+                "learning_rate": 5e-3,
                 "learning_decay_rate": 1e-4,
                 # SPRING hyperparams
                 "mu": 0.99,
@@ -438,13 +438,13 @@ def get_default_pretrain_config() -> Dict:
         # "skip_burn": False,
         "nburn": 5000,
         "iterations": 1000,
-        "nsteps_per_param_update": 10,
+        "nsteps_per_param_update": 20,
         "nmoves_per_width_update": 100,
         "loss_mode":'fulldet',  #choices=['fulldet', 'blockdiag', 'l1', 'l2]
         "eps":1e-4,
         "offblock_lambda":0.0,
         "hf_coeff":1,
-        # Optional teacher -> SO(3) distillation, run before VMC on a fresh run.
+        # Optional teacher -> gaoqiao student distillation before a fresh VMC run.
         # When enabled, it replaces the Hartree--Fock pretraining stage.
         "teacher": {
             "enabled": False,
@@ -487,7 +487,7 @@ def get_default_gq_config() -> Dict:
         "feat_act_func": 'tanh',
         "feat_numb_divid": 1,
         "scale": 1.0,
-        "dp_type":"element1",  #["original", "charge", "full","element","element1"]
+        "dp_type":"full",  #["original", "charge", "full","element","element1"]
         "alpha": 1.0,
         "type":"ef_shrd_sym",  #["ef","fermi","shrd","ef_shrd","ef_shrd_sym","ef_shrd_sym_old","ef_shrd_sym_ablation"...]
         "envelope_type": "ds_hz_old", #["ds_hz","iso","ds_hz_old"]
@@ -506,7 +506,7 @@ def get_default_gq_config() -> Dict:
         "jastrow_mlp_ndim": 32,
         "rescale_input": "all", #choices=["all", "all_eps", "e-a", "None"]
         "RHF": False,
-        "activation_type": "tanh", #choices=["tanh", "relu", "silu]
+        "activation_type": "silu", #choices=["tanh", "relu", "silu]
         "psiformer_multi": True, 
         "psiformer_num_layers": 4,
         "psiformer_num_heads": 4,
@@ -567,11 +567,11 @@ def get_default_eval_config() -> Dict:
         "nepochs": 20000,
         "repeat_single_mol": False,
         "repeat_single_molecule_walker": 0,
-        "nsteps_per_param_update": 10,
+        "nsteps_per_param_update": 40,
         "nmoves_per_width_update": 100,
         "record_amplitudes": False,
         "std_move": 0.25,
-        "init_width":1.0,
+        "init_width":0.5,
         # if use_data_from_training=True, nchains, nmoves_per_width_update, and
         # std_move are completely ignored, and the data output from training is
         # used as the initial positions instead
@@ -581,6 +581,6 @@ def get_default_eval_config() -> Dict:
         "ion_pos": ((0.0, 0.0, -1.5069621), (0.0, 0.0, 1.5069621)),
         "ion_charges":(1.,1.),
         "single_nspins":((5,2),(2,5)),
-        "nspins":(1,1),
+        "nspins":(7,7),
     }
     return eval_config
