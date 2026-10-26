@@ -1120,7 +1120,7 @@ def _run_teacher_pretraining(config: ConfigDict, logdir: str) -> P:
     ]
     for field in ("loss_mode", "steps", "batch_size", "student_fraction",
                   "burn_in", "student_burn_in", "mcmc_steps", "proposal_std",
-                  "learning_rate", "gradient_clip", "max_backtracks", "save_every",
+                  "learning_rate", "gradient_clip", "save_every",
                   "energy_samples", "energy_burn_in"):
         arguments.extend(("--" + field.replace("_", "-"), str(teacher[field])))
     if teacher.mix_start_step >= 0:

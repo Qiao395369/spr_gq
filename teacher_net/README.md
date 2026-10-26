@@ -62,14 +62,16 @@ student 求一个最佳整体乘数，再比较带符号概率幅。两个模式
 预训练定义，只改变是否要求匹配全局尺度。
 
 结果目录包含 `teacher_source/teacher.npz`、原始和补齐后的 teacher 配置、
-`student_config_original.json`、可供 VMC 加载且已继承 teacher 分子信息的 `config.json`、
+`student_config_original.json`、可供 VMC 加载且与 teacher 物理体系已核对一致的 `config.json`、
 `pretrain_settings.json`、`pretrain_metrics.csv` 和
 `pretrained_student.npz`。`signed_mse` 另有可训练的整体对数尺度，避免随机
-SO(3) 初值与 teacher 幅度差很多时梯度消失；保存 checkpoint 时把它并入
-SO(3) 行列式系数，并在 `calibration.json` 记录其最终值。
-默认使用较小的 Adam 学习率，并在每步更新后用同一批样本检查损失；若损失
-升高，就缩小更新，最多尝试 `--max-backtracks` 次。训练记录包含更新前后
-的损失和实际使用的步长比例。
+student 初值与 teacher 幅度差很多时梯度消失；保存 checkpoint 时把它并入
+student 输出参数，并在 `calibration.json` 记录其最终值。
+预训练使用标准随机 Adam，每步正常推进参数和优化器状态，保留梯度范数裁剪。
+同批更新后的损失仅用于监测，允许上升；不再执行更新拒绝或步长回退，
+旧的 `--max-backtracks` 参数已移除。梯度、参数、Adam 状态或损失出现
+NaN/Inf 时立即报错停止。训练记录包含 `loss_before`、`loss_after` 和裁剪前的
+`gradient_norm`，不再包含 `update_scale`。
 
 学生 checkpoint 沿用项目的 VMC 格式，但预训练 Adam 状态不会冒充 Spring
 状态；后续恢复 VMC 必须设置 `--reload.new_optimizer_state=True`，例如：

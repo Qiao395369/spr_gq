@@ -170,7 +170,6 @@ PRETRAIN_ARGS=(
   --proposal-std 0.25                         # 全电子高斯提议的初始步宽；之后按接受率自动调节。
   --learning-rate 1e-5                        # 本次预训练 Adam 的学习率，非 VMC Spring 学习率。
   --gradient-clip 1.0                         # 预训练梯度的全局范数裁剪阈值。
-  --max-backtracks 16                         # 更新使同批损失变大时，最多尝试缩小 16 次。
   --save-every 200                            # 每 200 次更新保存一次 student checkpoint。
   --seed 0                                    # JAX 随机数生成器的初始种子。
   --test-energy

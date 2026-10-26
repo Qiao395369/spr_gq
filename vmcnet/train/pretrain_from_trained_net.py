@@ -284,10 +284,31 @@ def signed_amplitude_loss(teacher_sign, teacher_logabs, student_sign,
     return loss, (alignment, sign_agreement)
 
 
+def _tree_all_finite(tree: Any) -> jax.Array:
+    """在设备端汇总参数树的有限性，不把整个梯度树传回主机。"""
+    leaves = jax.tree_util.tree_leaves(tree)
+    if not leaves:
+        return jnp.asarray(True)
+    return jnp.all(jnp.stack([jnp.all(jnp.isfinite(x)) for x in leaves]))
+
+
+def _check_adam_step(loss: jax.Array, diagnostics: dict, step: int) -> None:
+    """数值异常时立即停止；不能丢弃更新后继续打印训练完成。"""
+    if not bool(jnp.isfinite(loss)):
+        raise FloatingPointError(f"step {step}: 更新前损失为 NaN/Inf。")
+    for field, label in (("grads_finite", "学生梯度"),
+                         ("params_finite", "更新后的学生参数"),
+                         ("optimizer_state_finite", "更新后的 Adam 状态")):
+        if not bool(diagnostics[field]):
+            raise FloatingPointError(f"step {step}: {label}出现 NaN/Inf，停止预训练。")
+    if not bool(jnp.isfinite(diagnostics["gradient_norm"])):
+        raise FloatingPointError(f"step {step}: 梯度范数为 NaN/Inf，停止预训练。")
+
+
 def make_training_step(teacher_network: Callable,
                        student_network: Callable, ions: jax.Array,
                        loss_mode: str, optimizer: optax.GradientTransformation):
-    """Create compiled update/evaluation functions with cached teacher targets."""
+    """每批执行标准 Adam，返回数值检查结果；损失上升不作为拒绝条件。"""
     evaluate_teacher = jax.jit(jax.vmap(
         lambda params, x: teacher_network(params, x, ions), in_axes=(None, 0)))
     evaluate_student = jax.vmap(lambda params, x: student_network(params, x, ions),
@@ -308,7 +329,13 @@ def make_training_step(teacher_network: Callable,
         updates, optimizer_state = optimizer.update(grads, optimizer_state,
                                                     trainable)
         trainable = optax.apply_updates(trainable, updates)
-        return trainable, optimizer_state, loss, aux
+        diagnostics = {
+            "grads_finite": _tree_all_finite(grads),
+            "params_finite": _tree_all_finite(trainable),
+            "optimizer_state_finite": _tree_all_finite(optimizer_state),
+            "gradient_norm": optax.global_norm(grads),
+        }
+        return trainable, optimizer_state, loss, aux, diagnostics
 
     return step, jax.jit(objective), evaluate_teacher
 
@@ -386,6 +413,7 @@ def _snapshot_inputs(args: argparse.Namespace, output: Path,
         "student_molecule_and_dtype_source": str(args.student_config),
         "teacher_student_problem_validated": True,
         "sampling_proposal": "main VMC all-electron Gaussian with dynamic width",
+        "parameter_update": "standard Adam with gradient clipping; no loss backtracking",
         "nmoves_per_width_update": student_config.vmc.nmoves_per_width_update,
         "teacher_fields_filled_from_defaults": teacher_added,
         "resume_vmc": "Use --reload.new_optimizer_state=True with pretrained_student.npz.",
@@ -584,8 +612,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="全电子高斯提议的初始步宽；使用 student.vmc.nmoves_per_width_update 调节。")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
-    parser.add_argument("--max-backtracks", type=int, default=16,
-                        help="Halve an Adam update until same-batch loss decreases.")
     parser.add_argument("--save-every", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--test-energy", action="store_true",
@@ -598,8 +624,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     if args.steps <= 0 or args.batch_size < 2 or args.mcmc_steps <= 0:
         parser.error("steps、mcmc-steps 必须为正，batch-size 至少为 2。")
     if (args.burn_in < 0 or args.student_burn_in < 0
-            or args.save_every <= 0 or args.max_backtracks < 0):
-        parser.error("burn-in/student-burn-in/max-backtracks 不可为负，"
+            or args.save_every <= 0):
+        parser.error("burn-in/student-burn-in 不可为负，"
                      "save-every 必须为正。")
     if not 0.0 < args.student_fraction < 1.0:
         parser.error("student-fraction 必须在 0 与 1 之间。")
@@ -696,7 +722,7 @@ def main(argv=None):
     logging.info("结果目录: %s", output)
     with (output / "pretrain_metrics.csv").open("w", newline="") as metrics_file:
         writer = csv.writer(metrics_file)
-        writer.writerow(("step", "loss_before", "loss_after", "update_scale",
+        writer.writerow(("step", "loss_before", "loss_after", "gradient_norm",
                          "teacher_accept", "student_accept", "alignment",
                          "sign_agreement", "log_scale"))
         for step in range(args.steps):
@@ -720,34 +746,16 @@ def main(argv=None):
                 batch = teacher_positions
 
             teacher_targets = evaluate_teacher(teacher_params, batch)
-            proposed, proposed_state, loss, (alignment, agreement) = (
+            proposed, proposed_state, loss, (alignment, agreement), diagnostics = (
                 train_step(trainable, optimizer_state, batch, teacher_targets))
-            if not bool(jnp.isfinite(loss)):
-                raise FloatingPointError(f"step {step + 1}: 更新前损失为 NaN/Inf。")
-            candidate_loss, _ = evaluate_loss(proposed, batch, teacher_targets)
-            update_scale = 1.0
-            if not bool(jnp.isfinite(candidate_loss)) or float(candidate_loss) > float(loss):
-                update_scale = 0.0
-                for attempt in range(1, args.max_backtracks + 1):
-                    trial_scale = 0.5 ** attempt
-                    trial = jax.tree_util.tree_map(
-                        lambda old, new: old + trial_scale * (new - old),
-                        trainable, proposed)
-                    trial_loss, _ = evaluate_loss(trial, batch, teacher_targets)
-                    if bool(jnp.isfinite(trial_loss)) and float(trial_loss) <= float(loss):
-                        proposed, candidate_loss = trial, trial_loss
-                        update_scale = trial_scale
-                        break
-            if update_scale:
-                trainable, optimizer_state = proposed, proposed_state
-                after_loss = candidate_loss
-            else:
-                after_loss = loss
-            if not all(bool(jnp.all(jnp.isfinite(leaf)))
-                       for leaf in jax.tree_util.tree_leaves(trainable)):
-                raise FloatingPointError(f"step {step + 1}: 学生参数出现 NaN/Inf。")
+            _check_adam_step(loss, diagnostics, step + 1)
+            after_loss, _ = evaluate_loss(proposed, batch, teacher_targets)
+            if not bool(jnp.isfinite(after_loss)):
+                raise FloatingPointError(f"step {step + 1}: 更新后损失为 NaN/Inf，停止预训练。")
+            # 即使当前 batch 的损失上升，也保留正常的 Adam 更新和新动量状态。
+            trainable, optimizer_state = proposed, proposed_state
             writer.writerow((step + 1, float(loss), float(after_loss),
-                             update_scale, float(teacher_accept),
+                             float(diagnostics["gradient_norm"]), float(teacher_accept),
                              float(student_accept), float(alignment),
                              float(agreement), float(trainable["log_scale"])))
             if (step + 1) % args.save_every == 0 or step + 1 == args.steps:
@@ -758,10 +766,10 @@ def main(argv=None):
                 _save_student_checkpoint(output, "pretrained_student.npz",
                                          student_config, molecule, student_network,
                                          saved_params, source, key)
-                logging.info("step=%d loss=%.6g -> %.6g step_scale=%.3g"
+                logging.info("step=%d loss=%.6g -> %.6g grad_norm=%.3g"
                              " sign_match=%.3f teacher_accept=%.3f"
                              " student_accept=%.3f", step + 1, float(loss),
-                             float(after_loss), update_scale,
+                             float(after_loss), float(diagnostics["gradient_norm"]),
                              float(agreement), float(teacher_accept),
                              float(student_accept))
     with (output / "calibration.json").open("w", encoding="utf-8") as file:

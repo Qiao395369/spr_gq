@@ -461,7 +461,6 @@ def get_default_pretrain_config() -> Dict:
             "proposal_std": 0.25,
             "learning_rate": 1.0e-5,
             "gradient_clip": 1.0,
-            "max_backtracks": 16,
             "save_every": 200,
             "test_energy": False,
             "energy_samples": 16,

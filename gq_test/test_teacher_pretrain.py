@@ -11,6 +11,7 @@ from unittest.mock import patch
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 from ml_collections import ConfigDict
 from absl import flags
 
@@ -21,10 +22,50 @@ from vmcnet.mcmc import dynamic_width_position_amplitude as dwpa
 from vmcnet.train.pretrain_from_trained_net import (
     Molecule, _fold_so3_log_scale, _fold_student_log_scale, construct_network, initial_teacher_positions,
     check_checkpoint_amplitudes, evaluate_student_energy, make_energy_components,
-    validate_problem_match, make_metropolis_sampler, signed_amplitude_loss, validate_configs)
+    validate_problem_match, make_metropolis_sampler, signed_amplitude_loss, validate_configs,
+    make_training_step, _check_adam_step)
 
 
 class TeacherPretrainTest(unittest.TestCase):
+    def test_standard_adam_keeps_update_when_current_batch_loss_rises(self):
+        def network(params, positions, ions):
+            return jnp.asarray(1.), params["w"]
+
+        optimizer = optax.chain(optax.clip_by_global_norm(1.), optax.adam(0.01))
+        step, objective, _ = make_training_step(
+            network, network, jnp.zeros((1, 3)), "signed_mse", optimizer)
+        trainable = {"network": {"w": jnp.asarray(0.)}, "log_scale": jnp.asarray(0.)}
+        state = optimizer.init(trainable)
+        positions = jnp.zeros((2, 1, 3))
+        targets = (jnp.ones(2), jnp.ones(2))
+        # 先积累指向增大幅度的动量，再换一批要求略微减小幅度的目标。
+        for i in range(10):
+            trainable, state, loss, _, diagnostics = step(trainable, state, positions, targets)
+            _check_adam_step(loss, diagnostics, i + 1)
+        target_log = trainable["network"]["w"] + trainable["log_scale"] - 0.001
+        targets = (jnp.ones(2), jnp.full((2,), target_log))
+        proposed, new_state, loss, _, diagnostics = step(trainable, state, positions, targets)
+        after_loss, _ = objective(proposed, positions, targets)
+        _check_adam_step(loss, diagnostics, 11)  # 损失上升不是数值异常。
+        self.assertGreater(float(after_loss), float(loss))
+        self.assertNotEqual(float(proposed["network"]["w"]), float(trainable["network"]["w"]))
+        self.assertEqual(int(new_state[1][0].count), 11)
+
+    def test_nonfinite_gradient_stops_even_if_forward_loss_is_finite(self):
+        def network(params, positions, ions):
+            return jnp.asarray(1.), jnp.sqrt(params["w"])
+
+        optimizer = optax.chain(optax.clip_by_global_norm(1.), optax.adam(0.01))
+        step, _, _ = make_training_step(
+            network, network, jnp.zeros((1, 3)), "signed_mse", optimizer)
+        trainable = {"network": {"w": jnp.asarray(0.)}, "log_scale": jnp.asarray(0.)}
+        _, _, loss, _, diagnostics = step(
+            trainable, optimizer.init(trainable), jnp.zeros((2, 1, 3)),
+            (jnp.ones(2), jnp.ones(2)))
+        self.assertTrue(bool(jnp.isfinite(loss)))
+        with self.assertRaisesRegex(FloatingPointError, "step 3: 学生梯度"):
+            _check_adam_step(loss, diagnostics, 3)
+
     def test_non_so3_students_keep_scale_and_checkpoint_structure(self):
         teacher = get_default_config()
         teacher.gq.type = "ef_shrd_sym"
@@ -228,7 +269,7 @@ class TeacherPretrainTest(unittest.TestCase):
 
     def test_so3_missing_fields_do_not_use_pre_so3_fallbacks(self):
         completed, _ = complete_config(ConfigDict({"gq": {"type": "so3"}}))
-        self.assertEqual(completed.gq.dp_type, "element1")
+        self.assertEqual(completed.gq.dp_type, get_default_config().gq.dp_type)
         self.assertEqual(completed.gq.jastrow_activation_type, "tanh")
 
     def test_checkpoint_amplitude_check_detects_changed_network_meaning(self):
