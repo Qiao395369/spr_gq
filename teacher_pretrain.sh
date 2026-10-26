@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CH4: 用已收敛的 ef_shrd_sym teacher 单独预训练 SO(3) student。
+# CH4: 用已收敛的 ef_shrd_sym teacher 单独预训练 gaoqiao student。
 # 只运行蒸馏脚本；不会启动 runners、VMC 优化或最终评估。
 # -e：命令失败就退出；-u：使用未定义变量时报错；pipefail：管道内任一命令失败都视为失败。
 set -euo pipefail
@@ -63,7 +63,7 @@ ARGS=(
   --config.vmc.optimizer.spring.det_regularization_scale=0  # 日后行列式正则项的系数。
 
   --config.wfn_type=gaoqiao                            # 使用项目中的 gaoqiao 波函数入口。
-  --config.gq.type=ef_shrd_sym                                # student 的网络结构选择 SO(3) 分支。
+  --config.gq.type=ef_shrd_sym                          # student 网络类型；也可改为 so3 等分支。
   --config.gq.dp_type=full                             # 粒子类型特征采用 full 编码。
   --config.gq.det_mode=det                             # 使用行列式输出头。
   --config.gq.ndet=16                                 # 每个 rank 的行列式数 K。
@@ -159,14 +159,16 @@ PRETRAIN_ARGS=(
   --teacher-config "$teacher_config"          # 与 checkpoint 配对的原始 teacher 配置。
   --student-config "$student_config"          # 上面临时生成的完整 student JSON。
   --output-dir "$output_dir"                  # 蒸馏结果的目标目录。
-  --loss-mode signed_mse                       # 比较带符号的波函数幅度，并学习整体尺度。
+  --loss-mode scale_aligned                    # 每批拟合最佳整体乘数；也可选 signed_mse。
+  --sampling-strategy fixed_teacher            # 固定 teacher 点训练；dynamic_mixed 保留原动态策略。
+  --fixed-sample-count 0                       # 0 冻结 batch-size 个点；设更大值则先采满再训练，所有点都训练。
   --steps 2000                                # student 参数更新次数。
   --batch-size 16                             # 每次损失计算使用的电子构型数。
-  --mix-start-step 500                        # 前 500 次更新只用 teacher 样本，之后混合。
-  --student-fraction 0.5                      # 混合后 student 样本占批次的一半。
+  --mix-start-step 500                        # 仅 dynamic_mixed：开始混入 student 样本的步数。
+  --student-fraction 0.5                      # 仅 dynamic_mixed：student 样本比例。
   --burn-in 200                               # 初始 teacher 采样链的热化步数。
-  --student-burn-in 100                       # 首次启动 student 采样链时的热化步数。
-  --mcmc-steps 10                             # 相邻预训练更新之间的 Metropolis 采样步数。
+  --student-burn-in 100                       # 仅 dynamic_mixed：首次启动 student 链时的热化步数。
+  --mcmc-steps 10                             # 动态模式的更新间采样步数；固定模式的采集批次间隔。
   --proposal-std 0.25                         # 全电子高斯提议的初始步宽；之后按接受率自动调节。
   --learning-rate 1e-5                        # 本次预训练 Adam 的学习率，非 VMC Spring 学习率。
   --gradient-clip 1.0                         # 预训练梯度的全局范数裁剪阈值。

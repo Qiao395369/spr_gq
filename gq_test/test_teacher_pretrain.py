@@ -23,10 +23,60 @@ from vmcnet.train.pretrain_from_trained_net import (
     Molecule, _fold_so3_log_scale, _fold_student_log_scale, construct_network, initial_teacher_positions,
     check_checkpoint_amplitudes, evaluate_student_energy, make_energy_components,
     validate_problem_match, make_metropolis_sampler, signed_amplitude_loss, validate_configs,
-    make_training_step, _check_adam_step)
+    make_training_step, _check_adam_step, collect_fixed_teacher_samples,
+    cache_teacher_targets, fixed_teacher_batches, parse_args)
 
 
 class TeacherPretrainTest(unittest.TestCase):
+    def test_fixed_teacher_data_keeps_coordinates_and_targets_and_uses_every_point(self):
+        positions = jnp.arange(9.).reshape(3, 1, 3)
+        original = np.asarray(positions).copy()
+        metadata = {"round": 0}
+
+        def sample(params, x, key, state):
+            return x + 10., key, jnp.asarray(1.), {"round": state["round"] + 1}
+
+        sampler = unittest.mock.Mock(side_effect=sample)
+        frozen, chain, key, state = collect_fixed_teacher_samples(
+            sampler, {}, positions, jax.random.PRNGKey(4), metadata, 7)
+        self.assertEqual(sampler.call_count, 2)
+        self.assertEqual(state["round"], 2)
+        np.testing.assert_array_equal(positions, original)
+        self.assertEqual(len(frozen), 7)
+        np.testing.assert_array_equal(frozen[:3], original)
+        np.testing.assert_array_equal(frozen[3:6], original + 10.)
+        np.testing.assert_array_equal(frozen[6:], (original + 20.)[:1])
+        evaluator = unittest.mock.Mock(side_effect=lambda p, x: (
+            jnp.ones(len(x)), x[:, 0, 0]))
+        targets = cache_teacher_targets(evaluator, {}, frozen, 3)
+        batches = fixed_teacher_batches(frozen, targets, 3, key)
+        saved = np.asarray(frozen).copy()
+        # 每轮覆盖全部数据，无验证集；坐标与缓存目标按同一排列取出。
+        for _ in range(2):
+            seen = []
+            for _ in range(2):  # 7 个点拆成 3+4，避免 scale_aligned 单点尾批。
+                x, (sign, logabs) = next(batches)
+                np.testing.assert_array_equal(logabs, x[:, 0, 0])
+                seen.extend(np.asarray(x[:, 0, 0]).tolist())
+            self.assertEqual(sorted(seen), sorted(np.asarray(frozen[:, 0, 0]).tolist()))
+        self.assertEqual(evaluator.call_count, 3)
+        self.assertEqual(sampler.call_count, 2)
+        np.testing.assert_array_equal(frozen, saved)
+
+    def test_fixed_strategy_defaults_and_dynamic_strategy_are_both_available(self):
+        required = ["--teacher-checkpoint", "t.npz", "--teacher-config", "t.json",
+                    "--student-config", "s.json", "--output-dir", "result"]
+        self.assertEqual(parse_args(required).sampling_strategy, "dynamic_mixed")
+        fixed = parse_args(required + ["--sampling-strategy", "fixed_teacher",
+                                      "--batch-size", "4", "--steps", "2",
+                                      "--mix-start-step", "1000"])
+        self.assertEqual(fixed.fixed_sample_count, 4)
+        with patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                parse_args(required + ["--sampling-strategy", "fixed_teacher",
+                                       "--steps", "1", "--batch-size", "4",
+                                       "--fixed-sample-count", "9"])
+
     def test_standard_adam_keeps_update_when_current_batch_loss_rises(self):
         def network(params, positions, ions):
             return jnp.asarray(1.), params["w"]
@@ -415,6 +465,9 @@ class TeacherPretrainTest(unittest.TestCase):
                          "/run/config.json")
         self.assertEqual(arguments[arguments.index("--steps") + 1], "12")
         self.assertIn("--test-energy", arguments)
+        self.assertEqual(arguments[arguments.index("--sampling-strategy") + 1],
+                         config.pretrain.teacher.sampling_strategy)
+        self.assertIn("--fixed-sample-count", arguments)
         self.assertNotIn("--mix-start-step", arguments)
 
     def test_runner_checks_student_weights_before_vmc_initialization(self):

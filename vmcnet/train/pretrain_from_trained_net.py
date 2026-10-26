@@ -340,6 +340,47 @@ def make_training_step(teacher_network: Callable,
     return step, jax.jit(objective), evaluate_teacher
 
 
+def collect_fixed_teacher_samples(sampler: Callable, params: Any,
+                                  positions: jax.Array, key: jax.Array,
+                                  metadata: Any, count: int):
+    """保留热化后的首批点；不足时继续采 teacher，收满后不再改这些坐标。
+
+    每次 sampler 调用间隔 mcmc_steps 次全电子移动。最后一批只取所需数量，
+    采集后的链及步宽状态另行返回，不与冻结的数据共用可变状态。
+    """
+    chunks = [positions[:count]]
+    collected = len(chunks[0])
+    while collected < count:
+        positions, key, _, metadata = sampler(params, positions, key, metadata)
+        chunk = positions[:count - collected]
+        chunks.append(chunk)
+        collected += len(chunk)
+    return jnp.concatenate(chunks), positions, key, metadata
+
+
+def cache_teacher_targets(evaluate_teacher: Callable, params: Any,
+                          positions: jax.Array, batch_size: int):
+    """分批计算冻结数据的 teacher 输出，训练中直接复用，不重复调用 teacher。"""
+    chunks = [evaluate_teacher(params, positions[start:start + batch_size])
+              for start in range(0, len(positions), batch_size)]
+    return tuple(jnp.concatenate([chunk[i] for chunk in chunks]) for i in range(2))
+
+
+def fixed_teacher_batches(positions: jax.Array, targets: tuple,
+                          batch_size: int, key: jax.Array):
+    """每轮打乱并遍历全部训练点；不划验证集、不丢弃最后不足整批的点。"""
+    while True:
+        key, shuffle_key = jax.random.split(key)
+        order = jax.random.permutation(shuffle_key, len(positions))
+        for start in range(0, len(positions), batch_size):
+            # scale_aligned 在单点上可被一个整体乘数完全拟合，避免单点尾批。
+            end = len(positions) if len(positions) - start <= batch_size + 1 else start + batch_size
+            indices = order[start:end]
+            yield positions[indices], tuple(value[indices] for value in targets)
+            if end == len(positions):
+                break
+
+
 def _fresh_positions(config: Any, molecule: Molecule, count: int,
                      key: jax.Array):
     key, positions = initialize_molecular_pos(
@@ -600,6 +641,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--loss-mode", choices=("signed_mse", "scale_aligned"),
                         default="signed_mse")
+    parser.add_argument("--sampling-strategy", choices=("dynamic_mixed", "fixed_teacher"),
+                        default="dynamic_mixed",
+                        help="dynamic_mixed 保留原动态混合采样；fixed_teacher 冻结 teacher 点训练。")
+    parser.add_argument("--fixed-sample-count", type=int, default=0,
+                        help="固定策略的训练构型总数；0 使用 batch-size。所有点均用于训练。")
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--mix-start-step", type=int, default=None,
@@ -627,7 +673,7 @@ def parse_args(argv=None) -> argparse.Namespace:
             or args.save_every <= 0):
         parser.error("burn-in/student-burn-in 不可为负，"
                      "save-every 必须为正。")
-    if not 0.0 < args.student_fraction < 1.0:
+    if args.sampling_strategy == "dynamic_mixed" and not 0.0 < args.student_fraction < 1.0:
         parser.error("student-fraction 必须在 0 与 1 之间。")
     if args.proposal_std <= 0 or args.learning_rate <= 0 or args.gradient_clip <= 0:
         parser.error("proposal-std、learning-rate、gradient-clip 必须为正。")
@@ -635,8 +681,17 @@ def parse_args(argv=None) -> argparse.Namespace:
         parser.error("energy-samples 必须为正，energy-burn-in 不可为负。")
     if args.mix_start_step is None:
         args.mix_start_step = max(1, args.steps // 4)
-    if not 0 <= args.mix_start_step <= args.steps:
+    if args.sampling_strategy == "dynamic_mixed" and not 0 <= args.mix_start_step <= args.steps:
         parser.error("mix-start-step 必须在 0..steps 范围内。")
+    if args.fixed_sample_count < 0:
+        parser.error("fixed-sample-count 不可为负。")
+    if args.sampling_strategy == "fixed_teacher":
+        if args.fixed_sample_count == 0:
+            args.fixed_sample_count = args.batch_size
+        if args.fixed_sample_count < 2:
+            parser.error("固定训练集至少需要两个构型。")
+        if args.steps * args.batch_size < args.fixed_sample_count:
+            parser.error("训练步数不足以遍历全部固定点；请增加 steps 或减小 fixed-sample-count。")
     return args
 
 
@@ -685,21 +740,41 @@ def main(argv=None):
         teacher_positions, key, _, teacher_move_metadata = burn_sampler(
             teacher_params, teacher_positions, key)
 
-    student_count = max(1, min(args.batch_size - 1,
-                               round(args.batch_size * args.student_fraction)))
-    teacher_count = args.batch_size - student_count
-    student_sampler = make_metropolis_sampler(
-        student_network, molecule.ions, args.mcmc_steps, args.proposal_std, width_interval)
+    optimizer = optax.chain(optax.clip_by_global_norm(args.gradient_clip),
+                            optax.adam(args.learning_rate))
+    train_step, evaluate_loss, evaluate_teacher = make_training_step(
+        teacher_network, student_network, molecule.ions,
+        args.loss_mode, optimizer)
+    fixed_positions = fixed_targets = fixed_batches = None
+    if args.sampling_strategy == "fixed_teacher":
+        fixed_positions, teacher_positions, key, teacher_move_metadata = collect_fixed_teacher_samples(
+            teacher_sampler, teacher_params, teacher_positions, key,
+            teacher_move_metadata, args.fixed_sample_count)
+        fixed_targets = cache_teacher_targets(
+            evaluate_teacher, teacher_params, fixed_positions, args.batch_size)
+        key, shuffle_key = jax.random.split(key)
+        fixed_batches = fixed_teacher_batches(
+            fixed_positions, fixed_targets, args.batch_size, shuffle_key)
+        logging.info("固定 teacher 训练集: %d 个构型，全部用于训练；训练中不再采样。",
+                     len(fixed_positions))
+    else:
+        student_count = max(1, min(args.batch_size - 1,
+                                   round(args.batch_size * args.student_fraction)))
+        teacher_count = args.batch_size - student_count
+        student_sampler = make_metropolis_sampler(
+            student_network, molecule.ions, args.mcmc_steps, args.proposal_std, width_interval)
     student_positions = None
     student_move_metadata = None
     # The two random networks may differ in log amplitude by tens or more.
     # A trainable log scale avoids vanishing signed-MSE gradients.  It is
     # folded into the student's output parameters when saving the checkpoint.
     if args.loss_mode == "signed_mse":
-        teacher_logs = jax.vmap(lambda x: teacher_network(
-            teacher_params, x, molecule.ions)[1])(teacher_positions)
+        initial_positions = (fixed_positions[:args.batch_size]
+                             if fixed_positions is not None else teacher_positions)
+        teacher_logs = (fixed_targets[1][:args.batch_size] if fixed_targets is not None
+                        else evaluate_teacher(teacher_params, initial_positions)[1])
         student_logs = jax.vmap(lambda x: student_network(
-            student_params, x, molecule.ions)[1])(teacher_positions)
+            student_params, x, molecule.ions)[1])(initial_positions)
         finite = np.isfinite(np.asarray(teacher_logs - student_logs))
         if not np.any(finite):
             raise FloatingPointError("初始 teacher/student 对数幅度均不可比较。")
@@ -709,16 +784,16 @@ def main(argv=None):
         initial_scale = 0.0
     trainable = {"network": student_params,
                  "log_scale": jnp.asarray(initial_scale, dtype=molecule.ions.dtype)}
-    optimizer = optax.chain(optax.clip_by_global_norm(args.gradient_clip),
-                            optax.adam(args.learning_rate))
     optimizer_state = optimizer.init(trainable)
-    train_step, evaluate_loss, evaluate_teacher = make_training_step(
-        teacher_network, student_network, molecule.ions,
-        args.loss_mode, optimizer)
 
     output = _unique_output_directory(args.output_dir)
     _snapshot_inputs(args, output, teacher_config, student_config,
                      teacher_added)
+    if fixed_positions is not None:
+        np.savez_compressed(output / "fixed_teacher_samples.npz",
+                            positions=np.asarray(fixed_positions),
+                            teacher_sign=np.asarray(fixed_targets[0]),
+                            teacher_logabs=np.asarray(fixed_targets[1]))
     logging.info("结果目录: %s", output)
     with (output / "pretrain_metrics.csv").open("w", newline="") as metrics_file:
         writer = csv.writer(metrics_file)
@@ -726,26 +801,28 @@ def main(argv=None):
                          "teacher_accept", "student_accept", "alignment",
                          "sign_agreement", "log_scale"))
         for step in range(args.steps):
-            teacher_positions, key, teacher_accept, teacher_move_metadata = teacher_sampler(
-                teacher_params, teacher_positions, key, teacher_move_metadata)
-            student_accept = math.nan
-            if step >= args.mix_start_step:
-                if student_positions is None:
-                    student_positions = teacher_positions[:student_count]
-                    if args.student_burn_in:
-                        student_burn = make_metropolis_sampler(
-                            student_network, molecule.ions,
-                            args.student_burn_in, args.proposal_std, width_interval)
-                        student_positions, key, _, student_move_metadata = student_burn(
-                            trainable["network"], student_positions, key)
-                student_positions, key, student_accept, student_move_metadata = student_sampler(
-                    trainable["network"], student_positions, key, student_move_metadata)
-                batch = jnp.concatenate(
-                    (teacher_positions[:teacher_count], student_positions), axis=0)
+            teacher_accept = student_accept = math.nan
+            if fixed_batches is not None:
+                batch, teacher_targets = next(fixed_batches)
             else:
-                batch = teacher_positions
-
-            teacher_targets = evaluate_teacher(teacher_params, batch)
+                teacher_positions, key, teacher_accept, teacher_move_metadata = teacher_sampler(
+                    teacher_params, teacher_positions, key, teacher_move_metadata)
+                if step >= args.mix_start_step:
+                    if student_positions is None:
+                        student_positions = teacher_positions[:student_count]
+                        if args.student_burn_in:
+                            student_burn = make_metropolis_sampler(
+                                student_network, molecule.ions,
+                                args.student_burn_in, args.proposal_std, width_interval)
+                            student_positions, key, _, student_move_metadata = student_burn(
+                                trainable["network"], student_positions, key)
+                    student_positions, key, student_accept, student_move_metadata = student_sampler(
+                        trainable["network"], student_positions, key, student_move_metadata)
+                    batch = jnp.concatenate(
+                        (teacher_positions[:teacher_count], student_positions), axis=0)
+                else:
+                    batch = teacher_positions
+                teacher_targets = evaluate_teacher(teacher_params, batch)
             proposed, proposed_state, loss, (alignment, agreement), diagnostics = (
                 train_step(trainable, optimizer_state, batch, teacher_targets))
             _check_adam_step(loss, diagnostics, step + 1)

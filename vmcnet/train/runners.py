@@ -1118,7 +1118,8 @@ def _run_teacher_pretraining(config: ConfigDict, logdir: str) -> P:
         "--student-config", os.path.join(logdir, "config.json"),
         "--output-dir", output_dir,
     ]
-    for field in ("loss_mode", "steps", "batch_size", "student_fraction",
+    for field in ("loss_mode", "sampling_strategy", "fixed_sample_count",
+                  "steps", "batch_size", "student_fraction",
                   "burn_in", "student_burn_in", "mcmc_steps", "proposal_std",
                   "learning_rate", "gradient_clip", "save_every",
                   "energy_samples", "energy_burn_in"):

@@ -14,7 +14,7 @@ teacher_net/
 原始文件复制到新结果目录的 `teacher_source/`，并另存补齐旧字段后的配置。
 
 现在也可以在一次 `runners` 调用中完成 teacher 预训练和后续 VMC。设置
-学生 SO(3) 网络及优化参数，再额外传入：
+学生网络及优化参数，再额外传入：
 
 ```bash
 python -m vmcnet.train.runners \
@@ -31,14 +31,14 @@ python -m vmcnet.train.runners \
 runner 将预训练文件放在本次 VMC 结果目录的 `teacher_pretrain/`，从该目录的
 `pretrained_student.npz` 读取学生参数，再初始化 VMC walker 的波函数值和
 优化器状态。学生训练的核坐标、核顺序、核电荷、原子符号、自旋电子数及
-`dtype` 直接继承 teacher 配置；评估使用同一分子，但保留学生配置中的评估
-步数和链数。无需在命令中重复设置学生的分子参数。启用 teacher 模式时会跳过 HF 预训练；已有 VMC checkpoint 的
+`dtype` 必须与 teacher 一致，不会从 teacher 覆盖；请显式设置学生的物理体系。
+启用 teacher 模式时会跳过 HF 预训练；已有 VMC checkpoint 的
 续训不会重新做 teacher 预训练。能量诊断默认关闭，打开后结果位于
 `teacher_pretrain/energy_samples.csv` 和 `energy_summary.json`。其余采样、损失、
 步数和能量诊断选项与独立脚本同名，前缀改为 `--config.pretrain.teacher.`。
 当前 teacher 预训练阶段要求单主机；同一主机上的多设备 VMC 可以在预训练后继续运行。
 
-示例（学生配置提供准备训练的 SO(3) 网络和优化设置，分子信息由 teacher 覆盖）：
+示例（学生配置提供网络、分子与优化设置，物理体系须与 teacher 一致）：
 
 ```bash
 python -m vmcnet.train.pretrain_from_trained_net \
@@ -51,8 +51,32 @@ python -m vmcnet.train.pretrain_from_trained_net \
 
 将 `--loss-mode` 改为 `scale_aligned` 并使用另一个 `--output-dir`，即可在
 同一 teacher/student 配置上比较两种损失。脚本的 `--help` 列出采样和优化选项。
-先按 teacher 的 `|ψ|²` 采样；默认从总步数的四分之一处起，按 1:1 合并
-teacher 和 student 两组独立链的样本。
+采样策略是独立于损失的选项：
+
+- `--sampling-strategy dynamic_mixed`：保留原策略。训练时继续采样，默认从
+  总步数的四分之一处起，按 1:1 合并 teacher 和 student 两组独立链的样本。
+- `--sampling-strategy fixed_teacher`：teacher 热化后冻结训练点，训练中不再
+  推进采样链，也不重新计算 teacher 标签。没有验证集，所有固定点全部训练。
+  `--fixed-sample-count 0` 使用 `batch-size` 个点，每步使用整批固定点；设为
+  大于 batch-size 的数量时，会先继续 teacher 采样收满，再打乱遍历全部点。
+  尾批不丢弃，单点尾批并入前一批；训练步数必须足以覆盖整个数据集至少一次。
+  数据保存为 `fixed_teacher_samples.npz`，含坐标、teacher 符号和 log|psi|。
+
+例如固定 8192 个点，batch-size=512，所有点均用于训练：
+
+```bash
+# 在独立预训练命令中增加或替换这些选项
+--sampling-strategy fixed_teacher --fixed-sample-count 8192 \
+--batch-size 512 --loss-mode scale_aligned
+```
+
+一体化入口对应 `--config.pretrain.teacher.sampling_strategy` 和
+`--config.pretrain.teacher.fixed_sample_count`。库默认仍为 dynamic_mixed；
+`teacher_pretrain.sh` 已设为 fixed_teacher + scale_aligned，命令尾部仍可覆盖。
+固定模式忽略 student_fraction、mix_start_step、student_burn_in；CSV 中
+teacher_accept/student_accept 为 NaN，表示训练期间没有执行采样，而非数值错误。
+能量诊断仍重新按最终 student 的 |psi|² 采样，不能把 teacher 固定点直接当作能量分布。
+
 优先从 teacher checkpoint 的 walker 坐标开始，再按 teacher 分布热化；
 如果 checkpoint 没保存可用坐标，则从核附近初始化。默认批次为 16，
 可根据收敛 checkpoint 的链数和计算资源调整。
