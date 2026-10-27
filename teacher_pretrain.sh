@@ -159,24 +159,24 @@ PRETRAIN_ARGS=(
   --teacher-config "$teacher_config"          # 与 checkpoint 配对的原始 teacher 配置。
   --student-config "$student_config"          # 上面临时生成的完整 student JSON。
   --output-dir "$output_dir"                  # 蒸馏结果的目标目录。
-  --loss-mode scale_aligned                    # 可选 signed_mse、scale_aligned、relative_mse。
+  --loss-mode relative_mse                    # 可选 signed_mse、scale_aligned、relative_mse。
   --sampling-strategy fixed_teacher            # 固定 teacher 点训练；dynamic_mixed 保留原动态策略。
-  --fixed-sample-count 0                       # 0 冻结 batch-size 个点；设更大值则先采满再训练，所有点都训练。
-  --steps 2000                                # student 参数更新次数。
-  --batch-size 16                             # 每次损失计算使用的电子构型数。
-  --mix-start-step 500                        # 仅 dynamic_mixed：开始混入 student 样本的步数。
+  --fixed-sample-count 2048                       # 0 冻结 batch-size 个点；设更大值则先采满再训练，所有点都训练。
+  --steps 10000                                # student 参数更新次数。
+  --batch-size 1024                             # 每次损失计算使用的电子构型数。
+  --mix-start-step 2000                        # 仅 dynamic_mixed：开始混入 student 样本的步数。
   --student-fraction 0.5                      # 仅 dynamic_mixed：student 样本比例。
-  --burn-in 200                               # 初始 teacher 采样链的热化步数。
-  --student-burn-in 100                       # 仅 dynamic_mixed：首次启动 student 链时的热化步数。
-  --mcmc-steps 10                             # 动态模式的更新间采样步数；固定模式的采集批次间隔。
+  --burn-in 20000                               # 初始 teacher 采样链的热化步数。
+  --student-burn-in 20000                       # 仅 dynamic_mixed：首次启动 student 链时的热化步数。
+  --mcmc-steps 40                             # 动态模式的更新间采样步数；固定模式的采集批次间隔。
   --proposal-std 0.25                         # 全电子高斯提议的初始步宽；之后按接受率自动调节。
   --learning-rate 1e-5                        # 本次预训练 Adam 的学习率，非 VMC Spring 学习率。
   --gradient-clip 1.0                         # 预训练梯度的全局范数裁剪阈值。
-  --save-every 200                            # 每 200 次更新保存一次 student checkpoint。
+  --save-every 2000                            # 每 200 次更新保存一次 student checkpoint。
   --seed 0                                    # JAX 随机数生成器的初始种子。
   --test-energy
-  --energy-samples 16 
-  --energy-burn-in 100
+  --energy-samples 2048 
+  --energy-burn-in 20000
 )
 # "${PRETRAIN_ARGS[@]}" 传入固定参数；"$@" 额外转发脚本调用者给出的参数。
 python -m vmcnet.train.pretrain_from_trained_net "${PRETRAIN_ARGS[@]}" "$@"
