@@ -337,6 +337,8 @@ def _get_gaoqiao_model(
             dp_type=config_gq.dp_type,
             alpha=config_gq.alpha,
             so3_params=so3_params,
+            so3_l0_params=(config_gq.so3_l0.to_dict()
+                           if config_gq.type == "so3_l0" else None),
             dtype=dtype,
         )        
 

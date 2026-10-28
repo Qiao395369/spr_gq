@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # CH4：用已训练 ef_shrd_sym teacher 的完整轨道，预训练新的 ef_shrd_sym student。
+# student 也可选 so3_l0；未指定的 config.gq.so3_l0.* 使用默认值。
 # 训练时固定 teacher 坐标和标签；结束后从 student 分布重新采样测试能量。
 # 不启动 VMC 能量优化，能量测试不更新参数。
 set -euo pipefail
@@ -24,7 +25,10 @@ ARGS=(
   '--config.problem.nspins=(5,5)'
   '--config.problem.single_nspins=((4,2),(0,1),(0,1),(0,1),(1,0))'
 
-  --config.gq.type=ef_shrd_sym                 # 当前先用普通 _sym 网络；SO(3) 尚未适配。
+  --config.gq.type=ef_shrd_sym                 # 可改为 so3_l0，使用 config.gq.so3_l0.* 配置。
+  --config.gq.so3_l0.channels=16 \
+  --config.gq.so3_l0.lmax=2 \
+  --config.gq.so3_l0.n_layers=3
   --config.gq.dp_type=full                    # 与当前 teacher 的粒子类型编码一致。
   --config.gq.det_mode=det                    # 完整 N×N Slater 行列式。
   --config.gq.ndet=16                         # 必须与 teacher 相同，按序号匹配每个行列式。

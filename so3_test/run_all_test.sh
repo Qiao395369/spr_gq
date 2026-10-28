@@ -10,3 +10,6 @@ python -m unittest -v so3_test.test_representation_matrix
 python -m unittest -v so3_test.test_coalescence
 python -m unittest -v so3_test.test_scalar_wavefunction_rotation
 python -m unittest -v so3_test.test_exchange_antisymmetry
+
+# 独立零阶 orbital-like 网络及其轨道预训练接入。
+python -m unittest -v so3_test.test_so3_l0

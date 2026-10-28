@@ -153,6 +153,7 @@ def construct_network(config: Any, molecule: Molecule, key: jax.Array):
         dp_type=gq.dp_type,
         alpha=gq.alpha,
         so3_params=gq.so3_params.to_dict() if gq.type == "so3" else None,
+        so3_l0_params=gq.so3_l0.to_dict() if gq.type == "so3_l0" else None,
         dtype=config.dtype,
     )[:2]
 
@@ -533,7 +534,8 @@ def _fold_student_log_scale(params: Any, log_scale: jax.Array,
     if config.gq.det_mode != "det":
         raise ValueError("普通 gaoqiao student 的尺度保存要求 det_mode='det'。")
     count = sum(int(n) for n in config.problem.nspins)
-    field = "RHF_orbital" if config.gq.RHF else "orbital"
+    field = ("RHF_orbital" if config.gq.RHF and config.gq.type != "so3_l0"
+             else "orbital")
     layers = params.get(field)
     if count <= 0 or not layers:
         raise ValueError(f"无法将整体幅度写入 student 的 {field} 参数。")

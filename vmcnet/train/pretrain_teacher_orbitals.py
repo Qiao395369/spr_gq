@@ -5,8 +5,9 @@
 student 从 get_default_config() 开始，由 --config.xxx=value 覆盖；只有
 重建历史 teacher 时才补全旧配置，并由 config_compat 逐项记录补全日志。
 
-目前 teacher/student 均为实值 ef_shrd_sym、full determinant 网络。
-SO(3) 的轨道库及额外读出因子尚未适配，本文件明确拒绝该类型。
+teacher 为实值 ef_shrd_sym；student 可为 ef_shrd_sym 或 so3_l0。
+两者返回含原生包络和 Jastrow 的完整 (K,N,N) 轨道，按序号一一监督。
+旧 so3 含外部 A 与 rank 库，仍由完整波函数预训练入口处理。
 """
 
 import argparse
@@ -66,16 +67,30 @@ def construct_orbital_network(config, molecule, key):
         activation_type=gq.activation_type,
         jastrow_activation_type=gq.jastrow_activation_type,
         dp_type=gq.dp_type, alpha=gq.alpha, dtype=config.dtype,
+        so3_l0_params=gq.so3_l0.to_dict() if gq.type == "so3_l0" else None,
     )
 
     def full_orbitals(parameters, positions, atoms):
-        # 普通 full determinant 接口返回长度为 1 的 list，取其中矩阵。
+        # 普通网络与 so3_l0 均返回长度为 1 的完整行列式 list。
         matrices = orbitals(parameters, positions, atoms)
         if not isinstance(matrices, (tuple, list)) or len(matrices) != 1:
             raise ValueError("要求 full determinant 轨道接口返回一组 (K,N,N) 矩阵。")
         return matrices[0]
 
     return params, signed_network, full_orbitals
+
+
+def validate_orbital_types(teacher, student):
+    """在加载 checkpoint 前检查轨道监督约定，不补全任何配置。"""
+    if teacher.gq.type != "ef_shrd_sym":
+        raise NotImplementedError("轨道预训练 teacher 当前要求 ef_shrd_sym。")
+    if student.gq.type not in ("ef_shrd_sym", "so3_l0"):
+        raise NotImplementedError(
+            "轨道预训练 student 支持 ef_shrd_sym 或 so3_l0；旧 so3 含外部 A "
+            "和 rank 库，请使用完整波函数预训练入口或改用 so3_l0。")
+    for role, config in (("teacher", teacher), ("student", student)):
+        if config.gq.det_mode != "det":
+            raise ValueError(f"{role} 要求 det_mode=det。")
 
 
 def orbital_loss(target, prediction, mode):
@@ -261,12 +276,7 @@ def main(argv=None):
             raise FileNotFoundError(path)
     teacher = io.load_config_dict("", str(args.teacher_config))
     validate_problem_match(teacher, student)
-    for role, config in (("teacher", teacher), ("student", student)):
-        if config.gq.type != "ef_shrd_sym":
-            raise NotImplementedError(
-                f"{role} 当前只支持 ef_shrd_sym；SO(3) 轨道预训练尚未实现。")
-        if config.gq.det_mode != "det":
-            raise ValueError(f"{role} 要求 det_mode=det。")
+    validate_orbital_types(teacher, student)
     if teacher.gq.ndet != student.gq.ndet:
         raise ValueError("按行列式序号一一监督，teacher/student 的 ndet 必须相同。")
     # 仅在这里重建历史 teacher 前补全；补全明细由 complete_config 输出日志。

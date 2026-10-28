@@ -518,6 +518,26 @@ def get_default_gq_config() -> Dict:
         "lapnet_num_layers": 4,
         "lapnet_num_heads": 4,
         "lapnet_mlp_hidden_dims": 256,
+        # 独立 orbital-like SO(3)：每层 Conv+WBN，末层 WBN 仅输出 l=0。
+        # 行列式总数直接使用上面的 gq.ndet；无 A、rank 或 target_ls。
+        "so3_l0": {
+            "lmax": 2,
+            "channels": 16,
+            "n_layers": 3,
+            "n_rbf": 8,
+            "cutoff": None,
+            "wbn_bottleneck": None,
+            "basis": "real",  # 复主干模式最终也读出实标量轨道。
+            "init_l1": True,
+            "regularize_angular_origin": True,
+            "eps": 1.0e-12,
+            "use_envelope": True,
+            "envelope_sigma_init": 1.0,
+            "envelope_sigma_floor": 1.0e-6,
+            "envelope_pi_init": 1.0,
+            "use_kato_jastrow": True,
+            "jastrow_b_init": 1.0,
+        },
         "so3_params": {
         # SO(3) backbone
         "lmax": 2,

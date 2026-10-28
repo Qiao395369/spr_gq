@@ -3,6 +3,7 @@ from typing import Optional, Tuple, Union
 import vmcnet.gaoqiao.envelopes as envelopes
 import vmcnet.gaoqiao.networks as networks
 import vmcnet.gaoqiao.so3_utils as so3_utils
+import vmcnet.gaoqiao.so3_l0 as so3_l0
 import vmcnet.gaoqiao.dp as dp
 import vmcnet.gaoqiao.open_feature_layer as open_feature_layer
 import vmcnet.gaoqiao.jastrows as jastrows
@@ -70,7 +71,32 @@ def build_network(
     # or None to use SO3Config defaults.
     so3_params: Optional[Union[dict, so3_utils.SO3Config]] = None,
     dtype: Optional[object] = None,
+    so3_l0_params: Optional[Union[dict, so3_l0.SO3L0Config]] = None,
 ):
+    # 独立入口提前返回，不构造普通网络的 feature/envelope/MLP Jastrow。
+    if gq_type == "so3_l0":
+        if det_mode != "det":
+            raise ValueError('gq_type="so3_l0" 要求 det_mode="det"。')
+        if n != sum(nspins):
+            raise ValueError("so3_l0 的 n 必须等于 nspins 之和。")
+        if RHF:
+            logging.warning("RHF=True 被 so3_l0 忽略；两组自旋使用独立轨道头。")
+        if so3_l0_params is None:
+            config = so3_l0.SO3L0Config()
+        elif isinstance(so3_l0_params, so3_l0.SO3L0Config):
+            config = so3_l0_params
+        elif isinstance(so3_l0_params, dict):
+            config = so3_l0.SO3L0Config(**so3_l0_params)
+        else:
+            raise TypeError("so3_l0_params 必须为 dict、SO3L0Config 或 None。")
+        if dtype is not None:
+            config = dataclasses.replace(config, float_dtype=dtype)
+        mes = dp.ManyElectronSystem(charges, nspins, dp_type)
+        logging.info("wfn type: so3_l0; ndet=%s; config=%s", ndet, config)
+        _, model_key = jax.random.split(key)
+        return so3_l0.make_network(model_key, charges, nspins, ndet,
+                                    mes.get_part_features(), config)
+
     activation_fn = _get_activation(activation_type)
     jastrow_activation_fn = _get_activation(jastrow_activation_type)
 

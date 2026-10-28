@@ -54,7 +54,7 @@ def complete_config(
     # Today's defaults (element1 / tanh) are not necessarily equivalent for
     # an old checkpoint, even if all explicitly saved fields are preserved.
     saved_gq = saved.get("gq")
-    if isinstance(saved_gq, dict) and saved_gq.get("type") != "so3":
+    if isinstance(saved_gq, dict) and saved_gq.get("type") not in ("so3", "so3_l0"):
         if "dp_type" not in saved_gq:
             defaults["gq"]["dp_type"] = "original"
         if "jastrow_activation_type" not in saved_gq:
