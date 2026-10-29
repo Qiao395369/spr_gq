@@ -5,9 +5,9 @@
 student 从 get_default_config() 开始，由 --config.xxx=value 覆盖；只有
 重建历史 teacher 时才补全旧配置，并由 config_compat 逐项记录补全日志。
 
-teacher 为实值 ef_shrd_sym；student 可为 ef_shrd_sym 或 so3_l0。
+teacher 为实值 ef_shrd_sym；student 可为 ef_shrd_sym、so3_l0 或 readout_mode=mlp 的 so3。
 两者返回含原生包络和 Jastrow 的完整 (K,N,N) 轨道，按序号一一监督。
-旧 so3 含外部 A 与 rank 库，仍由完整波函数预训练入口处理。
+等变读出的旧 so3 含外部 A 与 rank 库，仍由完整波函数预训练入口处理。
 """
 
 import argparse
@@ -67,6 +67,7 @@ def construct_orbital_network(config, molecule, key):
         activation_type=gq.activation_type,
         jastrow_activation_type=gq.jastrow_activation_type,
         dp_type=gq.dp_type, alpha=gq.alpha, dtype=config.dtype,
+        so3_params=gq.so3_params.to_dict() if gq.type == "so3" else None,
         so3_l0_params=gq.so3_l0.to_dict() if gq.type == "so3_l0" else None,
     )
 
@@ -84,9 +85,13 @@ def validate_orbital_types(teacher, student):
     """在加载 checkpoint 前检查轨道监督约定，不补全任何配置。"""
     if teacher.gq.type != "ef_shrd_sym":
         raise NotImplementedError("轨道预训练 teacher 当前要求 ef_shrd_sym。")
-    if student.gq.type not in ("ef_shrd_sym", "so3_l0"):
+    mlp_so3 = (student.gq.type == "so3"
+               and "so3_params" in student.gq
+               and str(getattr(student.gq.so3_params, "readout_mode", "equivariant")).lower()
+               == "mlp")
+    if student.gq.type not in ("ef_shrd_sym", "so3_l0") and not mlp_so3:
         raise NotImplementedError(
-            "轨道预训练 student 支持 ef_shrd_sym 或 so3_l0；旧 so3 含外部 A "
+            "轨道预训练 student 支持 ef_shrd_sym、so3_l0 或 readout_mode=mlp 的 so3；旧 so3 含外部 A "
             "和 rank 库，请使用完整波函数预训练入口或改用 so3_l0。")
     for role, config in (("teacher", teacher), ("student", student)):
         if config.gq.det_mode != "det":

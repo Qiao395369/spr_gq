@@ -47,3 +47,36 @@ Kato Jastrow 通过 exp(J/Ne) 乘每个轨道元素。轨道接口与普通网�
   --config.gq.so3_l0.lmax=2 \
   --config.gq.so3_l0.n_layers=3
 ```
+
+
+## 原版 so3 的无约束轨道读出
+
+仍选择 `gq.type=so3`，设置 `gq.so3_params.readout_mode=mlp`。
+主干的卷积和 WBN 顺序保持原样；对每个电子分别展开 l=0,...,lmax 的
+全部 channel 和角分量，按 l 拼成一个向量，不求范数、不作全局粒子求和。
+实基输入维数为 C*(lmax+1)^2；复主干保留实/虚部，为两倍维数。
+
+`readout_mlp_layers` 包含输出线性层：1 表示直接映射到 ndet*Ne，
+2 表示一层隐藏层加输出层，以此类推；隐藏层宽度用 `readout_mlp_width`
+设置，激活用 `readout_mlp_activation`（silu 或 tanh）。同自旋电子
+共享轨道输出头，隐藏层在所有粒子间共享；不再有 A、rank、alpha 或 sector 库。
+总行列式数直接为 `gq.ndet`，轨道接口与 sym 一样返回 `[Phi]`。
+旧的 target_ls、det_rank、det_bank_mode、use_invariant_orbital_features、
+output_projection 对此模式均无效。包络继续使用 so3 的核指数包络，
+Kato Jastrow 以 exp(J/Ne) 乘入轨道，保证轨道监督与波函数完全一致。
+
+```bash
+--config.gq.type=so3
+--config.gq.ndet=16
+--config.gq.so3_params.readout_mode=mlp
+--config.gq.so3_params.readout_mlp_layers=1
+```
+
+设置 `readout_mode=equivariant` 恢复旧读出（默认值），切换模式须重新
+初始化网络。`so3_l0` 独立实现与配置不变。新模式保持主干等变性、整体
+平移不变性和同自旋交换反对称性，但不保证轨道和波函数的旋转规律。
+`pretrain_teacher_orbitals` 支持 sym teacher → MLP 读出的 so3 student。
+
+`test_mlp_readout.py` 检查展开顺序、直接线性映射、MLP 层数、三个 basis、
+Jastrow 只乘一次、ndet 数目、忽略旧读出参数、平移/交换性质、主干旋转规律、
+轨道的方向敏感性、参数梯度与坐标二阶导数，以及 Adam/尺度保存/VMC 接入。

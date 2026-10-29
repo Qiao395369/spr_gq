@@ -539,6 +539,13 @@ def get_default_gq_config() -> Dict:
             "jastrow_b_init": 1.0,
         },
         "so3_params": {
+        # equivariant：旧 A × 不变行列式结构；mlp：所有角分量逐电子展开。
+        # mlp 不使用 A、rank、target_ls、det_bank_mode、output_projection 或 RMS 开关；
+        # 总行列式数直接取 gq.ndet。层数包含输出层，设 1 就是直接线性映射。
+        "readout_mode": "equivariant",
+        "readout_mlp_layers": 1,
+        "readout_mlp_width": 64,
+        "readout_mlp_activation": "silu",
         # SO(3) backbone
         "lmax": 2,
         "channels": 16,

@@ -82,6 +82,8 @@ def validate_configs(teacher: Any, student: Any) -> Molecule:
     if bool(teacher.gq.do_complex) or bool(student.gq.do_complex):
         raise ValueError("带符号实波函数损失要求 do_complex=False。")
     if (student.gq.type == "so3"
+            and str(getattr(student.gq.so3_params, "readout_mode", "equivariant")).lower()
+            == "equivariant"
             and str(student.gq.so3_params.basis).lower() == "complex"):
         raise ValueError("当前预训练要求实值 SO(3) 输出；请用 real 或 complex_to_real。")
 
@@ -524,17 +526,18 @@ def _fold_student_log_scale(params: Any, log_scale: jax.Array,
                             config: Any) -> Any:
     """将预训练的整体幅度存入普通网络参数，保持 checkpoint 可直接用于 VMC。
 
-    SO(3) 仍缩放最终 alpha。其他 gaoqiao 网络的轨道输出为线性层：
+    旧等变 SO(3) 缩放最终 alpha；MLP 读出的 SO(3) 与其他 gaoqiao
+    网络均只缩放最后的轨道线性输出层，不缩放 MLP 隐藏层：
     将所有自旋的轨道权重（及偏置）乘 exp(log_scale / N)，每个 N 电子
     行列式就乘 exp(log_scale)。RHF 使用共享的 RHF_orbital，同样只缩放一次。
     不新增参数叶子，不改变 envelope、Jastrow 或网络结构。
     """
-    if config.gq.type == "so3":
+    if config.gq.type == "so3" and "so3_det" in params:
         return _fold_so3_log_scale(params, log_scale)
     if config.gq.det_mode != "det":
         raise ValueError("普通 gaoqiao student 的尺度保存要求 det_mode='det'。")
     count = sum(int(n) for n in config.problem.nspins)
-    field = ("RHF_orbital" if config.gq.RHF and config.gq.type != "so3_l0"
+    field = ("RHF_orbital" if config.gq.RHF and config.gq.type not in ("so3", "so3_l0")
              else "orbital")
     layers = params.get(field)
     if count <= 0 or not layers:
@@ -872,9 +875,10 @@ def main(argv=None):
     with (output / "calibration.json").open("w", encoding="utf-8") as file:
         json.dump({"final_student_log_scale": float(trainable["log_scale"]),
                    "student_type": student_config.gq.type,
-                   "folded_into_so3_alpha": student_config.gq.type == "so3",
-                   "folded_into": ("so3_det.alpha" if student_config.gq.type == "so3"
-                                   else "RHF_orbital" if student_config.gq.RHF else "orbital")},
+                   "folded_into_so3_alpha": "so3_det" in trainable["network"],
+                   "folded_into": ("so3_det.alpha" if "so3_det" in trainable["network"]
+                                   else "RHF_orbital" if "RHF_orbital" in trainable["network"]
+                                   and trainable["network"]["RHF_orbital"] else "orbital")},
                   file, indent=2)
     if args.test_energy:
         # The student walkers have already been sampled under the final network

@@ -97,6 +97,22 @@ def build_network(
         return so3_l0.make_network(model_key, charges, nspins, ndet,
                                     mes.get_part_features(), config)
 
+    # 同一个 so3 主干的读出消融；无 A/rank，绕开下面的旧 sector 组装。
+    if gq_type == "so3":
+        so3_config = _make_so3_config(so3_params, dtype=dtype)
+        if so3_utils.readout_mode(so3_config) == "mlp":
+            if det_mode != "det":
+                raise ValueError('SO(3) MLP 读出要求 det_mode="det"。')
+            if n != sum(nspins):
+                raise ValueError("SO(3) MLP 读出的 n 必须等于 nspins 之和。")
+            if RHF:
+                logging.warning("RHF=True 被 SO(3) MLP 读出忽略；两组自旋使用独立输出头。")
+            mes = dp.ManyElectronSystem(charges, nspins, dp_type)
+            logging.info("wfn type: so3; MLP readout; ndet=%s; config=%s", ndet, so3_config)
+            _, model_key = jax.random.split(key)
+            return so3_utils.make_mlp_network(
+                model_key, charges, nspins, ndet, mes.get_part_features(), so3_config)
+
     activation_fn = _get_activation(activation_type)
     jastrow_activation_fn = _get_activation(jastrow_activation_type)
 

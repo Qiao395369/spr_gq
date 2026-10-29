@@ -13,3 +13,6 @@ python -m unittest -v so3_test.test_exchange_antisymmetry
 
 # 独立零阶 orbital-like 网络及其轨道预训练接入。
 python -m unittest -v so3_test.test_so3_l0
+
+# 原版主干的逐电子展开 + 可选 MLP，保留置换性质并测试 VMC 接口。
+python -m unittest -v so3_test.test_mlp_readout

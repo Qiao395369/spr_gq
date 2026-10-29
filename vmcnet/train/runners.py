@@ -276,6 +276,10 @@ def _get_gaoqiao_model(
         if config_gq.type == "so3":
             p = config_gq.so3_params
             so3_params = {
+                "readout_mode": getattr(p, "readout_mode", "equivariant"),
+                "readout_mlp_layers": getattr(p, "readout_mlp_layers", 1),
+                "readout_mlp_width": getattr(p, "readout_mlp_width", 64),
+                "readout_mlp_activation": getattr(p, "readout_mlp_activation", "silu"),
                 "lmax": p.lmax,
                 "channels": p.channels,
                 "n_layers": p.n_layers,
@@ -299,7 +303,9 @@ def _get_gaoqiao_model(
                 "use_kato_jastrow": p.use_kato_jastrow,
                 "jastrow_b_init": p.jastrow_b_init,
             }
-        if config_gq.type == "so3" and str(so3_params["basis"]).lower() == "complex":
+        if (config_gq.type == "so3"
+                and str(so3_params["readout_mode"]).lower() == "equivariant"
+                and str(so3_params["basis"]).lower() == "complex"):
             raise ValueError(
                 "当前 VMC 训练路径只向动能与优化器传递 log|psi|，会丢失复波函数的相位。"
                 "复基 SO(3) 可通过 build_network 进行前向求值；训练请先选 "

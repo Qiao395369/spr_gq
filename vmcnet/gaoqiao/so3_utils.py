@@ -12,7 +12,15 @@
 * 坐标、核包络、Jastrow 与 Slater 行列式仍用实数。复数标量特征的
   实部和虚部，以及高阶特征的 Hermitian 范数，组成行列式轨道的实数输入。
 
-配置、球谐、CG、等变网络、标量行列式与 Jastrow 都在本文件实现。
+读出方式
+--------
+* ``readout_mode='equivariant'``：默认旧结构，A multiplet × 不变行列式，保留 rank。
+* ``readout_mode='mlp'``：逐电子展开所有 l 的全部角分量，共享 MLP 后生成轨道。
+  没有 A、rank 或 sector 库，总行列式数就是传入的 ndet。MLP 层数包含输出层，
+  ``readout_mlp_layers=1`` 为直接线性映射。主干仍等变，轨道及波函数不再保证旋转性质。
+  三种 basis 均可用；复输入保留实部和虚部，轨道及最终波函数始终为实数。
+
+配置、球谐、CG、等变网络、行列式与 Jastrow 都在本文件实现。
 ``networks.py`` 已通过本模块接入 SO(3) 分支；也可使用下面的独立入口。
 
 最短调用示例（type_features 的行顺序为电子在前、原子核在后）::
@@ -81,6 +89,29 @@ class SO3Config:
     envelope_sigma_floor: float = 1.0e-6
     basis: str = "real"
     regularize_angular_origin: bool = False
+    # 默认值保留旧模型与 checkpoint；MLP 模式忽略 det_rank/target_ls 等旧读出配置。
+    readout_mode: str = "equivariant"
+    readout_mlp_layers: int = 1  # 线性层总数，含输出层；1 表示没有隐藏层。
+    readout_mlp_width: int = 64  # 仅当 layers>1 时决定隐藏层宽度。
+    readout_mlp_activation: str = "silu"
+
+
+def readout_mode(config: SO3Config) -> str:
+    """选择旧等变读出或逐电子 MLP；两者参数结构不同，切换需重新初始化。"""
+    mode = str(config.readout_mode).lower()
+    if mode not in ("equivariant", "mlp"):
+        raise ValueError("readout_mode 只支持 'equivariant' 或 'mlp'。")
+    if mode == "mlp":
+        if (not isinstance(config.readout_mlp_layers, int)
+                or config.readout_mlp_layers < 1):
+            raise ValueError("readout_mlp_layers 必须为正整数，包含输出线性层。")
+        if (config.readout_mlp_layers > 1
+                and (not isinstance(config.readout_mlp_width, int)
+                     or config.readout_mlp_width <= 0)):
+            raise ValueError("有隐藏层时 readout_mlp_width 必须为正整数。")
+        if config.readout_mlp_activation not in ("silu", "tanh"):
+            raise ValueError("readout_mlp_activation 只支持 'silu' 或 'tanh'。")
+    return mode
 
 
 def _basis(config: SO3Config) -> str:
@@ -456,10 +487,12 @@ def _init_real_so3_params(key, type_dim: int, config: SO3Config):
     dtype = config_dtype(config)
     C = int(config.channels)
     B = int(config.wbn_bottleneck or C)
-    R = int(config.det_rank)
-    if min(C, B, R, type_dim, config.n_rbf) <= 0 or config.lmax < 0:
-        raise ValueError("channels、det_rank、type_dim、n_rbf 必须为正，lmax 必须非负。")
-    if config.output_projection not in ("q0", "sum"):
+    constrained = readout_mode(config) == "equivariant"
+    if min(C, B, type_dim, config.n_rbf) <= 0 or config.lmax < 0:
+        raise ValueError("channels、type_dim、n_rbf 必须为正，lmax 必须非负。")
+    if constrained and config.det_rank <= 0:
+        raise ValueError("等变读出的 det_rank 必须为正。")
+    if constrained and config.output_projection not in ("q0", "sum"):
         raise ValueError("output_projection 只支持 'q0' 或 'sum'。")
 
     key, k = jax.random.split(key)
@@ -499,10 +532,12 @@ def _init_real_so3_params(key, type_dim: int, config: SO3Config):
             }
         blocks.append(block)
     params["wbn"] = tuple(blocks)
-    params["readout"] = {}
-    for l in range(config.lmax + 1):
-        key, k = jax.random.split(key)
-        params["readout"][str(l)] = _randn(k, (R, C), 1 / math.sqrt(C), dtype)
+    if constrained:
+        params["readout"] = {}
+        for l in range(config.lmax + 1):
+            key, k = jax.random.split(key)
+            params["readout"][str(l)] = _randn(
+                k, (int(config.det_rank), C), 1 / math.sqrt(C), dtype)
     return params
 
 
@@ -518,7 +553,7 @@ def init_so3_params(key, type_dim: int, config: SO3Config) -> Mapping[str, objec
     real = _init_real_so3_params(kr, type_dim, config)
     imag = _init_real_so3_params(ki, type_dim, config)
     params = jax.tree_util.tree_map(lambda r, i: (r + 1j * i) / math.sqrt(2), real, imag)
-    if mode == "complex_to_real":
+    if mode == "complex_to_real" and readout_mode(config) == "equivariant":
         C, R = int(config.channels), int(config.det_rank)
         keys = jax.random.split(kout, config.lmax + 1)
         params["readout"] = {
@@ -601,7 +636,7 @@ def _bilinear(h, CG, params, config):
 
 
 def apply_so3_network(params, positions: Array, type_features: Array, config: SO3Config):
-    """执行 SO(3) 主干，返回 ``h/y/A_channels/A`` 四级结果。
+    """执行 SO(3) 主干；旧模式返回 h/y/A_channels/A，MLP 模式只返回 h/y。
 
     positions 为 (N,3)，type_features 为 (N,T)。变更模式后需重新
     初始化参数，不能直接复用旧参数。
@@ -634,6 +669,9 @@ def apply_so3_network(params, positions: Array, type_features: Array, config: SO
             y[l] = jnp.concatenate((real, imag), axis=1)
     else:
         y = h
+    # 无约束读出只使用逐粒子特征；不建立全局 A，也不做粒子求和。
+    if readout_mode(config) == "mlp":
+        return {"h": h, "y": y}
     channels = {l: jnp.sum(y[l], axis=0) for l in y}
     A = {l: jnp.einsum("rc,cq->rq", params["readout"][str(l)], channels[l])
          for l in y}
@@ -788,7 +826,11 @@ def sector_term_log_distribution(det_logabs, A, det_params, sectors,
 def init_wavefunction_params(key, type_dim: int, nspins: Sequence[int], natom: int,
                              determinants_per_rank: int, config: SO3Config,
                              *, full_det=True, include_bias=False):
-    """一次初始化主干、实标量行列式库和可选 Jastrow 参数。"""
+    """初始化所选读出结构；MLP 模式的 determinants_per_rank 即总 ndet。"""
+    if readout_mode(config) == "mlp":
+        return init_mlp_wavefunction_params(
+            key, type_dim, nspins, natom, determinants_per_rank, config,
+            full_det=full_det, include_bias=include_bias)
     k_so3, k_det, k_jastrow = jax.random.split(key, 3)
     sectors = sector_list(config)
     return {
@@ -813,12 +855,18 @@ def evaluate_wavefunction(params, electron_pos: Array, atoms: Array,
                           type_features: Array, nspins: Sequence[int],
                           determinants_per_rank: int, config: SO3Config,
                           *, full_det=True):
-    """端到端求值；返回完整 multiplet 与固定投影的 phase/logabs。
+    """端到端求值；等变模式返回 multiplet，MLP 模式返回普通 Slater 波函数。
 
+    MLP 模式不返回 multiplet，且三种 basis 均输出实值 phase/sign。
+    以下完整 multiplet 与复 phase 的约定仅适用于等变读出。
     type_features 必须按“全部电子、全部原子核”顺序排列。实模式和
     末端转换模式的 phase 为 +/-1/0；复模式为单位模复数或零。实际值为
     ``phase * exp(logabs)``。返回的 ``multiplet_*`` 按整数 l 索引。
     """
+    if readout_mode(config) == "mlp":
+        return evaluate_mlp_wavefunction(
+            params, electron_pos, atoms, type_features, nspins,
+            determinants_per_rank, config, full_det=full_det)
     dtype = config_dtype(config)
     nelec = int(sum(nspins))
     electron_pos = jnp.asarray(electron_pos, dtype=dtype).reshape((nelec, 3))
@@ -1113,3 +1161,176 @@ def rank_determinant_sums(det_signs, det_logabs, det_params, sectors):
         rank_sign[l], rank_logabs[l] = _weighted_phase_sum(
             det_signs[l] * alpha, det_logabs[l], axis=1)
     return rank_sign, rank_logabs
+
+
+# ---------------------------------------------------------------------------
+# 可选的无旋转约束读出：保留原主干，逐电子 concat 后直接生成普通轨道。
+# ---------------------------------------------------------------------------
+def flat_feature_dim(config: SO3Config) -> int:
+    """每个粒子的全部角分量数；复输入把实/虚部都留下，不丢弃信息。"""
+    factor = 1 if _basis(config) == "real" else 2
+    return factor * int(config.channels) * (int(config.lmax) + 1) ** 2
+
+
+def flatten_particle_features(y: Mapping[int, Array], config: SO3Config) -> Array:
+    """(N,C,2l+1) -> (N,F)，只展开 channel/角分量，绝不展开粒子轴。
+
+    按 l=0,...,lmax 拼接；每阶内部按 channel 再按 q/m 顺序展开。
+    complex 模式每阶依次拼实部、虚部；complex_to_real 的 y 已是 2C
+    个实通道，直接展开即可。这个向量不是旋转不变量，正是本消融的输入。
+    """
+    parts = []
+    for l in range(config.lmax + 1):
+        values = jnp.asarray(y[l])
+        flat = values.reshape((values.shape[0], -1))
+        parts.append(jnp.real(flat))
+        if _basis(config) == "complex":
+            parts.append(jnp.imag(flat))
+    out = jnp.concatenate(parts, axis=-1)
+    if out.shape[-1] != flat_feature_dim(config):
+        raise ValueError("展开后的特征维度与 SO(3) 配置不符。")
+    return out
+
+
+def _apply_readout_hidden(features, hidden, config):
+    """同一组隐藏层逐行作用于所有粒子，保持电子置换等变性。"""
+    activation = jax.nn.silu if config.readout_mlp_activation == "silu" else jnp.tanh
+    for layer in hidden:
+        features = activation(features @ layer["w"] + layer["b"])
+    return features
+
+
+def init_mlp_wavefunction_params(key, type_dim: int, nspins: Sequence[int],
+                                 natom: int, ndet: int, config: SO3Config,
+                                 *, full_det=True, include_bias=False):
+    """初始化普通轨道结构，没有 A、alpha、rank 或按 l 分类的行列式。
+
+    层数包含最后的轨道输出层：layers=1 时 hidden=()，每个自旋组直接
+    使用 w:(C*(lmax+1)^2, ndet*Ne)。自旋组内所有电子共享此矩阵；
+    layers>1 时先共享 layers-1 个带偏置的非线性隐藏层，再作轨道线性映射。
+    输出层是否带偏置由 include_bias 决定，项目构建入口与原轨道头一致不带。
+    """
+    if readout_mode(config) != "mlp":
+        raise ValueError("MLP 轨道初始化要求 readout_mode='mlp'。")
+    active = tuple(int(n) for n in nspins if n > 0)
+    nelec = sum(active)
+    if min(nspins) < 0 or nelec <= 0 or ndet <= 0:
+        raise ValueError("要求非负自旋数、正电子数和正 ndet。")
+    if config.use_envelope and natom <= 0:
+        raise ValueError("启用核包络时至少需要一个原子核。")
+    dtype = config_dtype(config)
+    kb, kj, key = jax.random.split(key, 3)
+    width = flat_feature_dim(config)
+    hidden = []
+    for _ in range(config.readout_mlp_layers - 1):
+        key, kh = jax.random.split(key)
+        hidden.append({
+            "w": _randn(kh, (width, config.readout_mlp_width),
+                        1 / math.sqrt(width), dtype),
+            "b": jnp.zeros((config.readout_mlp_width,), dtype),
+        })
+        width = config.readout_mlp_width
+    heads, envelopes = [], []
+    for nspin in active:
+        norb = nelec if full_det else nspin
+        key, kh, ke = jax.random.split(key, 3)
+        head = {"w": _randn(kh, (width, ndet * norb), 1 / math.sqrt(width), dtype)}
+        if include_bias:
+            head["b"] = jnp.zeros((ndet * norb,), dtype)
+        heads.append(head)
+        envelopes.append(
+            _init_envelope(ke, ndet, norb, natom, config.envelope_sigma_init,
+                           config.envelope_sigma_floor, config.envelope_pi_init, dtype)
+            if config.use_envelope else None)
+    return {
+        "so3": init_so3_params(kb, type_dim, config),
+        "readout_hidden": tuple(hidden),
+        "orbital": tuple(heads),
+        "envelope": tuple(envelopes),
+        "so3_jastrow": init_kato_jastrow_params(
+            kj, nspins, config.jastrow_b_init, dtype)
+        if config.use_kato_jastrow else None,
+    }
+
+
+def _mlp_forward_parts(params, electron_pos, atoms, type_features, nspins,
+                       ndet, config, *, full_det=True):
+    """主干 -> 逐电子全部角分量 -> 共享隐藏层 -> 分自旋轨道输出层。
+
+    full_det=True 返回 [Phi]，Phi:(ndet,Ne,Ne)，与普通 sym 的轨道接口一致。
+    核包络照常作用；Kato Jastrow 用 exp(J/Ne) 乘各轨道元素，整个行列式
+    因而恰好乘 exp(J)。轨道监督和 signed_network 使用完全相同的矩阵。
+    """
+    nelec = sum(nspins)
+    dtype = config_dtype(config)
+    electrons = jnp.asarray(electron_pos, dtype).reshape((nelec, 3))
+    atoms = jnp.asarray(atoms, dtype).reshape((-1, 3))
+    positions = jnp.concatenate((electrons, atoms), axis=0)
+    backbone = apply_so3_network(params["so3"], positions, type_features, config)
+    flat = flatten_particle_features(backbone["y"], config)[:nelec]
+    features = _apply_readout_hidden(flat, params["readout_hidden"], config)
+    active = tuple(n for n in nspins if n > 0)
+    cuts = tuple(sum(active[:i]) for i in range(1, len(active)))
+    blocks = []
+    for x, pos, head, env, nspin in zip(
+            jnp.split(features, cuts), jnp.split(electrons, cuts),
+            params["orbital"], params["envelope"], active):
+        norb = nelec if full_det else nspin
+        raw = x @ head["w"]
+        if "b" in head:
+            raw = raw + head["b"]
+        raw = raw.reshape((nspin, ndet, norb))
+        if env is not None:
+            raw = raw * apply_orbital_envelope(
+                pos, atoms, env, config.envelope_sigma_floor, config.eps)
+        blocks.append(raw.transpose((1, 0, 2)))
+    matrices = [jnp.concatenate(blocks, axis=1)] if full_det else blocks
+    if config.use_kato_jastrow and params.get("so3_jastrow") is not None:
+        log_j = kato_ee_jastrow(electrons, nspins, params["so3_jastrow"], config.eps)
+        matrices = [matrix * jnp.exp(log_j / nelec) for matrix in matrices]
+    return {"backbone": backbone, "features": flat,
+            "orbital_features": features, "orbitals": matrices}
+
+
+def evaluate_mlp_wavefunction(params, electron_pos, atoms, type_features,
+                              nspins, ndet, config, *, full_det=True):
+    """普通 Slater 求和：psi=sum_k det(Phi_k)，没有全局 A 或 rank 维。
+
+    返回 det_sign/det_logabs:(ndet,) 和普通轨道 list；不返回声称满足某阶
+    旋转规律的波函数 multiplet。即使主干是复基，输出仍是实值波函数。
+    """
+    out = _mlp_forward_parts(params, electron_pos, atoms, type_features,
+                             nspins, ndet, config, full_det=full_det)
+    signs, logs = zip(*(jnp.linalg.slogdet(matrix) for matrix in out["orbitals"]))
+    out["det_sign"] = jnp.prod(jnp.stack(signs), axis=0)
+    out["det_logabs"] = jnp.sum(jnp.stack(logs), axis=0)
+    out["phase"], out["logabs"] = phase_logsumexp(out["det_sign"], out["det_logabs"])
+    return out
+
+
+def make_mlp_network(key, charges, nspins, ndet: int, type_features, config: SO3Config):
+    """将 utils 内实现接入 gaoqiao 的五元组接口，不经过旧 A/rank 波函数路径。"""
+    params = init_mlp_wavefunction_params(
+        key, type_features.shape[-1], nspins, len(charges), ndet, config)
+
+    def orbitals(parameters, positions, atoms):
+        return _mlp_forward_parts(parameters, positions, atoms, type_features,
+                                   nspins, ndet, config)["orbitals"]
+
+    def signed_network(parameters, positions, atoms):
+        result = evaluate_mlp_wavefunction(
+            parameters, positions, atoms, type_features, nspins, ndet, config)
+        return result["phase"], result["logabs"]
+
+    def det_distribution(parameters, positions, atoms):
+        result = evaluate_mlp_wavefunction(
+            parameters, positions, atoms, type_features, nspins, ndet, config)
+        return jax.nn.log_softmax(result["det_logabs"])
+
+    def nuclear_features(parameters, positions, atoms):
+        particle_pos = combine_particle_positions(positions, atoms, dtype=config_dtype(config))
+        backbone = apply_so3_network(parameters["so3"], particle_pos, type_features, config)
+        flat = flatten_particle_features(backbone["y"], config)[sum(nspins):]
+        return _apply_readout_hidden(flat, parameters["readout_hidden"], config)
+
+    return params, signed_network, det_distribution, orbitals, nuclear_features
